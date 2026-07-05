@@ -6,10 +6,13 @@ import socket
 import time
 import pickle
 import os
+import logging
 import tqdm
 import multiprocessing
 import utils
 import utils_scs
+
+logger = logging.getLogger(__name__)
 
 HEADERSIZE = 10
 SEPARATOR = '<SEPARATOR>'
@@ -30,23 +33,26 @@ def recv_a_t1(clientsocket, task):
         reconType = f"fast-surfer"
         number = utils_scs.file_recv(clientsocket, reconType)
     elif task == '12':
-        reconType = f"infant-surfer" 
+        reconType = f"infant-surfer"
         number = utils_scs.file_recv(clientsocket, reconType)
     print('T1 file received')
+    logger.info(f"T1 file received for task={task} reconType={reconType} -> assigned {number}")
     # here we read the log
     log, i = utils.read_a_log(num=number)
-    
+
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # s.bind((socket.gethostname(), 1241))
     s.bind((host, 6666))
     s.listen(5)
     clientsocket, address = s.accept()
     print(f'Connection from {address} has been established.')
+    logger.info(f"Sending confirmation log for {number} back to client {address}")
     time.sleep(1)
     utils_scs.text_send(clientsocket, log)
     clientsocket.close()
     s.close()
     fs_flag = 1 # a freesurfer recon task has been completed
+    logger.info(f"Upload handling for {number} complete; task is now queued (state=wait) for the poller in combine.py")
     return
 
 def recv_a_ct(clientsocket):
@@ -62,9 +68,11 @@ def recv_a_ct(clientsocket):
     clientsocket.close()
     s.close()
     print("Start registering...")
+    logger.info(f"CT received for patient={name}; spawning registerrun process")
     p = multiprocessing.Process(target=utils.registerrun,args=(name,))
     p.start()
     p.join()
+    logger.info(f"registerrun process for patient={name} has exited")
     return
 
 def send_fsls(clientsocket):
@@ -102,6 +110,7 @@ def check_recon(clientsocket):
         num = None
     if name == 'None':
         name = None
+    logger.info(f"Status check requested: num={num} name={name} hospital={hospital}")
     logs, i = utils.task_log(req='client', num=num, name=name, hospital=hospital)
     print(logs)
     time.sleep(1)

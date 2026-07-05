@@ -20,39 +20,32 @@ def create_socket(host, port):
     s.connect((host, port))
     return s
 
+def _recv_exact(socket, n):
+## keep receiving until exactly n bytes have been read
+    buf = b''
+    while len(buf) < n:
+        chunk = socket.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError('socket closed before expected data was received')
+        buf += chunk
+    return buf
+
 def text_send(socket, msg):
-    msg = pickle.dumps(msg)
-    # print(len(msg))
-    msg = bytes(f'{len(msg):<{HEADERSIZE}}', 'utf-8') + msg
-    # print(len(msg))
-    if len(msg) < BUFFER_SIZE:
-        msg += pickle.dumps('0' * (BUFFER_SIZE-len(msg)-10))
-    elif len(msg) > BUFFER_SIZE:
-        len_need = BUFFER_SIZE - len(msg)%BUFFER_SIZE - 10
-        msg += pickle.dumps('0' * len_need)
-    # print(len(msg))
-    socket.send(msg)
+    payload = pickle.dumps(msg)
+    body = bytes(f'{len(payload):<{HEADERSIZE}}', 'utf-8') + payload
+    # pad with raw bytes (not pickled) so the total length lands exactly
+    # on a BUFFER_SIZE boundary that text_recv can match on the other end
+    padded_len = -(-len(body) // BUFFER_SIZE) * BUFFER_SIZE
+    body += b'0' * (padded_len - len(body))
+    socket.sendall(body)
 
 def text_recv(socket):
 ## receive a text and print it out in the terminal
-    full_msg = b''
-    new_msg = True
-    while True:
-        msg = socket.recv(BUFFER_SIZE)
-        if new_msg:
-            # print("New message length:", msg[:HEADERSIZE])
-            msglen = int(msg[:HEADERSIZE])
-            new_msg = False
-        
-        full_msg += msg
-
-        if len(full_msg) == (msglen//BUFFER_SIZE+1)*BUFFER_SIZE:
-            # print("Full message received!")
-            txt_recv = pickle.loads(full_msg[HEADERSIZE:msglen+HEADERSIZE])
-            # print(pickle.loads(full_msg[HEADERSIZE:]))
-            new_msg = True
-            full_msg = b''
-            break
+    header = _recv_exact(socket, HEADERSIZE)
+    msglen = int(header)
+    padded_len = -(-(HEADERSIZE + msglen) // BUFFER_SIZE) * BUFFER_SIZE
+    rest = _recv_exact(socket, padded_len - HEADERSIZE)
+    txt_recv = pickle.loads(rest[:msglen])
     return txt_recv
 
 def file_send(socket, pat_name):

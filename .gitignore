@@ -127,3 +127,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# uploaded data
+BrainQuake/Server_codes/data/recv/
+BrainQuake/upload/
+datasets/

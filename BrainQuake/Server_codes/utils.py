@@ -3,8 +3,16 @@
 
 import os
 import time
+import logging
 import multiprocessing
 import eePipeline
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(processName)s] %(levelname)s %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
+logger = logging.getLogger(__name__)
 
 Filename1 = 'task_log.txt'
 Filename2 = 'task_done.txt'
@@ -16,6 +24,19 @@ CHECKTIME = 10
 
 Filepath = os.path.join(FILEPATH, Filename1) # '/home/hello/reconModule_test/testCS/data/recv/task_log.txt'
 Filepath2 = os.path.join(FILEPATH, Filename2) # '/home/hello/reconModule_test/testCS/data/recv/task_done.txt'
+
+def _run_cmd(cmd, num, step):
+    """Run a shell command, logging its start, duration and exit status."""
+    print(cmd)
+    logger.info(f"Task {num}: starting step '{step}': {cmd}")
+    t0 = time.time()
+    ret = os.system(cmd)
+    elapsed = time.time() - t0
+    if ret == 0:
+        logger.info(f"Task {num}: step '{step}' completed in {elapsed:.1f}s")
+    else:
+        logger.error(f"Task {num}: step '{step}' exited with status {ret} after {elapsed:.1f}s")
+    return ret
 
 def task_log(req, num=None, name=None, hospital=None, reconType=None, state=None, info=None):
     """A function to analysis a request either from a client, 
@@ -50,15 +71,18 @@ def task_log(req, num=None, name=None, hospital=None, reconType=None, state=None
         log : str
             the log line picked
     """
+    logger.info(f"task_log called: req={req} num={num} name={name} hospital={hospital} reconType={reconType} state={state} info={info}")
     if req == "client":
         logs, i = read_a_log(num, name, hospital)
         if i > 0: # we've found sth.
             print(f"Here are what we've checked!")
+            logger.info(f"client query for num={num} name={name} hospital={hospital} matched {i} log line(s)")
             print(logs)
             return logs, i
         else: # find nothing
             ## here we should ask for the patient's data from either client or dataset.
             print(f"Patient {num} {name} from {hospital} has not been found! Check out your input or please upload the patient's data! [y/n]")
+            logger.warning(f"client query for num={num} name={name} hospital={hospital} matched no logs")
             logs = f"Patient {num} {name} from {hospital} has not been found! Check out your input or please upload the patient's data!"
             # reply = input()
             # if reply == "y":
@@ -73,6 +97,7 @@ def task_log(req, num=None, name=None, hospital=None, reconType=None, state=None
         if state == "finished":
             write_a_log(num, name, hospital, reconType, state, info)
             print(f"{req} has finished a task {num}!")
+            logger.info(f"Task {num} ({name}, reconType={reconType}) marked FINISHED")
             # new_flag, log = pick_a_log(num)
             # if new_flag:
             #     print(f"A task {log} will be sent to {req} program!")
@@ -86,19 +111,23 @@ def task_log(req, num=None, name=None, hospital=None, reconType=None, state=None
         else: # state == "running"
             write_a_log(num, name, hospital, reconType, state, info)
             print(f"Log {num} has been updated!")
+            logger.info(f"Task {num} ({name}, reconType={reconType}) state -> RUNNING (info={info})")
             return
-    
+
     elif req == "polling":
         new_flag, log = pick_a_log(num)
         if new_flag:
             print(f"A task {log} has been detected by {req}!")
+            logger.info(f"Polling detected a new waiting task after {num}: {log.strip()}")
             # Here we should call a freesurfer program!
             return new_flag, log
         else:
             print(f"No task has been detected by {req}!")
+            logger.info(f"Polling found no new waiting task after {num}")
             return new_flag, log
-    
+
     else:
+        logger.error(f"Unidentified request type: {req}")
         raise IOError('Error: An unidentified request!')
     
 def read_a_log(num=None, name=None, hospital=None):
@@ -136,6 +165,7 @@ def read_a_log(num=None, name=None, hospital=None):
                         i = i + 1
         f.close()
     # print(log_read)
+    logger.debug(f"read_a_log(num={num}, name={name}, hospital={hospital}) -> {i} line(s)")
     return log_read, i
     
 def write_a_log(num=None, name=None, hospital=None, reconType=None, state=None, info=None):
@@ -176,6 +206,7 @@ def write_a_log(num=None, name=None, hospital=None, reconType=None, state=None, 
         f.truncate() # Here we need an improvement!
         f.writelines(lines)
         f.close()
+    logger.info(f"write_a_log: num={num} name={name} -> reconType={reconType} state={state} info={info}")
     return
 
 def add_a_log(name, hospital, reconType):
@@ -195,7 +226,10 @@ def add_a_log(name, hospital, reconType):
 
     else:
         f = open(Filepath, 'r+')
-        number_max = f.readlines()[-1].split(' ')[0]
+        lines = f.readlines()
+        number_max = "#1"
+        if len(lines) > 0:
+            number_max = lines[-1].split(' ')[0]
         # print(number_max)
         num_val = int(number_max[1:]) + 1
         # print(num)
@@ -205,6 +239,7 @@ def add_a_log(name, hospital, reconType):
         # print(line_new)
         f.write(line_new)
         f.close()
+    logger.info(f"add_a_log: new task {number_new} created for patient={name} hospital={hospital} reconType={reconType} state=wait")
     return number_new
 
 def pick_a_log(num):
@@ -275,6 +310,7 @@ def write_to_done(req, num, name, hospital, reconType, state, info):
         line = '\n' + num + ' ' + name + ' ' + hospital + ' ' + reconType + ' ' + state + ' ' + str(info)
         f.write(line)
         f.close()
+    logger.info(f"write_to_done: appended {num} name={name} hospital={hospital} reconType={reconType} state={state} info={info}")
     return
 
 def divide_a_log(log):
@@ -333,23 +369,23 @@ def reconrun(cmd, num, name, hospital, reconType):
         Command to be sent to the shell.
     """
     assert reconType=='recon-all', 'Wrong reconType!'
-    
+    logger.info(f"Task {num}: reconrun starting for patient={name} hospital={hospital}")
+    run_t0 = time.time()
+
     # unzip cmd
     cdir = os.path.join(os.getcwd(), 'data', 'recv', name)
     if os.path.isfile(os.path.join(cdir, f"{name}.zip")):
         if not os.path.isfile(os.path.join(cdir, f"{name}CT.nii.gz")):
             cmd_unzip = f"unzip {cdir}/{name}.zip -d {cdir}"
-            print(cmd_unzip)
-            os.system(cmd_unzip)
+            _run_cmd(cmd_unzip, num, "unzip uploaded CT archive")
     fdir = os.path.join(cdir, 'fslresults')
     if not os.path.isdir(fdir):
         os.system(f"mkdir {fdir}")
-    
+
     # run recon-all
-    print(f"Running shell command: {cmd}")
     task_log(req='freesurfer', num=num, reconType='recon-all', state='running', info=0)
-    os.system(cmd)
-    
+    _run_cmd(cmd, num, "recon-all")
+
     # run supplementary cmds
     # cmd3 = f"mris_convert --combinesurfs /usr/local/freesurfer/subjects/{name}/surf/lh.pial /usr/local/freesurfer/subjects/{name}/surf/rh.pial /usr/local/freesurfer/subjects/{name}/{name}.stl"
     # print(cmd3)
@@ -358,36 +394,30 @@ def reconrun(cmd, num, name, hospital, reconType):
     # print(cmd4)
     # os.system(cmd4)
     cmd_mri_convert = f"mri_convert {SUBJECTS_DIR}/{name}/mri/orig.mgz {SUBJECTS_DIR}/{name}/mri/orig.nii.gz"
-    print(cmd_mri_convert)
-    os.system(cmd_mri_convert)
+    _run_cmd(cmd_mri_convert, num, "mri_convert orig.mgz -> orig.nii.gz")
 
     cmd_mri_binarize = f"mri_binarize --i {SUBJECTS_DIR}/{name}/mri/brainmask.mgz --o {SUBJECTS_DIR}/{name}/mri/mask.mgz --min 1"
-    print(cmd_mri_binarize)
-    os.system(cmd_mri_binarize)
-    
+    _run_cmd(cmd_mri_binarize, num, "mri_binarize brainmask")
+
     cmd_label_convert_rh = f"mri_annotation2label --subject {name} --hemi rh --outdir {SUBJECTS_DIR}/{name}/label"
-    print(cmd_label_convert_rh)
-    os.system(cmd_label_convert_rh)
+    _run_cmd(cmd_label_convert_rh, num, "annotation2label rh")
 
     cmd_label_convert_lh = f"mri_annotation2label --subject {name} --hemi lh --outdir {SUBJECTS_DIR}/{name}/label"
-    print(cmd_label_convert_lh)
-    os.system(cmd_label_convert_lh)
-    
+    _run_cmd(cmd_label_convert_lh, num, "annotation2label lh")
+
     cmd_fslfolder = f"mkdir {SUBJECTS_DIR}/{name}/fslresults"
-    print(cmd_fslfolder)
-    os.system(cmd_fslfolder)
-    
+    _run_cmd(cmd_fslfolder, num, "create fslresults dir")
+
     cmd_register = f"flirt -in {cdir}/{name}CT.nii.gz -ref {SUBJECTS_DIR}/{name}/mri/orig.nii.gz -out {SUBJECTS_DIR}/{name}/fslresults/{name}CT_Reg.nii.gz -cost normmi -dof 12"
-    print(cmd_register)
-    os.system(cmd_register)
-    
+    _run_cmd(cmd_register, num, "flirt CT-to-MRI registration")
+
     task_log(req='freesurfer', num=num, reconType='recon-all', state='finished', info=1)
     write_to_done(req='freesurfer', num=num, name=name, hospital=hospital, reconType='recon-all', state='finished', info=1)
     cmd1 = f"cd {SUBJECTS_DIR} && zip -rq {name}.zip {name}"
-    print(cmd1)
-    os.system(cmd1)
+    _run_cmd(cmd1, num, "zip results")
     # cmd2 = f"scp {SUBJECTS_DIR}/{name}.zip {FILEPATH2}"
     # os.system(cmd2)
+    logger.info(f"Task {num}: reconrun finished for patient={name} in {time.time() - run_t0:.1f}s total")
     return
     
 def fastrun(cmd, num, name, hospital, reconType):
@@ -400,18 +430,21 @@ def fastrun(cmd, num, name, hospital, reconType):
         Command to be sent to the shell.
     """
     assert reconType=='fast-surfer', 'Wrong reconType!'
+    logger.info(f"Task {num}: fastrun starting for patient={name} hospital={hospital}")
     print(f"Running shell command: {cmd}")
     task_log(req='freesurfer', num=num, reconType='fast-surfer', state='running', info=0)
     # os.system(cmd)
-    
+
     task_log(req='freesurfer', num=num, reconType='fast-surfer', state='finished', info=1)
     write_to_done(req='freesurfer', num=num, name=name, hospital=hospital, reconType='fast-surfer', state='finished', info=1)
     cmd1 = f"cd {SUBJECTS_DIR} && zip -r {name}fast.zip {name}fast"
     print(cmd1)
     # os.system(cmd1)
+    logger.info(f"Task {num}: fastrun finished for patient={name}")
     return
-    
+
 def infantrun(cmd, num, name, hospital, reconType):
+    logger.info(f"Task {num}: infantrun starting for patient={name} hospital={hospital}")
     print('infant function to be waiting...')
 
     task_log(req='freesurfer', num=num, reconType='infant-surfer', state='running', info=0)
@@ -422,6 +455,7 @@ def infantrun(cmd, num, name, hospital, reconType):
     cmd1 = f"cd {SUBJECTS_DIR} && zip -r {name}fast.zip {name}fast"
     print(cmd1)
     # os.system(cmd1)
+    logger.info(f"Task {num}: infantrun finished for patient={name}")
     return
 
 #def estimate(num, name, hospital, state, info):
@@ -457,5 +491,8 @@ def write_a_registercmd(name):
     return cmd
 
 def registerrun(name):
+    logger.info(f"registerrun starting eePipeline for patient={name}")
+    t0 = time.time()
     eePipeline.eep(name)
+    logger.info(f"registerrun finished eePipeline for patient={name} in {time.time() - t0:.1f}s")
     return
