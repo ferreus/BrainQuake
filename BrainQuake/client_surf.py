@@ -32,8 +32,6 @@ from gui_forms.surfer_form import Ui_reconSurfer
 HEADERSIZE = 10
 SEPARATOR = '<SEPARATOR>'
 BUFFER_SIZE = 4096
-host = '127.0.0.1'
-port = 6669
 Filepath = os.getcwd()
 
 class Uploader(QThread):
@@ -45,14 +43,14 @@ class Uploader(QThread):
     
     def run(self):
         ## sending task_type 'Upload': '1x', '10' for recon-all & '11' for fast-surfer
-        self.s1 = surfer_utils.create_socket(host, port)
+        self.s1 = surfer_utils.create_socket(self.host, self.port)
         time.sleep(1)
         self.task_type = '1'
         self.task_type_all = self.task_type + self.reconType
         # surfer_utils.text_send(self.s1, self.task_type)
         surfer_utils.text_send(self.s1, self.task_type_all)
         self.filesize = os.path.getsize(self.patientFilepath)
-        
+
         ## sending a T1 file
         time.sleep(1)
         self.s1.send(f'{self.fileName}{SEPARATOR}{self.filesize}'.encode())
@@ -68,12 +66,12 @@ class Uploader(QThread):
                     break
                 ## we use sendall to assure transimission in busy networks
                 self.s1.sendall(bytes_read)
-                self.progressBarValue.emit(i)      
+                self.progressBarValue.emit(i)
         f.close()
         self.s1.close()
         ## receive a msg
         time.sleep(3)
-        self.s2 = surfer_utils.create_socket(host, 6666)
+        self.s2 = surfer_utils.create_socket(self.host, 6666)
         log_read = surfer_utils.text_recv(self.s2)
         self.log.emit(log_read)
         self.s2.close()
@@ -86,7 +84,7 @@ class Checker(QThread):
 
     def run(self):
         ## sending task_type 'Check': '2'
-        self.s1 = surfer_utils.create_socket(host, port)
+        self.s1 = surfer_utils.create_socket(self.host, self.port)
         time.sleep(1)
         self.task_type = '2'
         surfer_utils.text_send(self.s1, self.task_type)
@@ -94,7 +92,7 @@ class Checker(QThread):
 
         ## send a request to check
         time.sleep(1)
-        self.s2 = surfer_utils.create_socket(host, 6665)
+        self.s2 = surfer_utils.create_socket(self.host, 6665)
         time.sleep(1)
         if self.name == '<name>':
             self.name = 'None'
@@ -119,15 +117,15 @@ class Downloader(QThread):
 
     def run(self):
         ## sending task_type 'Download': '3'
-        self.s1 = surfer_utils.create_socket(host, port)
+        self.s1 = surfer_utils.create_socket(self.host, self.port)
         time.sleep(1)
         self.task_type = '3'
         surfer_utils.text_send(self.s1, self.task_type)
         self.s1.close()
-        
+
         ## receiving a recon zip file
         time.sleep(1)
-        self.s2 = surfer_utils.create_socket(host, 6664)
+        self.s2 = surfer_utils.create_socket(self.host, 6664)
         time.sleep(1)
         surfer_utils.text_send(self.s2, self.downloadlist)
         time.sleep(1)
@@ -189,9 +187,11 @@ class Downloader(QThread):
         
 
 class reconSurferUi(QtWidgets.QWidget, Ui_reconSurfer):
-    def __init__(self):
+    def __init__(self, host='127.0.0.1', port=6669):
         super(reconSurferUi, self).__init__()
         self.setupUi(self)
+        self.host = host
+        self.port = port
         self.namelist = []
         self.numberlist = []
         self.checklist = []
@@ -238,16 +238,20 @@ class reconSurferUi(QtWidgets.QWidget, Ui_reconSurfer):
         self.zipFilepath = os.path.join(self.Filepath , self.Patname)
         self.zipFilename = shutil.make_archive(self.zipFilepath, "zip", self.zipFilepath)
 
-        self.thread_1.patientName = self.Patname 
+        self.thread_1.patientName = self.Patname
         self.thread_1.fileName = f"{self.Patname}.zip"
         self.thread_1.patientFilepath = self.zipFilename
         self.thread_1.reconType = str(self.reconType)
+        self.thread_1.host = self.host
+        self.thread_1.port = self.port
         self.thread_1.start()
 
     def checkProgress(self):
         self.thread_2.number = self.comboBox_3.currentText()
         self.thread_2.name = self.comboBox_2.currentText()
         self.thread_2.hospital = self.comboBox_4.currentText()
+        self.thread_2.host = self.host
+        self.thread_2.port = self.port
         self.thread_2.start()
 
     def downloadRecon(self):
@@ -256,6 +260,8 @@ class reconSurferUi(QtWidgets.QWidget, Ui_reconSurfer):
             # assert str(item.split(' ')[-1]) == str(1), "The selected recon has not completed!"
             if str(item.split(' ')[-1]) == str(1):
                 self.thread_3.downloadlist = self.items
+                self.thread_3.host = self.host
+                self.thread_3.port = self.port
                 self.thread_3.start()
             else:
                 pass

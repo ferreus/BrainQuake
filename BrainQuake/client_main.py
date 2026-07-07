@@ -2,6 +2,8 @@
 # -- coding: utf-8 -- **
 
 import sys
+import json
+import os
 
 from PyQt5.QtWidgets import QApplication,  QMainWindow, QSizePolicy, QMessageBox, QWidget, \
     QPushButton, QLineEdit, QDesktopWidget, QGridLayout, QFileDialog,  QListWidget, QLabel,QFrame,QGroupBox
@@ -13,15 +15,35 @@ from client_inter import InterModule
 from client_elec import Electrodes
 from client_surf import reconSurferUi
 
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+DEFAULT_HOST = '127.0.0.1'
+DEFAULT_PORT = 6669
+
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {'host': DEFAULT_HOST, 'port': DEFAULT_PORT}
+
+
+def save_config(host, port):
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump({'host': host, 'port': port}, f)
+
 
 class quakeMain(QWidget):
     def __init__(self):
         super(quakeMain,self).__init__()
+        self.config = load_config()
         self.init_gui()
 
     def init_gui(self):
         self.setWindowTitle('BrainQuake')
-        self.resize(500,300)
+        self.resize(500,340)
         self.centerWin()
         self.setStyleSheet('background-color:lightgrey;')
         self.setAttribute(Qt.WA_MacShowFocusRect,0)
@@ -47,12 +69,40 @@ class quakeMain(QWidget):
         self.mainWords.setFont(self.mainWords_font)
         self.gridlayout.addWidget(self.mainWords,1,3,1,1)
 
+        # server settings row
+        server_font = QFont()
+        server_font.setFamily("Arial")
+        server_font.setPointSize(11)
+
+        self.server_label = QLabel('Server:', self)
+        self.server_label.setFont(server_font)
+        self.server_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.gridlayout.addWidget(self.server_label, 2, 1, 1, 1)
+
+        self.host_input = QLineEdit(self)
+        self.host_input.setFont(server_font)
+        self.host_input.setText(self.config.get('host', DEFAULT_HOST))
+        self.host_input.setPlaceholderText('IP address')
+        self.host_input.editingFinished.connect(self.on_server_changed)
+        self.gridlayout.addWidget(self.host_input, 2, 2, 1, 1)
+
+        self.colon_label = QLabel(':', self)
+        self.colon_label.setFont(server_font)
+        self.colon_label.setAlignment(Qt.AlignCenter)
+        self.gridlayout.addWidget(self.colon_label, 2, 3, 1, 1)
+
+        self.port_input = QLineEdit(self)
+        self.port_input.setFont(server_font)
+        self.port_input.setText(str(self.config.get('port', DEFAULT_PORT)))
+        self.port_input.setPlaceholderText('port')
+        self.port_input.setMaximumWidth(80)
+        self.port_input.editingFinished.connect(self.on_server_changed)
+        self.gridlayout.addWidget(self.port_input, 2, 4, 1, 1)
+
         self.frame=QGroupBox(self)
-        # self.frame.resize(300,200)
         self.frame.setStyleSheet("QGroupBox{border: 2px solid gray; border-radius: 5px;background-color:lightgrey;}QGroupBox:title{subcontrol-origin: margin;subcontrol-position: top left;padding: 0 3px 0 3px;}")
         self.frame.setTitle('Computation Functions')
         self.frame.setFont(self.button_font)
-
 
         self.gridlayout.addWidget(self.frame,3,1,4,4)
         self.frame_layout=QGridLayout()
@@ -105,6 +155,26 @@ class quakeMain(QWidget):
         qr.moveCenter(DeskCenter)
         self.move(qr.topLeft())
 
+    def on_server_changed(self):
+        host = self.host_input.text().strip()
+        try:
+            port = int(self.port_input.text().strip())
+        except ValueError:
+            self.port_input.setText(str(self.config.get('port', DEFAULT_PORT)))
+            return
+        self.config['host'] = host
+        self.config['port'] = port
+        save_config(host, port)
+
+    def _current_host(self):
+        return self.host_input.text().strip() or DEFAULT_HOST
+
+    def _current_port(self):
+        try:
+            return int(self.port_input.text().strip())
+        except ValueError:
+            return DEFAULT_PORT
+
     def ictal_computation(self):
         self.ictal_widget=IctalModule(self)
         self.ictal_widget.show()
@@ -118,8 +188,7 @@ class quakeMain(QWidget):
         self.elec_widget.show()
 
     def surfs_computation(self):
-        # pass
-        self.surf_widget=reconSurferUi()
+        self.surf_widget=reconSurferUi(host=self._current_host(), port=self._current_port())
         self.surf_widget.show()
 
 
