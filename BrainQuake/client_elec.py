@@ -4,6 +4,7 @@
 import sys
 import os
 import re
+import logging
 import nibabel as nib
 import numpy as np
 import mayavi
@@ -25,6 +26,14 @@ from PyQt5.QtWidgets import QFileDialog, QGraphicsScene, QListWidget, QSizePolic
 # from utils1 import Preprocess_thread, GenerateLabel_thread, PreprocessResult_thread, ContactSegment_thread
 from gui_forms.elec_form import Electrodes_gui
 from utils.elec_utils import Preprocess_thread, GenerateLabel_thread, PreprocessResult_thread, ContactSegment_thread, OptimizeParams_thread, savenpy, lookupTable
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    stream=sys.stdout,
+)
+logger = logging.getLogger(__name__)
 
 SUBDIR = './SurfDataset'
 
@@ -55,8 +64,11 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.thread_6.progress.connect(self.optimizeProgress)
         self.thread_6.finished.connect(self.optimizeFinished)
     
+        logger.info("Electrodes GUI initialized")
+
     def patientName(self):
         self.patient = self.lineEdit_1.text()
+        logger.info(f"Patient name set to: {self.patient}")
 
     def hospitalName(self):
         pass
@@ -65,9 +77,11 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         # select a freesurfer subject file folder
         self.directory_surf = QFileDialog.getExistingDirectory(self, "getExistingDirectory", os.getcwd())
         if not self.directory_surf:
+            logger.info("importSurf: no directory selected, cancelled")
             pass
         else: # a folder selected
             self.Patname_surf = self.directory_surf.split('/')[-1] # identify the patient name
+            logger.info(f"importSurf: selected surf directory={self.directory_surf}, patient={self.Patname_surf}")
             self.lineEdit_1.setText(self.Patname_surf) # set the patient name to lineEdit_1
             self.lineEdit_1.setReadOnly(True) # name set!
             self.patient = self.lineEdit_1.text() # save name to self
@@ -153,10 +167,11 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         
         for root, dirs, files in os.walk(self.directory_ct): # delete former intra_file
             for filename in files:
-                if re.search(r'_intracranial', filename): 
+                if re.search(r'_intracranial', filename):
+                    logger.info(f"preprocessData: removing former intracranial file={os.path.join(self.directory_ct, filename)}")
                     os.remove(os.path.join(self.directory_ct, filename))
                     break
-        
+
         # 此处应判别整数
         self.ero_itr = int(self.lineEdit_4.text()) # read 3 parameters from screen
         self.K = int(self.lineEdit_3.text())
@@ -168,9 +183,11 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.thread_1.K = self.K
         self.thread_1.thre = self.thre
         self.thread_1.ero_itr = self.ero_itr
+        logger.info(f"preprocessData: starting Preprocess_thread with patient={self.patient}, directory_ct={self.directory_ct}, directory_surf={self.directory_surf}, K={self.K}, thre={self.thre}, ero_itr={self.ero_itr}")
         self.thread_1.start()
-    
+
     def preprocessFinished(self):
+        logger.info("preprocessData: Preprocess_thread finished")
         find_flag = 0 # check for xxxCT_intracranial_thre_K_ero.nii.gz
         for root, dirs, files in os.walk(self.directory_ct):
             for filename in files:
@@ -179,15 +196,17 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                     self.ero_itr = int(filename.split('_')[-1].split('.')[0]) # read 3 parameters from filename
                     self.K = int(filename.split('_')[-2])
                     self.thre = float(filename.split('_')[-3])
-                    
+
                     self.pushButton_4.setEnabled(True) # enable preprocessView btn
                     self.lineEdit_3.setText(str(self.K)) # display 3 parameters
                     self.lineEdit_4.setText(str(self.ero_itr))
                     self.doubleSpinBox_1.setValue(self.thre*100)
                     find_flag = 1
+                    logger.info(f"preprocessFinished: intracranial file produced={self.CTintra_file}, thre={self.thre}, K={self.K}, ero_itr={self.ero_itr}")
                     break
         if not find_flag:
             # 此处提出警告，预处理失败，没有intra文件！
+            logger.error("preprocessFinished: preprocessing failed, no intracranial file found")
             pass
 
     def optimizeParams(self):
@@ -234,15 +253,18 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                     break
         if not find_flag:
             # 此处提出警告，没有找到intra文件！
+            logger.error("viewIntra: no intracranial file found")
             pass
         else: # intra_file exists and is possible to be OK for following steps
             self.pushButton_5.setEnabled(True) # enable labelGen btn
             self.thread_3.patient = self.patient
             self.thread_3.thre = self.thre
             self.thread_3.CTintra_file = self.CTintra_file
+            logger.info(f"viewIntra: starting PreprocessResult_thread with patient={self.patient}, thre={self.thre}, CTintra_file={self.CTintra_file}")
             self.thread_3.start()
-    
+
     def preprocessView(self, pointsArray):
+        logger.info(f"preprocessView: received {pointsArray.shape[0]} points to render")
         self.xs = pointsArray[:, 0]
         self.ys = pointsArray[:, 1]
         self.zs = pointsArray[:, 2]
@@ -261,6 +283,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.graphicsView.show()
 
     def numberK(self):
+        logger.info("numberK: variable K set, preprocess btn enabled")
         self.pushButton_3.setEnabled(True) # if variable K is set, enable preprocess btn
         self.pushButton_11.setEnabled(True) # ...and the optimize btn
     
@@ -293,17 +316,21 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                     break
         if not find_flag:
             # 此处提出警告，没有找到intra文件！
+            logger.error("labelGen: no intracranial file found")
             pass
         else: # intra_file exists!
             self.thread_2.patient = self.patient
             self.thread_2.directory_ct = self.directory_ct
             self.thread_2.intra_file = self.CTintra_file
             self.thread_2.K = self.K
+            logger.info(f"labelGen: starting GenerateLabel_thread (runs hough3dlines) with patient={self.patient}, directory_ct={self.directory_ct}, intra_file={self.CTintra_file}, K={self.K}")
             self.thread_2.start()
 
     def genLabelFinished(self, k_flag):
-        if k_flag: 
+        logger.info(f"genLabelFinished: GenerateLabel_thread finished with k_flag={k_flag}")
+        if k_flag:
             # 此处应警告，聚类K_check<K
+            logger.warning('Cannot cluster enough electrode tracks!')
             print('Warning: Cannot cluster enough electrode tracks!')
             self.pushButton_1.setEnabled(True) # label btn clicked so disable the above processable btns
             self.pushButton_3.setEnabled(True)
@@ -320,8 +347,10 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                         self.pushButton_6.setEnabled(True) # enable labelView btn
                         self.directory_labels = os.path.join(self.directory_ct, filename)
                         find_flag = 1
+                        logger.info(f"genLabelFinished: labels file produced={self.directory_labels}")
                         break
             if not find_flag:
+                logger.error("genLabelFinished: label generation reported success but no labels file found")
                 pass
             else:
                 self.labels = np.load(self.directory_labels, allow_pickle=True)
@@ -335,6 +364,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                 self.axes.set_ylim(0, 256)
                 self.axes.set_zlim(0, 256)
                 self.axes.set_axis_off()
+                logger.info(f"self.K = {self.K}, len(self.c)={len(self.c)}")
                 for i in range(self.K):
                     indx, indy, indz = np.where(self.labels == i+1)
                     self.axes.scatter(indx, indy, indz, marker='.', c=self.c[i])
@@ -344,6 +374,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                 self.pushButton_8.setEnabled(True) # enable labelDone btn
             
     def viewLabels(self): # btn 6 empty
+        logger.info(f"viewLabels: loading labels from {self.directory_labels}")
         self.pushButton_5.setEnabled(True) # enable label btn
         self.pushButton_8.setEnabled(True) # enable labelDone btn
         # self.pushButton_7.setEnabled(True) # enable contactSeg btn
@@ -365,6 +396,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.graphicsView.show()
     
     def labelsDone(self): # btn 8
+        logger.info("labelsDone: labels confirmed, moving on to contact segmentation")
         self.pushButton_1.setEnabled(False) # disable CTimport btn
         self.pushButton_3.setEnabled(False) # diable prepro btn
         self.pushButton_5.setEnabled(False) # disable label btn
@@ -380,16 +412,18 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.thread_5.diameterSize=2.5
         self.thread_5.spacing=2.5
         self.thread_5.gap=0
+        logger.info(f"contactSeg: starting ContactSegment_thread with K={self.K}, directory_labels={self.thread_5.directory_labels}, patName={self.patient}, numMax={self.thread_5.numMax}, diameterSize={self.thread_5.diameterSize}, spacing={self.thread_5.spacing}, gap={self.thread_5.gap}")
         self.thread_5.start()
-    
+
     def genContactFinished(self):
+        logger.info("genContactFinished: ContactSegment_thread finished")
         self.pushButton_9.setEnabled(True)
-        
+
     def elecAdjust(self):
         pass
 
     def viewContacts(self):
-
+        logger.info(f"viewContacts: saving electrode results for patient={self.patient}, directory_ct={self.directory_ct}")
         # utils.savenpy(filePath=self.directory_ct, patientName=self.patient)
         savenpy(filePath=self.directory_ct, patientName=self.patient)
         
@@ -408,6 +442,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                 elec_number = elec_info.shape[0]
                 self.elec_dict[elec_name] = elec_info
                 self.elec_number_dict[elec_name] = elec_number
+        logger.info(f"viewContacts: loaded {len(self.elec_dict)} electrodes: {self.elec_number_dict}")
         print(self.elec_dict)
         print(self.elec_number_dict)
         for item in self.elec_number_dict:
@@ -420,6 +455,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
             labels_name = lookupTable(subdir=self.directory_surf, patient=self.patient, ctdir=self.directory_ct, elec_label=item)
             self.tableWidget.setItem(row, 2, QTableWidgetItem(labels_name[0]))
             self.elec_label_dict[item] = labels_name
+        logger.info(f"viewContacts: anatomical labels resolved: {self.elec_label_dict}")
         print(self.elec_label_dict)
         # mayaviplot.mayaviView(filePath=DATASETDIR, surfPath=f"{SUBDIR}/subjects", subname=self.patient)
         self.fig = Figure(figsize=(10,10))
@@ -443,14 +479,15 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.pushButton_10.setEnabled(True)
 
     def allSet(self):
+        self.vis3D(filePath=self.directory_ct, self.patient)
 
-        self.vis3D(filePath=self.directory_ct)
-
-    def vis3D(self, filePath):
-        elecs_xyzDict=np.load(os.path.join(filePath, "chnXyzDict.npy"), allow_pickle=True)[()]
+    def vis3D(self, filePath, patName):
+        logger.info(f"vis3D: filePath={filePath}, patName={patName}, directory_surf={self.directory_surf}")
+        elecs_xyzDict=np.load(os.path.join(self.directory_ct, "chnXyzDict.npy"), allow_pickle=True)[()]
         # brain_data=nib.load(f"{self.directory_surf}/mri/orig.mgz")
         brain_data=nib.load(os.path.join(self.directory_surf, 'mri', 'orig.mgz'))
         aff_matrix=brain_data.header.get_affine()
+        logger.info(f"vis3D: loaded {len(elecs_xyzDict)} electrode channels, affine matrix computed")
         print(aff_matrix)
         # verl,facel=nib.freesurfer.read_geometry(f"{self.directory_surf}/surf/lh.pial")
         # verr,facer=nib.freesurfer.read_geometry(f"{self.directory_surf}/surf/rh.pial")
@@ -499,10 +536,12 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
             for j in range(xyz.shape[0]):
                 mlab.points3d(xyz[j,0], xyz[j,1], xyz[j,2], color=(0,0,0), scale_factor=1.5)
             mlab.text3d(xyz[-1,0]+4,xyz[-1,1]+4,xyz[-1,2]+4,chnn,orient_to_camera=True,color=(0,0,1),line_width=10,scale=2)
-            
+
+        logger.info("vis3D: 3D scene drawn")
         mlab.draw()
 
 if __name__ == "__main__":
+    logger.info("Starting Electrodes module standalone")
     app = QtWidgets.QApplication(sys.argv)
     widget = Electrodes()
     widget.showMaximized()

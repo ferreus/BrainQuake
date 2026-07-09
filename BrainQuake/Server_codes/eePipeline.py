@@ -1,4 +1,5 @@
 import os
+import subprocess
 import nibabel as nib
 import numpy as np
 import matplotlib
@@ -13,19 +14,34 @@ from scipy import ndimage
 # CT_dir = f"/Users/fangcai/Documents/MATLAB/{patient}_test/CT"
 # mri_dir = f"/Users/fangcai/Documents/MATLAB/{patient}_test/{patient}/mri"
 SUBJECTS_DIR = f"/usr/local/freesurfer/subjects"
+FREESURFER_HOME = os.getenv('FREESURFER_HOME')
 
-def run(cmd):
+def freesurfer_env_prefix():
+    """Build a shell snippet that sources FreeSurfer's setup script (found via
+    the FREESURFER_HOME env var) so that FreeSurfer commands see the right
+    environment (PATH, SUBJECTS_DIR default, etc.).
+    """
+    if not FREESURFER_HOME:
+        print("Warning: FREESURFER_HOME is not set; FreeSurfer commands may fail to locate their environment")
+        return ""
+    setup_script = os.path.join(FREESURFER_HOME, 'SetUpFreeSurfer.sh')
+    return f"export FREESURFER_HOME={FREESURFER_HOME} && source {setup_script} && "
+
+def run(cmd, use_freesurfer_env=False):
     """
     Print the command.
     Execute a command string on the shell (on bash).
-    
+
     Parameters
     ----------
     cmd : str
         Command to be sent to the shell.
+    use_freesurfer_env : bool, optional
+        whether to source FreeSurfer's SetUpFreeSurfer.sh before running cmd, by default False
     """
-    print(f"Running shell command: {cmd}")
-    os.system(cmd)
+    full_cmd = f"{freesurfer_env_prefix()}{cmd}" if use_freesurfer_env else cmd
+    print(f"Running shell command: {full_cmd}")
+    subprocess.run(full_cmd, shell=True, executable='/bin/bash')
     print(f"Done!")
 
 def align(
@@ -136,7 +152,7 @@ def eep(patient):
 
     # mri_convert
     cmd1 = f"mri_convert {mri_dir}/orig.mgz {mri_dir}/orig.nii.gz"
-    run(cmd1)
+    run(cmd1, use_freesurfer_env=True)
 
     # Registration
     align(

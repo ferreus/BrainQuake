@@ -5,6 +5,7 @@ import os
 import time
 import logging
 import multiprocessing
+import subprocess
 import eePipeline
 
 logging.basicConfig(
@@ -25,12 +26,20 @@ CHECKTIME = 10
 Filepath = os.path.join(FILEPATH, Filename1) # '/home/hello/reconModule_test/testCS/data/recv/task_log.txt'
 Filepath2 = os.path.join(FILEPATH, Filename2) # '/home/hello/reconModule_test/testCS/data/recv/task_done.txt'
 
-def _run_cmd(cmd, num, step):
-    """Run a shell command, logging its start, duration and exit status."""
-    print(cmd)
-    logger.info(f"Task {num}: starting step '{step}': {cmd}")
+def _run_cmd(cmd, num, step, use_freesurfer_env=False):
+    """Run a shell command, logging its start, duration and exit status.
+
+    Parameters
+    ----------
+    use_freesurfer_env : bool, optional
+        whether to source FreeSurfer's SetUpFreeSurfer.sh (located via the
+        FREESURFER_HOME env var) before running cmd, by default False
+    """
+    full_cmd = f"{eePipeline.freesurfer_env_prefix()}{cmd}" if use_freesurfer_env else cmd
+    print(full_cmd)
+    logger.info(f"Task {num}: starting step '{step}': {full_cmd}")
     t0 = time.time()
-    ret = os.system(cmd)
+    ret = subprocess.run(full_cmd, shell=True, executable='/bin/bash').returncode
     elapsed = time.time() - t0
     if ret == 0:
         logger.info(f"Task {num}: step '{step}' completed in {elapsed:.1f}s")
@@ -384,7 +393,7 @@ def reconrun(cmd, num, name, hospital, reconType):
 
     # run recon-all
     task_log(req='freesurfer', num=num, reconType='recon-all', state='running', info=0)
-    _run_cmd(cmd, num, "recon-all")
+    _run_cmd(cmd, num, "recon-all", use_freesurfer_env=True)
 
     # run supplementary cmds
     # cmd3 = f"mris_convert --combinesurfs /usr/local/freesurfer/subjects/{name}/surf/lh.pial /usr/local/freesurfer/subjects/{name}/surf/rh.pial /usr/local/freesurfer/subjects/{name}/{name}.stl"
@@ -394,16 +403,16 @@ def reconrun(cmd, num, name, hospital, reconType):
     # print(cmd4)
     # os.system(cmd4)
     cmd_mri_convert = f"mri_convert {SUBJECTS_DIR}/{name}/mri/orig.mgz {SUBJECTS_DIR}/{name}/mri/orig.nii.gz"
-    _run_cmd(cmd_mri_convert, num, "mri_convert orig.mgz -> orig.nii.gz")
+    _run_cmd(cmd_mri_convert, num, "mri_convert orig.mgz -> orig.nii.gz", use_freesurfer_env=True)
 
     cmd_mri_binarize = f"mri_binarize --i {SUBJECTS_DIR}/{name}/mri/brainmask.mgz --o {SUBJECTS_DIR}/{name}/mri/mask.mgz --min 1"
-    _run_cmd(cmd_mri_binarize, num, "mri_binarize brainmask")
+    _run_cmd(cmd_mri_binarize, num, "mri_binarize brainmask", use_freesurfer_env=True)
 
     cmd_label_convert_rh = f"mri_annotation2label --subject {name} --hemi rh --outdir {SUBJECTS_DIR}/{name}/label"
-    _run_cmd(cmd_label_convert_rh, num, "annotation2label rh")
+    _run_cmd(cmd_label_convert_rh, num, "annotation2label rh", use_freesurfer_env=True)
 
     cmd_label_convert_lh = f"mri_annotation2label --subject {name} --hemi lh --outdir {SUBJECTS_DIR}/{name}/label"
-    _run_cmd(cmd_label_convert_lh, num, "annotation2label lh")
+    _run_cmd(cmd_label_convert_lh, num, "annotation2label lh", use_freesurfer_env=True)
 
     cmd_fslfolder = f"mkdir {SUBJECTS_DIR}/{name}/fslresults"
     _run_cmd(cmd_fslfolder, num, "create fslresults dir")

@@ -1,4 +1,28 @@
 # encoding=utf-8
+#
+# client_ictal.py
+# ----------------
+# PyQt5 GUI module for the "ictal" (seizure) analysis tab of BrainQuake.
+#
+# Workflow implemented here:
+#   1. Load an intracranial EEG recording from an .edf file (via MNE) and
+#      display it as a scrolling multi-channel trace (IctalModule.disp_refresh).
+#   2. Let the user mark a "baseline" (pre-seizure/quiet) time window and a
+#      "target" (seizure) time window by clicking on the trace.
+#   3. Compute the High-Frequency Energy Ratio (HFER) between target and
+#      baseline for every channel (compute_hfer) and use it, combined with
+#      how early each channel's energy rises above threshold
+#      (determine_threshold_onset), to compute the Epileptogenicity Index
+#      (EI) per channel (compute_ei_index). High EI channels are candidate
+#      seizure-onset zone electrodes.
+#   4. Optionally run a full-band spectral analysis: compute a spectrogram
+#      per channel, reduce it with PCA, and cluster channels with k-means to
+#      find electrodes that behave similarly to the high-EI electrodes
+#      (compute_full_band).
+#
+# The heavy computations (full-band spectrogram + PCA + clustering) run on a
+# background QThread (fullband_computation_thread) so the GUI stays
+# responsive.
 import sys
 import os
 import shutil
@@ -31,6 +55,7 @@ from gui_forms.ictal_form import Ictal_gui
 
 
 class figure_thread(QThread):
+    # NOTE: currently unused/dead (run() does nothing) — kept for backward compatibility.
     def __init__(self, parent=None):
         super(figure_thread, self).__init__(parent=parent)
         self.ei = parent.ei_ei
@@ -39,6 +64,9 @@ class figure_thread(QThread):
         pass
 
 class fullband_computation_thread(QThread):
+    # Runs the (slow) full-band spectrogram + PCA + k-means clustering off the
+    # GUI thread, then emits fullband_done_sig with the results so the main
+    # thread can plot them (see IctalModule.fullband_plot_func).
     fullband_done_sig = QtCore.pyqtSignal(object)
 
     def __init__(self, parent=None, raw_signal=None, ei=None, fs=2000):
@@ -54,6 +82,9 @@ class fullband_computation_thread(QThread):
 
 
 def get_name_fromEdf(file_absPath):
+    # Read the patient name straight out of the EDF header (byte offsets are
+    # fixed by the EDF spec: 8-byte version field, then an 80-byte local
+    # patient identification field with space-separated sub-fields).
     with open(file_absPath,'rb') as fh:
         fh.read(8)
         pinfo=fh.read(80).decode('latin-1').rstrip()
@@ -63,6 +94,10 @@ def get_name_fromEdf(file_absPath):
 
 
 def compute_hfer(target_data, base_data, fs):
+    # High-Frequency Energy Ratio: sliding (0.5s) windowed energy of each
+    # channel, normalized by that channel's average energy during the
+    # baseline window. Values >> 1 mean the channel got much "louder"
+    # (relative to its own quiet-period baseline) during the target window.
     target_sq = target_data ** 2
     base_sq = base_data ** 2
     window = int(fs / 2.0)
@@ -77,6 +112,10 @@ def compute_hfer(target_data, base_data, fs):
 
 
 def determine_threshold_onset(target, base):
+    # Per-channel seizure "onset" sample index: the first sample in the
+    # target window whose energy exceeds (baseline max + 20 * baseline std).
+    # Channels that never cross the threshold are given the last possible
+    # index (i.e. they look like they "never" turned on).
     base_data = base.copy()
     target_data = target.copy()
     sigma = np.std(base_data, axis=1, ddof=1)
@@ -93,6 +132,14 @@ def determine_threshold_onset(target, base):
 
 
 def compute_ei_index(target, base, fs):
+    # Epileptogenicity Index (EI) per channel, following the classic
+    # Bartolomei et al. formulation: EI = sqrt(energy_coefficient * time_coefficient).
+    #  - energy_coefficient (hfer below) = HFER averaged over the first 0.25s
+    #    after the earliest channel crosses its onset threshold.
+    #  - time_coefficient (onset_rank below) = 1 / (rank of how early this
+    #    channel's own onset occurred, 1 = earliest). Channels that activate
+    #    first get the highest time coefficient.
+    # The result is normalized to [0, 1] (relative to the max EI channel).
     ei = np.zeros([1, target.shape[0]])
     hfer = np.zeros([1, target.shape[0]])
     onset_rank = np.zeros([1, target.shape[0]])
@@ -128,6 +175,10 @@ def save_ei_result(edf_filename, chn_names, ei, hfer, onset_rank):
 
 
 def choose_kmeans_k(data, k_range):
+    # Pick a cluster count k from k_range using an "elbow" heuristic: fit
+    # k-means for every candidate k, look at how much inertia (SSE) drops
+    # from one k to the next, and take the first k where that drop falls
+    # below the average drop (i.e. adding more clusters stops helping much).
     k_sse = []
     for k in k_range:
         tmp_kmeans = KMeans(n_clusters=k)
@@ -141,6 +192,10 @@ def choose_kmeans_k(data, k_range):
 
 
 def find_ei_cluster_ratio(pei, labels, ei_elec_num=10):
+    # Given per-channel cluster labels, find which cluster the top-EI
+    # electrodes mostly belong to. If more than half of the top electrodes
+    # share one cluster, return that cluster; fall back to a looser
+    # 1/3 majority; otherwise give up (None) and treat clusters as unrelated.
     top_elec_ind = list(np.argsort(-pei)[:ei_elec_num])
     top_elec_labels = list(labels[top_elec_ind])
     top_elec_count = {}
@@ -159,6 +214,8 @@ def find_ei_cluster_ratio(pei, labels, ei_elec_num=10):
 
 
 def pad_zero(data, length):
+    # Zero-pad a 1D signal up to `length` samples (needed so every channel's
+    # spectrogram in cal_specs_matrix has the same number of time bins).
     data_len = len(data)
     if data_len < length:
         # tmp_data = np.zeros(length) ### test!!!
@@ -169,6 +226,7 @@ def pad_zero(data, length):
 
 
 def cal_zscore(data):
+    # Row-wise (per-channel) z-score normalization.
     dmean = np.mean(data, axis=1)
     dstd = np.std(data, axis=1)
     norm_data = (data - dmean[:, None]) / dstd[:, None]
@@ -176,6 +234,10 @@ def cal_zscore(data):
 
 
 def cal_specs_matrix(raw, sfreq, method='STFT'):
+    # Compute a (log-magnitude, smoothed) STFT spectrogram for every channel
+    # in `raw`, crop it to 0-300 Hz, then flatten each channel's spectrogram
+    # into one row -> returns a (n_channels, n_freq*n_time) feature matrix
+    # that compute_full_band feeds into PCA.
     win_len = 0.5
     overlap = 0.8
     freq_range = 300
@@ -204,12 +266,19 @@ def cal_specs_matrix(raw, sfreq, method='STFT'):
 
 
 def norm_specs(specs):
+    # Column-wise (per feature/frequency-time bin) z-score normalization,
+    # so PCA in compute_full_band isn't dominated by high-variance bins.
     specs_mean = specs - specs.mean(axis=0)
     specs_norm = specs_mean / specs_mean.std(axis=0)
     return specs_norm
 
 
 def compute_full_band(raw_data, sfreq, ei):
+    # Cluster channels by spectral shape (not just EI) to reveal electrodes
+    # that share the seizure-onset zone's spectral signature even if their
+    # own EI score wasn't in the top 10: spectrogram -> PCA (10 comps) ->
+    # k-means, then keep whichever cluster the top-10 EI electrodes mostly
+    # fall into (find_ei_cluster_ratio).
     ei_elec_num = 10
     print('computing spectrogram')
     raw_specs, spec_shape, t, f = cal_specs_matrix(raw_data, sfreq, 'STFT')
@@ -236,6 +305,8 @@ def compute_full_band(raw_data, sfreq, ei):
 
 # main class
 class IctalModule(QWidget, Ictal_gui):
+    # Qt widget backing the "ictal" tab; the actual widgets/layout come from
+    # Ictal_gui (gui_forms/ictal_form.py) via setupUi(self).
     def __init__(self,parent):
         super(IctalModule, self).__init__()
         self.setupUi(self)
@@ -245,6 +316,7 @@ class IctalModule(QWidget, Ictal_gui):
 
     # set functions
     def center(self):
+        # Center this window on the screen.
         qr = self.frameGeometry()
         cp = QDesktopWidget().availableGeometry().center()
         qr.moveCenter(cp)
@@ -304,6 +376,11 @@ class IctalModule(QWidget, Ictal_gui):
 
     # init display
     def init_display_params(self):
+        # Reset all trace-viewer state (visible channel window, time window,
+        # amplitude scale, baseline/target markers) back to defaults, and
+        # (re)compute the vertical layout constants used by disp_refresh:
+        # dr = spacing between adjacent channel rows, y0/y1 = axes y-limits
+        # that fit disp_chans_num rows stacked dr apart.
         self.disp_chans_num = 20
         self.disp_chans_start = 0
         self.disp_wave_mul = 10
@@ -335,6 +412,11 @@ class IctalModule(QWidget, Ictal_gui):
 
     # refresh display
     def disp_refresh(self):
+        # Redraw the multi-channel trace view for the currently visible
+        # channel range (disp_chans_start .. +disp_chans_num) and time
+        # window (disp_time_start .. +disp_time_win). Each channel is drawn
+        # as its own line, stacked vertically dr apart and labeled with its
+        # channel name on the y-axis (like a paper EEG strip chart).
         self.canvas.axes.cla()
         self.canvas.axes.set_ylim(self.y0, self.y1)
         segs = []
@@ -342,6 +424,7 @@ class IctalModule(QWidget, Ictal_gui):
         self.disp_start = int(self.disp_time_start*self.fs)
         self.disp_end = int((self.disp_time_start + self.disp_time_win)*self.fs)
         self.disp_end=min(self.disp_end,self.modified_edf_data.shape[1])
+        # clamp the visible channel window to the available channels
         if self.disp_chans_num>=self.modified_edf_data.shape[0]:
             self.disp_chans_start=0
             self.disp_chans_num=self.modified_edf_data.shape[0]
@@ -376,6 +459,10 @@ class IctalModule(QWidget, Ictal_gui):
 
     # preprecess xw
     def preprocess_xw(self):
+        # Pull the raw sample array + sampling rate + channel names out of
+        # the MNE Raw object, and stash an untouched copy (origin_data /
+        # origin_chans) so "reset" and the EI/spectrogram click-through
+        # views can always get back to the unfiltered signal.
         self.fs = self.edf_data.info['sfreq']
         self.disp_ch_names = self.edf_data.ch_names
         self.chans_list.addItems(self.disp_ch_names)
@@ -387,6 +474,8 @@ class IctalModule(QWidget, Ictal_gui):
 
     # disp button slot functions
     def reset_data_display_func(self):
+        # "Reset" button: discard filtering/channel deletion and any
+        # baseline/target selections, go back to the raw trace view.
         self.target_pos = np.array([0.0, self.edf_time_max])
         self.baseline_pos = np.array([0.0, 1.0])
         self.init_display_params()
@@ -400,12 +489,14 @@ class IctalModule(QWidget, Ictal_gui):
         self.disp_refresh()
 
     def disp_win_down_func(self):
+        # Scroll the visible channel window down (toward lower indices).
         self.disp_chans_start -= self.disp_chans_num
         if self.disp_chans_start <= 0:
             self.disp_chans_start = 0
         self.disp_refresh()
 
     def disp_win_up_func(self):
+        # Scroll the visible channel window up (toward higher indices).
         self.disp_chans_start += self.disp_chans_num
         # if self.disp_chans_start + self.disp_chans_num >= self.edf_nchans:
         if self.disp_chans_start + self.disp_chans_num >= self.modified_edf_data.shape[0]:
@@ -414,6 +505,7 @@ class IctalModule(QWidget, Ictal_gui):
         self.disp_refresh()
 
     def disp_more_chans_func(self):
+        # Show twice as many channel rows at once (zoom out vertically).
         self.disp_chans_num *= 2
         # if self.disp_chans_num >= self.edf_nchans:
         if self.disp_chans_num >= self.modified_edf_data.shape[0]:
@@ -424,46 +516,54 @@ class IctalModule(QWidget, Ictal_gui):
         self.disp_refresh()
 
     def disp_less_chans_func(self):
+        # Show half as many channel rows at once (zoom in vertically).
         self.disp_chans_num = int(self.disp_chans_num / 2.0)
         if self.disp_chans_num <= 1:
             self.disp_chans_num = 1
         self.disp_refresh()
 
     def disp_add_mag_func(self):
+        # Increase per-channel amplitude scaling (taller waveforms).
         self.disp_wave_mul *= 1.5
         print(self.disp_wave_mul)
         self.disp_refresh()
 
     def disp_drop_mag_func(self):
+        # Decrease per-channel amplitude scaling (shorter waveforms).
         self.disp_wave_mul *= 0.75
         print(self.disp_wave_mul)
         self.disp_refresh()
 
     def disp_win_left_func(self):
+        # Scroll the time window backward by 20% of its width.
         self.disp_time_start -= 0.2 * self.disp_time_win
         if self.disp_time_start <= 0:
             self.disp_time_start = 0
         self.disp_refresh()
 
     def disp_win_right_func(self):
+        # Scroll the time window forward by 20% of its width.
         self.disp_time_start += 0.2 * self.disp_time_win
         if self.disp_time_start + self.disp_time_win >= self.edf_time:
             self.disp_time_start = self.edf_time - self.disp_time_win
         self.disp_refresh()
 
     def disp_shrink_time_func(self):
+        # Widen the visible time window (zoom out horizontally).
         self.disp_time_win += 2
         if self.disp_time_win >= self.edf_time:
             self.disp_time_win = self.edf_time
         self.disp_refresh()
 
     def disp_expand_time_func(self):
+        # Narrow the visible time window (zoom in horizontally).
         self.disp_time_win -= 2
         if self.disp_time_win <= 2:
             self.disp_time_win = 2
         self.disp_refresh()
 
     def disp_scroll_mouse(self, e):
+        # Mouse-wheel over the canvas pans the time window left/right.
         if e.button == 'up':
             self.disp_win_left_func()
         elif e.button == 'down':
@@ -472,6 +572,9 @@ class IctalModule(QWidget, Ictal_gui):
 
     # filter & del chans
     def filter_data(self):
+        # Common-average reference, then a 50/100/150 Hz notch (mains
+        # interference + harmonics) followed by a user-specified bandpass
+        # (disp_filter_low/high text fields), all zero-phase (filtfilt).
         self.modified_edf_data=self.modified_edf_data-np.mean(self.modified_edf_data,axis=0)
         #notch filter
         notch_freqs=np.arange(50,151,50)
@@ -490,6 +593,8 @@ class IctalModule(QWidget, Ictal_gui):
         self.hfer_button.setEnabled(True)
 
     def delete_chans(self):
+        # Remove the channels currently selected in the channel list widget
+        # from the working (modified) data + channel-name list.
         deleted_chans = self.chans_list.selectedItems()
         deleted_list = [i.text() for i in deleted_chans]
         deleted_ind_list = []
@@ -505,14 +610,21 @@ class IctalModule(QWidget, Ictal_gui):
 
     # select base time & target time
     def choose_baseline(self):
+        # Arm "click-to-select" mode: the next two clicks on the canvas
+        # (handled in canvas_press_button) set the baseline window bounds.
         self.baseline_mouse = 1
         self.baseline_count = 0
 
     def choose_target(self):
+        # Arm "click-to-select" mode for the seizure/target window bounds.
         self.target_mouse = 1
         self.target_count = 0
 
     def canvas_press_button(self, e):
+        # Mouse click handler on the trace canvas: while baseline/target
+        # selection mode is armed, each click records one boundary
+        # (e.xdata = clicked time in seconds) and draws a vertical marker
+        # line; after 2 clicks it asks the user to confirm the window.
         if hasattr(self,'baseline_mouse') and self.baseline_mouse == 1:
             self.baseline_pos[self.baseline_count] = e.xdata
             print(e.xdata)
@@ -554,7 +666,11 @@ class IctalModule(QWidget, Ictal_gui):
 
     # ei computation
     def ei_computation_func(self):
-        # local
+        # "Compute EI" button: slice the filtered data into baseline/target
+        # windows (from the user's click selections), run compute_hfer +
+        # compute_ei_index, then rebuild an unfiltered-but-notched copy of
+        # the surviving channels (tmp_origin_remainData) that the various
+        # click-to-inspect plots use to show the "clean" raw signal/spectrogram.
         QMessageBox.information(self,'','EI computation starting, please wait')
         self.ei_base_start = int(self.baseline_pos[0]*self.fs)
         self.ei_base_end = int(self.baseline_pos[1]*self.fs)
@@ -585,6 +701,11 @@ class IctalModule(QWidget, Ictal_gui):
 
     # hfer computation
     def hfer_computation_func(self):
+        # "Compute HFER" button: same baseline/target windows as EI, but
+        # renders the normalized HFER as a channels-x-time heatmap (instead
+        # of collapsing it to one EI score per channel). Clicking a row in
+        # the heatmap opens that channel's raw signal + spectrogram
+        # (hfer_press_func).
         QMessageBox.information(self,'','HFER computation starting, please wait')
         self.hfer_base_start = int(self.baseline_pos[0]*self.fs)
         self.hfer_base_end = int(self.baseline_pos[1]*self.fs)
@@ -615,6 +736,9 @@ class IctalModule(QWidget, Ictal_gui):
 
     # press hfer to show original signal and spectrogram
     def hfer_press_func(self, e):
+        # Click handler for the HFER heatmap: the click's y-coordinate maps
+        # to a channel row; plot that channel's raw signal (top) and its
+        # z-scored, smoothed spectrogram (bottom) in a separate figure.
         chosen_elec_index = int(e.ydata)  # int(round(e.ydata))
 
         # compute spectrogram
@@ -665,6 +789,12 @@ class IctalModule(QWidget, Ictal_gui):
         plt.show()
 
     def ei_plot_xw_func(self):
+        # Plot the per-channel EI bar chart (threshold = mean + 1 std,
+        # channels above it get labeled), plus its two components (HFER and
+        # onset-time coefficient) as separate bar charts. Clicking a bar in
+        # the EI figure opens that channel's signal/spectrogram
+        # (ei_press_func); right-click there lets the user drag the
+        # threshold line interactively.
         ei_mu = np.mean(self.ei_ei)
         ei_std = np.std(self.ei_ei)
         self.ei_thresh = ei_mu + ei_std
@@ -696,6 +826,9 @@ class IctalModule(QWidget, Ictal_gui):
 
 
     def ei_press_func(self, e):
+        # Left click on an EI bar: show that channel's signal + spectrogram.
+        # Right click: treat the click's y-value as a new EI threshold and
+        # redraw the bar chart/labels with it.
         if e.button == 1:
             chosen_elec_index = int(round(e.xdata))
             # compute spectrum
@@ -764,6 +897,10 @@ class IctalModule(QWidget, Ictal_gui):
 
     # full band computation
     def fullband_computation_func(self):
+        # "Full band" button: kick off compute_full_band on a background
+        # thread (fullband_computation_thread) so the GUI doesn't freeze
+        # during the spectrogram/PCA/k-means computation; results are
+        # delivered to fullband_plot_func via a Qt signal.
         self.fullband_button.setEnabled(False)
 
         self.fullband_base_start = int(self.baseline_pos[0] * self.fs)
@@ -781,6 +918,10 @@ class IctalModule(QWidget, Ictal_gui):
 
     # full band plot function
     def fullband_plot_func(self, fullband_res):
+        # Scatter the first 2 PCA components per channel, colored by
+        # k-means cluster label, with the chosen (EI-matching) cluster's
+        # channel names annotated. Clicking a point opens that channel's
+        # signal/spectrogram (fullband_press_func).
         QMessageBox.information(self, '', 'fullband computation done')
         self.fullband_button.setEnabled(True)
 
@@ -802,7 +943,9 @@ class IctalModule(QWidget, Ictal_gui):
         plt.show()
 
     def fullband_press_func(self, e):
-
+        # Click handler for the full-band PCA scatter: find the nearest
+        # point (channel) to the click in PCA space and plot its raw
+        # signal + spectrogram, same as the EI/HFER click-through views.
         pos_x = e.xdata
         pos_y = e.ydata
         distance = np.sum((np.array(self.spec_pca[:, 0:2]) - np.array([pos_x, pos_y])) ** 2, axis=-1)

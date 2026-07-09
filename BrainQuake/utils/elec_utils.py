@@ -8,6 +8,9 @@ import sys
 import os
 import re
 import math
+import time
+import logging
+import subprocess
 import numpy as np
 from numpy import ndarray
 import nibabel as nib
@@ -15,6 +18,8 @@ from scipy import ndimage
 from sklearn.mixture import GaussianMixture as GMM
 from sklearn.linear_model import LinearRegression, Lasso
 from PyQt5.QtCore import QThread, pyqtSignal
+
+logger = logging.getLogger(__name__)
 # import matplotlib
 # matplotlib.use("Qt5Agg")
 # from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -27,17 +32,29 @@ CMD_Hough3D = '.\\hough-3d-lines\\hough3dlines.exe'
 
 def run(cmd):
     """
-    Print the command.
-    Execute a command string on the shell (on bash).
-    
+    Log and execute a command string on the shell (on bash), logging
+    the command, its duration, exit status and captured output.
+
     Parameters
     ----------
     cmd : str
         Command to be sent to the shell.
     """
+    logger.info(f"Running shell command: {cmd}")
     print(f"Running shell command: {cmd}")
-    os.system(cmd)
+    t0 = time.time()
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    elapsed = time.time() - t0
+    if result.stdout:
+        logger.info(f"Command stdout: {result.stdout.strip()}")
+    if result.stderr:
+        logger.info(f"Command stderr: {result.stderr.strip()}")
+    if result.returncode == 0:
+        logger.info(f"Command finished in {elapsed:.1f}s with return code {result.returncode}: {cmd}")
+    else:
+        logger.error(f"Command failed in {elapsed:.1f}s with return code {result.returncode}: {cmd}")
     print(f"Done!\n")
+    return result
 
 def align(inp, ref, xfm=None, out=None, dof=12, searchrad=True, bins=256, interp=None, cost="mutualinfo", sch=None, wmseg=None, init=None, finesearch=None,):
     """Aligns two images using FSLs flirt function and stores the transform between them
@@ -136,17 +153,24 @@ def dataExtraction(intraFile, thre=0.2):
     return xs, ys, zs
 
 def trackRecognition(patient, cmd_hough3d, CTresult_dir, intraFile, thre=0.2):
-    
+    logger.info(f"trackRecognition: patient={patient}, cmd_hough3d={cmd_hough3d}, CTresult_dir={CTresult_dir}, intraFile={intraFile}, thre={thre}")
+
     xs, ys, zs = dataExtraction(intraFile, thre)
-    
+
     X = np.transpose(np.array((xs, ys, zs)))
     # print(X.shape)
     # fname = f"{CTresult_dir}{patient}_3dPointClouds.dat"
     fname = os.path.join(CTresult_dir, f"{patient}_3dPointClouds.dat")
     np.savetxt(fname, X, fmt='%.4f', delimiter=',', newline='\n', header='point clouds', footer='', comments='# ', encoding=None)
-    
-    cmd_hough = f"{cmd_hough3d} -o {CTresult_dir}{patient}.txt -minvotes 5 {fname}"
-    run(cmd=cmd_hough)
+    logger.info(f"trackRecognition: wrote {X.shape[0]} point-cloud voxels to {fname}")
+
+    outfile = f"{CTresult_dir}{patient}.txt"
+    hough_args = ["-o", outfile, "-minvotes", "5", fname]
+    cmd_hough = f"{cmd_hough3d} -o {outfile} -minvotes 5 {fname}"
+    logger.info(f"trackRecognition: hough3dlines executable={cmd_hough3d}, args={hough_args}")
+    print(f"Running cmd: [{cmd_hough}]...")
+    result = run(cmd=cmd_hough)
+    logger.info(f"trackRecognition: hough3dlines command={cmd_hough!r}, returncode={result.returncode}")
     return xs, ys, zs
 
 def locateLine(row, info):
@@ -169,6 +193,7 @@ class Preprocess_thread(QThread):
         super(Preprocess_thread, self).__init__()
 
     def run(self): # erode, skull, intra_save
+        logger.info(f"Preprocess_thread: starting for patient={self.patient}, directory_ct={self.directory_ct}, directory_surf={self.directory_surf}, K={self.K}, thre={self.thre}, ero_itr={self.ero_itr}")
         mask_file = os.path.join(self.directory_surf, "mri", "mask.mgz")
         img_mask = nib.load(mask_file)
         data_mask = img_mask.get_fdata()
@@ -191,6 +216,7 @@ class Preprocess_thread(QThread):
         img0 = nib.Nifti1Image(data_ct, img_ct.affine)
         intra_file = os.path.join(self.directory_ct, f"{self.patient}CT_intracranial_{self.thre}_{self.K}_{self.ero_itr}.nii.gz")
         nib.save(img0, intra_file)
+        logger.info(f"Preprocess_thread: finished, wrote intracranial file={intra_file}")
         self.finished.emit()
 
 class PreprocessResult_thread(QThread):
@@ -201,9 +227,11 @@ class PreprocessResult_thread(QThread):
         super(PreprocessResult_thread, self).__init__()
 
     def run(self):
+        logger.info(f"PreprocessResult_thread: starting for patient={self.patient}, thre={self.thre}, CTintra_file={self.CTintra_file}")
         intra_file = self.CTintra_file
         xs, ys, zs = dataExtraction(intraFile=intra_file, thre=self.thre)
         pointsArray = np.transpose(np.vstack((xs, ys, zs)))
+        logger.info(f"PreprocessResult_thread: finished, extracted {pointsArray.shape[0]} points")
         self.send_axes.emit(pointsArray)
 
 class GenerateLabel_thread(QThread):
@@ -214,16 +242,19 @@ class GenerateLabel_thread(QThread):
         super(GenerateLabel_thread, self).__init__()
 
     def run(self):
+        logger.info(f"GenerateLabel_thread: starting for patient={self.patient}, directory_ct={self.directory_ct}, intra_file={self.intra_file}, K={self.K}")
         # process 3d line hough transform
         # hough_file = f"{self.directory_ct}{self.patient}.txt"
         hough_file = os.path.join(self.directory_ct, f"{self.patient}.txt")
         if not os.path.exists(hough_file):
+            logger.info(f"GenerateLabel_thread: no cached hough file at {hough_file}, running hough3dlines via trackRecognition")
             xs, ys, zs = trackRecognition(patient=self.patient, cmd_hough3d=CMD_Hough3D, CTresult_dir=self.directory_ct, intraFile=self.intra_file, thre=0)
         else: # temporarily
             # xs, ys, zs = utils.trackRecognition(patient=patient, cmd_hough3d=CMD_Hough3D, CTresult_dir=CTresult_dir, intraFile=intra_file, thre=Thre)
+            logger.info(f"GenerateLabel_thread: reusing cached hough file at {hough_file}, skipping hough3dlines")
             xs, ys, zs = dataExtraction(intraFile=self.intra_file, thre=0)
             pass
-        
+
         # read detected lines' info
         elec_track = []
         with open(hough_file, 'r') as f:
@@ -236,6 +267,7 @@ class GenerateLabel_thread(QThread):
         # print(elec_track)
         elec_track = np.array(elec_track)
         K_check = elec_track.shape[0]
+        logger.info(f"GenerateLabel_thread: hough3dlines result: {K_check} tracks detected (K={self.K} requested)")
         if K_check < self.K:
             print(f"Warning: {K_check} tracks were detected, but {self.K} electrodes were implanted;")
             self.finished.emit(1)
@@ -255,7 +287,7 @@ class GenerateLabel_thread(QThread):
             gmm = GMM(n_components=self.K, covariance_type='full',means_init=centroids, random_state=None).fit(X)
             labels = gmm.predict(X)
             # print(labels)
-    
+
             Labels = np.zeros((256, 256, 256)) # labeled space
             for i in range(self.K):
                 ind = np.where(labels == i)
@@ -417,13 +449,16 @@ class ContactSegment_thread(QThread):
         super(ContactSegment_thread, self).__init__()
 
     def run(self):
+        logger.info(f"ContactSegment_thread: starting for patient={self.patName}, K={self.K}, directory_labels={self.directory_labels}, numMax={self.numMax}, diameterSize={self.diameterSize}, spacing={self.spacing}, gap={self.gap}")
         print('Yaah!')
         for i in range(self.K):
             iLabel = i + 1
             # xxx = electrode.ElectrodeSeg(filePath=self.directory_labels, patName=self.patName, iLabel=iLabel, numMax=self.numMax, diameterSize=self.diameterSize, spacing=self.spacing, gap=self.gap)
             xxx = ElectrodeSeg(filePath=self.directory_labels, patName=self.patName, iLabel=iLabel, numMax=self.numMax, diameterSize=self.diameterSize, spacing=self.spacing, gap=self.gap)
             xxx.pipeline()
+            logger.info(f"ContactSegment_thread: segmented electrode label={iLabel}, name={xxx.nameLabel}, {xxx.elecPos.shape[0]} contacts")
             print(xxx.elecPos)
+        logger.info("ContactSegment_thread: finished")
         self.finished.emit()
 
 def savenpy(filePath, patientName):
