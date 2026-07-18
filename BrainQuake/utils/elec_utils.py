@@ -254,7 +254,7 @@ class GenerateLabel_thread(QThread):
             for i in range(self.K):
                 ind = np.where(labels == i)
                 Labels[xs[ind], ys[ind], zs[ind]] = i + 1
-            np.save(os.path.join(self.directory_ct, f"{self.patient}_labels.npy"), Labels, allow_pickle=True, fix_imports=True)
+            np.save(os.path.join(self.directory_ct, f"{self.patient}_labels.npy"), Labels, allow_pickle=True)
             self.finished.emit(0)
 
 # class LabelResult_thread(QThread):

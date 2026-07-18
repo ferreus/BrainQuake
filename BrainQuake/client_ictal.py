@@ -1,5 +1,7 @@
 # encoding=utf-8
 import sys
+import os
+import shutil
 
 from PyQt5.QtWidgets import QApplication,  QSizePolicy, QMessageBox, QWidget, \
     QPushButton, QLineEdit, QDesktopWidget, QGridLayout, QFileDialog,  QListWidget, QLabel,QFrame,QGroupBox
@@ -109,6 +111,20 @@ def compute_ei_index(target, base, fs):
     if np.max(ei) > 0:
         ei = ei / np.max(ei)
     return ei, hfer, onset_rank#,channel_onset
+
+
+def save_ei_result(edf_filename, chn_names, ei, hfer, onset_rank):
+    """Persist EI results next to the edf file, in an EIdets/ folder alongside it -- mirrors
+    where HI_apis.py saves HFOdets/ next to the inter-ictal edf -- so downstream steps
+    (soz_result.py) can reuse them instead of recomputing EI, and nothing lands in whatever
+    directory the app happened to be launched from."""
+    filedir = os.path.dirname(os.path.abspath(edf_filename))
+    results_dir = os.path.join(filedir, 'EIdets')
+    os.makedirs(results_dir, exist_ok=True)
+    file_pre_ext = os.path.basename(edf_filename).split('.')[0]
+    out_path = os.path.join(results_dir, file_pre_ext + '_ei.npz')
+    np.savez(out_path, ei=ei, hfer=hfer, onset_rank=onset_rank, chn_names=np.array(chn_names))
+    return out_path
 
 
 def choose_kmeans_k(data, k_range):
@@ -224,6 +240,7 @@ class IctalModule(QWidget, Ictal_gui):
         super(IctalModule, self).__init__()
         self.setupUi(self)
         self.parent=parent
+        self.subject_dir = ''
         # self.initUI()
 
     # set functions
@@ -234,10 +251,25 @@ class IctalModule(QWidget, Ictal_gui):
         self.move(qr.topLeft())
 
 
+    # subject dir: everything this module saves (a copy of the edf, EI results) lives
+    # under here, so later steps (SOZ Result) can find it from the subject dir alone
+    def dialog_subject_dir(self):
+        path = QFileDialog.getExistingDirectory(self, 'select subject dir (e.g. data/<subject>)')
+        if path:
+            self.subject_dir = path
+            self.lineedit_subject_dir.setText(path)
+            self.button_inputedf.setEnabled(True)
+
     # input edf data
     def dialog_inputedfdata(self):
-        self.mat_filename, b = QFileDialog.getOpenFileName(self, 'open edf file', './', '(*.edf)')
-        if self.mat_filename:
+        picked_filename, b = QFileDialog.getOpenFileName(self, 'open edf file', './', '(*.edf)')
+        if picked_filename:
+            edf_dir = os.path.join(self.subject_dir, 'edf')
+            os.makedirs(edf_dir, exist_ok=True)
+            dest_path = os.path.join(edf_dir, os.path.basename(picked_filename))
+            if os.path.abspath(picked_filename) != os.path.abspath(dest_path):
+                shutil.copy2(picked_filename, dest_path)
+            self.mat_filename = dest_path
             # load data
             self.patient_name = self.lineedit_patient_name.text()
             self.edf_data = mne.io.read_raw_edf(self.mat_filename, preload=True, stim_channel=None)
@@ -320,13 +352,12 @@ class IctalModule(QWidget, Ictal_gui):
 
             tmp_time = np.linspace(self.disp_start/self.fs, self.disp_end/self.fs, self.disp_end-self.disp_start)
             tmp_data = tmp_data * self.disp_wave_mul
-            segs.append(np.hstack((tmp_time[:, np.newaxis], tmp_data[:, np.newaxis])))
-            ticklocs.append((i - self.disp_chans_start) * self.dr)
-        offsets = np.zeros((self.disp_chans_num, 2), dtype=float)
-        offsets[:, 1] = ticklocs
+            tickloc = (i - self.disp_chans_start) * self.dr
+            segs.append(np.hstack((tmp_time[:, np.newaxis], (tmp_data + tickloc)[:, np.newaxis])))
+            ticklocs.append(tickloc)
         colors = self.edf_line_colors[self.disp_chans_start:self.disp_chans_start + self.disp_chans_num]
         # linewidths=
-        lines = LineCollection(segs, offsets=offsets, linewidths=0.7,transOffset=None,colors='k')  # ,colors=colors,transOffset=None)
+        lines = LineCollection(segs, linewidths=0.7,colors='k')
         disp_chan_names = self.disp_ch_names[
                           self.disp_chans_start:(self.disp_chans_start + self.disp_chans_num)]
         self.canvas.axes.set_xlim(segs[0][0, 0], segs[0][-1, 0])
@@ -535,6 +566,9 @@ class IctalModule(QWidget, Ictal_gui):
         self.ei_norm_target, self.ei_norm_base = compute_hfer(self.ei_target_data, self.ei_baseline_data, self.fs)
         self.ei_ei, self.ei_hfer, self.ei_onset_rank = compute_ei_index(self.ei_norm_target, self.ei_norm_base,
                                                                            self.fs)
+        ei_result_path = save_ei_result(self.mat_filename, self.disp_ch_names, self.ei_ei, self.ei_hfer,
+                                         self.ei_onset_rank)
+        print(f'EI results saved to {ei_result_path}')
         #for click-display signals
         self.tmp_origin_edf_data = self.origin_data.copy()
         remain_chInd = np.array([x in self.disp_ch_names for x in self.origin_chans])

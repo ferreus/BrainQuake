@@ -2,18 +2,19 @@ import mne
 import numpy as np
 import os
 import gc
+import shutil
 # from HI_utils import *
 from .interictal_utils import *
 
 segment_time=50
 
-def HI_preprocess_file(filename,remain_chns,highpass_freqband,proBar):
-    filedir=os.path.dirname(filename)
+def HI_preprocess_file(filename,remain_chns,highpass_freqband,progress_cb):
+    filedir=os.path.dirname(os.path.abspath(filename))
     fileBaseName=os.path.basename(filename)
     filePreExt=fileBaseName.split('.')[0]
-    fileResultsDir='./HFOdets/'+filePreExt
+    fileResultsDir=os.path.join(filedir,'HFOdets',filePreExt)
     if os.path.exists(fileResultsDir):
-        os.system('rm -r '+fileResultsDir)
+        shutil.rmtree(fileResultsDir)
         os.makedirs(fileResultsDir)
     else:
         os.makedirs(fileResultsDir)
@@ -45,24 +46,24 @@ def HI_preprocess_file(filename,remain_chns,highpass_freqband,proBar):
 
         del batch_data,batch_enve
         gc.collect()
-        proBar.setValue(90*(id+1)/time_ranges.shape[0])
+        progress_cb(int(90*(id+1)/time_ranges.shape[0]))
 
 
 
 def HI_count_highEvents_chns(filename,rel_thresh,abs_thresh,min_gap,min_last):
-    filedir=os.path.dirname(filename)
+    filedir=os.path.dirname(os.path.abspath(filename))
     fileBaseName=os.path.basename(filename)
     filePreExt=fileBaseName.split('.')[0]
-    fileResultsDir='./HFOdets/'+filePreExt
+    hfoDetsDir=os.path.join(filedir,'HFOdets')
+    fileResultsDir=os.path.join(hfoDetsDir,filePreExt)
 
 
     file_highEnve_times,file_highEnve_chnsCount,file_chnsNames=find_high_enveTimes_dir(fileResultsDir,segment_time,rel_thresh=rel_thresh,
                                         abs_thresh=abs_thresh,min_gap=min_gap,min_last=min_last)
 
-    np.savez(os.path.join('./HFOdets/',filePreExt+'_events.npz'),file_highEventsCount=file_highEnve_chnsCount,file_chnsNames=file_chnsNames,
-             file_highEvents_times=file_highEnve_times)
-    os.system('rm -r '+fileResultsDir)
-    os.system('trash-empty')
+    np.savez(os.path.join(hfoDetsDir,filePreExt+'_events.npz'),file_highEventsCount=file_highEnve_chnsCount,file_chnsNames=file_chnsNames,
+             file_highEvents_times=np.array(file_highEnve_times,dtype=object))
+    shutil.rmtree(fileResultsDir)
 
     return [file_highEnve_chnsCount,file_chnsNames,file_highEnve_times]
 

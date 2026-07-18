@@ -64,12 +64,31 @@ class Interictal_gui(object):
         self.lineedit_patient_name.setStyleSheet(
             "QLineEdit{border-style:none;border-radius:5px;padding:5px;background-color:#ffffff}QLineEdit:focus{border:2px solid gray; }")
         self.rightPannelLayout.addWidget(self.lineedit_patient_name, 2, 2, 1, 1)
+
+        self.subject_dir_label = QLabel(self)
+        self.subject_dir_label.setText('subject dir')
+        self.rightPannelLayout.addWidget(self.subject_dir_label, 3, 1, 1, 1)
+        self.button_subject_dir = QPushButton('Browse', self)
+        self.button_subject_dir.setToolTip('pick the patient subject dir (data/<subject>) so imported '
+                                            'edf files and their HI results are copied/saved there')
+        self.button_subject_dir.setStyleSheet(
+            "QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
+        self.rightPannelLayout.addWidget(self.button_subject_dir, 3, 2, 1, 1)
+        self.button_subject_dir.clicked.connect(self.dialog_subject_dir)
+        self.lineedit_subject_dir = QLineEdit(self)
+        self.lineedit_subject_dir.setReadOnly(True)
+        self.lineedit_subject_dir.setPlaceholderText('(pick subject dir before importing edf)')
+        self.lineedit_subject_dir.setStyleSheet(
+            "QLineEdit{border-style:none;border-radius:5px;padding:5px;background-color:#ffffff}")
+        self.rightPannelLayout.addWidget(self.lineedit_subject_dir, 4, 1, 1, 2)
+
         self.button_inputedf = QPushButton('import .edf data', self)
         self.button_inputedf.setToolTip('click to input data')
         self.button_inputedf.setStyleSheet(
             "QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.rightPannelLayout.addWidget(self.button_inputedf, 1, 1, 1, 2)
         self.button_inputedf.clicked.connect(self.dialog_inputedfdata)
+        self.button_inputedf.setEnabled(False)
         self.adjust_frame = QGroupBox(self)
         self.adjust_frame.setStyleSheet("QGroupBox{border: 2px solid gray; border-radius: 5px;background-color:lightgrey;}QGroupBox:title{subcontrol-origin: margin;subcontrol-position: top left;padding: 0 3px 0 3px;}")
         self.adjust_frame.setTitle('Adjust signal')

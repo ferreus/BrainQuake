@@ -23,6 +23,7 @@ from scipy.signal import iirnotch
 
 import mne
 import os
+import shutil
 
 # from HI_apis import HI_preprocess_file,HI_count_highEvents_chns
 from utils.HI_apis import HI_preprocess_file,HI_count_highEvents_chns
@@ -39,6 +40,7 @@ class figure_thread(QThread):
 
 class HI_computation_thread(QThread):
     HI_done_sig=QtCore.pyqtSignal(object)
+    HI_progress_sig=QtCore.pyqtSignal(int)
 
     def __init__(self,parent=None,interIctalFile=None,relThr=2.0,absThr=2.0,minGap=20,minDur=50,freqband=[80,250],chns_list=None,proBar=None):
         super(HI_computation_thread,self).__init__(parent=parent)
@@ -49,12 +51,13 @@ class HI_computation_thread(QThread):
         self.minDur=minDur
         self.chns_list=chns_list
         self.freqband=freqband
-        self.proBar=proBar
+        if proBar is not None:
+            self.HI_progress_sig.connect(proBar.setValue)
 
     def run(self):
-        HI_preprocess_file(self.interIctalFile,self.chns_list,self.freqband,self.proBar)
+        HI_preprocess_file(self.interIctalFile,self.chns_list,self.freqband,self.HI_progress_sig.emit)
         HI_results=HI_count_highEvents_chns(self.interIctalFile,self.relThr,self.absThr,self.minGap,self.minDur)
-        self.proBar.setValue(100)
+        self.HI_progress_sig.emit(100)
         self.HI_done_sig.emit(HI_results)
 
 
@@ -65,6 +68,7 @@ class InterModule(QWidget, Interictal_gui):
         super(InterModule, self).__init__()
         self.setupUi(self)
         self.parent=parent
+        self.subject_dir = ''
 
     # set functions
     def center(self):
@@ -73,10 +77,25 @@ class InterModule(QWidget, Interictal_gui):
         qr.moveCenter(cp)
         self.move(qr.topLeft())
 
+    # subject dir: everything this module saves (a copy of the edf, HI results) lives
+    # under here, so later steps (SOZ Result) can find it from the subject dir alone
+    def dialog_subject_dir(self):
+        path = QFileDialog.getExistingDirectory(self, 'select subject dir (e.g. data/<subject>)')
+        if path:
+            self.subject_dir = path
+            self.lineedit_subject_dir.setText(path)
+            self.button_inputedf.setEnabled(True)
+
     # input edf data
     def dialog_inputedfdata(self):
-        self.mat_filename, b = QFileDialog.getOpenFileName(self, 'open edf file', './', '(*.edf)')
-        if self.mat_filename:
+        picked_filename, b = QFileDialog.getOpenFileName(self, 'open edf file', './', '(*.edf)')
+        if picked_filename:
+            edf_dir = os.path.join(self.subject_dir, 'edf')
+            os.makedirs(edf_dir, exist_ok=True)
+            dest_path = os.path.join(edf_dir, os.path.basename(picked_filename))
+            if os.path.abspath(picked_filename) != os.path.abspath(dest_path):
+                shutil.copy2(picked_filename, dest_path)
+            self.mat_filename = dest_path
             # load data
             self.patient_name = self.lineedit_patient_name.text()
             self.edf_data = mne.io.read_raw_edf(self.mat_filename, preload=True, stim_channel=None)
@@ -160,13 +179,12 @@ class InterModule(QWidget, Interictal_gui):
 
             tmp_time = np.linspace(self.disp_start/self.fs, self.disp_end/self.fs, self.disp_end-self.disp_start)
             tmp_data = tmp_data * self.disp_wave_mul
-            segs.append(np.hstack((tmp_time[:, np.newaxis], tmp_data[:, np.newaxis])))
-            ticklocs.append((i - self.disp_chans_start) * self.dr)
-        offsets = np.zeros((self.disp_chans_num, 2), dtype=float)
-        offsets[:, 1] = ticklocs
+            tickloc = (i - self.disp_chans_start) * self.dr
+            segs.append(np.hstack((tmp_time[:, np.newaxis], (tmp_data + tickloc)[:, np.newaxis])))
+            ticklocs.append(tickloc)
         colors = self.edf_line_colors[self.disp_chans_start:self.disp_chans_start + self.disp_chans_num]
         # linewidths=
-        lines = LineCollection(segs, offsets=offsets, linewidths=0.7,transOffset=None,colors='k')  # ,colors=colors,transOffset=None)
+        lines = LineCollection(segs, linewidths=0.7,colors='k')
         disp_chan_names = self.disp_ch_names[
                           self.disp_chans_start:(self.disp_chans_start + self.disp_chans_num)]
         self.canvas.axes.set_xlim(segs[0][0, 0], segs[0][-1, 0])
@@ -361,20 +379,19 @@ class InterModule(QWidget, Interictal_gui):
 
             tmp_time = np.linspace(self.disp_start / self.fs, self.disp_end / self.fs, self.disp_end - self.disp_start)
             tmp_data = tmp_data * self.disp_wave_mul
-            segs.append(np.hstack((tmp_time[:, np.newaxis], tmp_data[:, np.newaxis])))
-            ticklocs.append((i - self.disp_chans_start) * self.dr)
-        offsets = np.zeros((self.disp_chans_num, 2), dtype=float)
-        offsets[:, 1] = ticklocs
+            tickloc = (i - self.disp_chans_start) * self.dr
+            segs.append(np.hstack((tmp_time[:, np.newaxis], (tmp_data + tickloc)[:, np.newaxis])))
+            ticklocs.append(tickloc)
         colors = self.edf_line_colors[self.disp_chans_start:self.disp_chans_start + self.disp_chans_num]
         # linewidths=
-        lines = LineCollection(segs, offsets=offsets, linewidths=0.7,
-                               transOffset=None,colors='k')  # ,colors=colors,transOffset=None)
+        lines = LineCollection(segs, linewidths=0.7,colors='k')
         disp_chan_names = self.disp_ch_names[
                           self.disp_chans_start:(self.disp_chans_start + self.disp_chans_num)]
         self.canvas.axes.set_xlim(segs[0][0, 0], segs[0][-1, 0])
         self.canvas.axes.add_collection(lines)
         #add hfo detections
-        self.hfoDets_resultsFile=os.path.join('./HFOdets',os.path.basename(self.mat_filename).split('.')[0]+'_events.npz')
+        self.hfoDets_resultsFile=os.path.join(os.path.dirname(os.path.abspath(self.mat_filename)),'HFOdets',
+                                              os.path.basename(self.mat_filename).split('.')[0]+'_events.npz')
         if os.path.exists(self.hfoDets_resultsFile):
             self.hfoDets=np.load(self.hfoDets_resultsFile,allow_pickle=True)
             self.hfoDets_chns=self.hfoDets['file_chnsNames'].tolist()
@@ -417,21 +434,19 @@ class InterModule(QWidget, Interictal_gui):
 
             tmp_time = np.linspace(self.disp_start / self.fs, self.disp_end / self.fs, self.disp_end - self.disp_start)
             tmp_data = tmp_data * self.disp_wave_mul
-            segs.append(np.hstack((tmp_time[:, np.newaxis], tmp_data[:, np.newaxis])))
-            ticklocs.append((i - self.disp_chans_start) * self.dr)
-        offsets = np.zeros((self.disp_chans_num, 2), dtype=float)
-        offsets[:, 1] = ticklocs
+            tickloc = (i - self.disp_chans_start) * self.dr
+            segs.append(np.hstack((tmp_time[:, np.newaxis], (tmp_data + tickloc)[:, np.newaxis])))
+            ticklocs.append(tickloc)
         colors = self.edf_line_colors[self.disp_chans_start:self.disp_chans_start + self.disp_chans_num]
         # linewidths=
-        lines = LineCollection(segs, offsets=offsets, linewidths=0.7,
-                               transOffset=None,colors='k')  # ,colors=colors,transOffset=None)
+        lines = LineCollection(segs, linewidths=0.7,colors='k')
         disp_chan_names = self.disp_ch_names[
                           self.disp_chans_start:(self.disp_chans_start + self.disp_chans_num)]
         self.canvas.axes.set_xlim(segs[0][0, 0], segs[0][-1, 0])
         self.canvas.axes.add_collection(lines)
 
         # add hfo detections
-        self.hfoDets_resultsFile = os.path.join('./HFOdets',
+        self.hfoDets_resultsFile = os.path.join(os.path.dirname(os.path.abspath(self.mat_filename)),'HFOdets',
                                                 os.path.basename(self.mat_filename).split('.')[0] + '_events.npz')
         if os.path.exists(self.hfoDets_resultsFile):
             self.hfoDets = np.load(self.hfoDets_resultsFile, allow_pickle=True)

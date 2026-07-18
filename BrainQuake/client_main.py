@@ -14,6 +14,7 @@ from client_ictal import IctalModule
 from client_inter import InterModule
 from client_elec import Electrodes
 from client_surf import reconSurferUi
+from client_soz import SOZResultModule
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
 DEFAULT_HOST = '127.0.0.1'
@@ -43,7 +44,7 @@ class quakeMain(QWidget):
 
     def init_gui(self):
         self.setWindowTitle('BrainQuake')
-        self.resize(500,340)
+        self.resize(500,420)
         self.centerWin()
         self.setStyleSheet('background-color:lightgrey;')
         self.setAttribute(Qt.WA_MacShowFocusRect,0)
@@ -144,6 +145,15 @@ class quakeMain(QWidget):
         self.button_inter.setSizePolicy(self.button_Adaptive)
         self.button_inter.clicked.connect(self.inter_computation)
 
+        # SOZ result (EI + HI fusion on brain surface)
+        self.button_soz = QPushButton('SOZ Result', self)
+        self.button_soz.setToolTip('fuse EI (ictal) & HI (inter-ictal) onto the brain surface with SOZ predictions')
+        self.button_soz.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k}")
+        self.button_soz.setFont(self.button_font)
+        self.frame_layout.addWidget(self.button_soz, 5, 1, 2, 4)
+        self.button_soz.setSizePolicy(self.button_Adaptive)
+        self.button_soz.clicked.connect(self.soz_computation)
+
 
         self.frame.setLayout(self.frame_layout)
         self.setLayout(self.gridlayout)
@@ -190,6 +200,10 @@ class quakeMain(QWidget):
     def surfs_computation(self):
         self.surf_widget=reconSurferUi(host=self._current_host(), port=self._current_port())
         self.surf_widget.show()
+
+    def soz_computation(self):
+        self.soz_widget=SOZResultModule()
+        self.soz_widget.show()
 
 
 if __name__ == '__main__':
