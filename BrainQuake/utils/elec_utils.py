@@ -23,7 +23,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 # from mpl_toolkits.mplot3d import Axes3D, art3d
 # import electrode
 
-CMD_Hough3D = './hough-3d-lines/hough3dlines'
+CMD_Hough3D = '.\\hough-3d-lines\\hough3dlines.exe'
 
 def run(cmd):
     """
@@ -237,13 +237,19 @@ class GenerateLabel_thread(QThread):
         elec_track = np.array(elec_track)
         K_check = elec_track.shape[0]
         if K_check < self.K:
+            print(f"Warning: {K_check} tracks were detected, but {self.K} electrodes were implanted;")
             self.finished.emit(1)
         else: # if K_check != K:
-            print(f"Warning: {self.K} electrodes implanted, but {K_check} has been clustered by Hough!")
-            # sys.exit()
-        
+            if K_check > self.K:
+                print(f"Info: {self.K} electrodes implanted, but {K_check} tracks were detected; "
+                      f"keeping the {self.K} best-defined (highest npoints) and ignoring the rest.")
+
             # process a gaussian mixture model for bug fixing
-            centroids = np.array(elec_track[0:self.K, 1:4])
+            # column 0 is npoints (track support); pick the K best-supported tracks
+            # as centroids rather than assuming file order, since a well-defined
+            # electrode has more Hough-clustered points than a noisy fragment
+            best_order = np.argsort(-elec_track[:, 0])[:self.K]
+            centroids = np.array(elec_track[best_order, 1:4])
             # print(centroids)
             X = np.transpose(np.vstack((xs, ys, zs)))
             gmm = GMM(n_components=self.K, covariance_type='full',means_init=centroids, random_state=None).fit(X)
@@ -256,6 +262,145 @@ class GenerateLabel_thread(QThread):
                 Labels[xs[ind], ys[ind], zs[ind]] = i + 1
             np.save(os.path.join(self.directory_ct, f"{self.patient}_labels.npy"), Labels, allow_pickle=True)
             self.finished.emit(0)
+
+class OptimizeParams_thread(QThread):
+    """
+    Searches (threshold %, erosion iterations) for the combination whose best target_K
+    Hough-detected tracks are the most well-defined (highest npoints, i.e. cleanest
+    shafts/contacts), via a coarse grid search followed by coordinate-descent
+    refinement. Only candidates whose total track count falls in
+    [target_K, target_K + max_extra_tracks] are considered valid: too few and there
+    aren't enough tracks to choose target_K electrodes from; too many and the "extras"
+    are almost certainly threshold/erosion noise rather than real spare candidates (low
+    threshold/erosion mechanically inflates both track count and npoints). Requires
+    patient, directory_ct, directory_surf, target_K to be set before start().
+    """
+
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(float, int, int) # best threshold(%), best erosion iterations, tracks found
+
+    def __init__(self):
+        super(OptimizeParams_thread, self).__init__()
+        self.stop_flag = False
+        self.thre_candidates = [5, 10, 15, 20, 30, 40, 50] # percent, coarse grid
+        self.ero_candidates = [1, 3, 5, 7, 9, 11, 13, 15] # iterations, coarse grid
+        # how many tracks beyond target_K are still considered "spare candidates to
+        # pick from" rather than threshold/erosion noise. Lower threshold or erosion
+        # always mechanically inflates both track count and npoints (more raw points
+        # survive), so without a cap the search degenerates toward thre=1%, which
+        # detects hundreds of bogus tracks out of skull/noise instead of electrodes.
+        self.max_extra_tracks = 3
+
+    def _countTracks(self, data_ct, thre_pct):
+        maxVal = np.amax(self.data_ct_orig)
+        thre_val = maxVal * (thre_pct / 100)
+        thre_data = np.copy(data_ct)
+        thre_data[thre_data < thre_val] = 0
+        xs, ys, zs = np.where(thre_data != 0)
+        if xs.size < 10:
+            return 0, []
+
+        X = np.transpose(np.array((xs, ys, zs)))
+        cloud_file = os.path.join(self.directory_ct, f"{self.patient}_opttmp_cloud.dat")
+        hough_file = os.path.join(self.directory_ct, f"{self.patient}_opttmp_hough.txt")
+        np.savetxt(cloud_file, X, fmt='%.4f', delimiter=',', newline='\n', header='point clouds', footer='', comments='# ')
+        run(cmd=f"{CMD_Hough3D} -o {hough_file} -minvotes 5 {cloud_file}")
+
+        npoints_list = []
+        if os.path.exists(hough_file):
+            with open(hough_file, 'r') as f:
+                for line in f.readlines():
+                    m = re.search(r'npoints=(\d+)', line)
+                    if m:
+                        npoints_list.append(int(m.group(1)))
+        return len(npoints_list), npoints_list
+
+    def _score(self, K_check, npoints_list):
+        # Valid candidates must land in [target_K, target_K + max_extra_tracks]: enough
+        # tracks to choose target_K electrodes from, but not so many that the "extras"
+        # are obviously threshold/erosion noise rather than real spare candidates.
+        # Candidates outside that window are ranked by how far outside it they are
+        # (worse the further out), which always loses to any in-window candidate.
+        # Only among in-window candidates do we then prefer the best-supported top
+        # target_K tracks (higher npoints suggests a cleanly separated shaft with
+        # clear contacts, rather than a short/noisy fragment).
+        if K_check < self.target_K:
+            out_of_range = self.target_K - K_check
+        elif K_check > self.target_K + self.max_extra_tracks:
+            out_of_range = K_check - (self.target_K + self.max_extra_tracks)
+        else:
+            out_of_range = 0
+        top = sorted(npoints_list, reverse=True)[:self.target_K]
+        quality = -np.mean(top) if top else 0.0
+        diff = abs(K_check - self.target_K)
+        return (out_of_range, quality, diff)
+
+    def _evaluate(self, thre_pct, ero_itr):
+        key = (thre_pct, ero_itr)
+        if key in self.results:
+            return self.results[key]
+        if ero_itr not in self.eroded_cache:
+            self.eroded_cache[ero_itr] = ndimage.morphology.binary_erosion(self.data_mask, iterations=ero_itr)
+        mask_ero = self.eroded_cache[ero_itr]
+        data_ct = np.copy(self.data_ct_orig)
+        data_ct[mask_ero == 0] = 0
+        K_check, npoints_list = self._countTracks(data_ct, thre_pct)
+        self.results[key] = (K_check, npoints_list)
+        self.progress.emit(f"thre={thre_pct}%, erosion={ero_itr}: {K_check} tracks detected (target {self.target_K})")
+        return self.results[key]
+
+    def run(self):
+        self.stop_flag = False
+        mask_file = os.path.join(self.directory_surf, "mri", "mask.mgz")
+        self.data_mask = nib.load(mask_file).get_fdata()
+
+        CTreg_file = os.path.join(self.directory_ct, f"{self.patient}CT_Reg.nii.gz")
+        self.data_ct_orig = nib.load(CTreg_file).get_fdata()
+
+        self.eroded_cache = {} # ero_itr -> eroded mask, reused across threshold sweeps
+        self.results = {} # (thre, ero) -> (K_check, npoints_list)
+
+        best_thre, best_ero, best_score = None, None, None
+
+        def consider(thre_pct, ero_itr):
+            nonlocal best_thre, best_ero, best_score
+            thre_pct = max(1, min(100, thre_pct))
+            ero_itr = max(0, ero_itr)
+            K_check, npoints_list = self._evaluate(thre_pct, ero_itr)
+            s = self._score(K_check, npoints_list)
+            if best_score is None or s < best_score:
+                best_score, best_thre, best_ero = s, thre_pct, ero_itr
+
+        # coarse grid search
+        for ero_itr in self.ero_candidates:
+            for thre_pct in self.thre_candidates:
+                if self.stop_flag:
+                    self._cleanup()
+                    return
+                consider(thre_pct, ero_itr)
+
+        # coordinate-descent refinement (step=1) around the best coarse point
+        for _ in range(30):
+            if self.stop_flag:
+                break
+            prev_score = best_score
+            for (t, e) in [(best_thre - 1, best_ero), (best_thre + 1, best_ero),
+                           (best_thre, best_ero - 1), (best_thre, best_ero + 1)]:
+                if (t, e) in self.results or t < 1 or t > 100 or e < 0:
+                    continue
+                consider(t, e)
+            if best_score == prev_score: # no improving neighbor found, converged
+                break
+
+        K_found = self.results[(best_thre, best_ero)][0]
+        self._cleanup()
+        self.finished.emit(float(best_thre), int(best_ero), int(K_found))
+
+    def _cleanup(self):
+        for suffix in ('_opttmp_cloud.dat', '_opttmp_hough.txt'):
+            f = os.path.join(self.directory_ct, f"{self.patient}{suffix}")
+            if os.path.exists(f):
+                os.remove(f)
 
 # class LabelResult_thread(QThread):
 #     def __init__(self):
@@ -294,8 +439,8 @@ def savenpy(filePath, patientName):
             files.remove('chnXyzDict.npy')
         for file in files:
             elec_name = file.split('.')[0]
-            elec_info = np.loadtxt(os.path.join(root, file))
-            
+            elec_info = np.atleast_2d(np.loadtxt(os.path.join(root, file)))
+
             elec_info = elec_info # [1:, :] # [:,np.array([2,1,0])]
             elec_dict[elec_name] = elec_info
         
@@ -310,7 +455,7 @@ def lookupTable(subdir, patient, ctdir, elec_label):
     
     # elecs_file = f"{ctdir}/{patient}_result/{elec_label}.txt"
     elecs_file = os.path.join(ctdir, f"{patient}_result/{elec_label}.txt")
-    elecs_xyz = np.loadtxt(elecs_file, dtype='float', comments='#')
+    elecs_xyz = np.atleast_2d(np.loadtxt(elecs_file, dtype='float', comments='#'))
     elecs_xyz = elecs_xyz[:, [0, 2, 1]]
     elecs_xyz[:, 0] = 128 - elecs_xyz[:, 0]
     elecs_xyz[:, 1] = 128 - elecs_xyz[:, 1]
@@ -661,8 +806,8 @@ class ElectrodeSeg:
         # delta_y = self.reg3.coef_ * np.sqrt(np.power(dis,2) / (1 + np.power(self.reg2.coef_,2) + np.power(self.reg3.coef_,2)))
         # delta_z = np.sqrt(np.power(dis,2) / (1 + np.power(self.reg2.coef_,2) + np.power(self.reg3.coef_,2)))
 
-        self.x0 = np.int(self.elecPos[-1,0] - np.round(delta_x)) if ((self.direction[0]==-2) or (self.direction[0]==0)) else np.int(self.elecPos[-1,0] + np.round(delta_x))
-        self.y0 = np.int(self.elecPos[-1,1] - np.round(delta_y)) if ((self.direction[1]==-2) or (self.direction[1]==0)) else np.int(self.elecPos[-1,1] + np.round(delta_y))
-        self.z0 = np.int(self.elecPos[-1,2] - np.round(delta_z)) if ((self.direction[2]==-2) or (self.direction[2]==0)) else np.int(self.elecPos[-1,2] + np.round(delta_z))
+        self.x0 = int(self.elecPos[-1,0] - np.round(delta_x)) if ((self.direction[0]==-2) or (self.direction[0]==0)) else int(self.elecPos[-1,0] + np.round(delta_x))
+        self.y0 = int(self.elecPos[-1,1] - np.round(delta_y)) if ((self.direction[1]==-2) or (self.direction[1]==0)) else int(self.elecPos[-1,1] + np.round(delta_y))
+        self.z0 = int(self.elecPos[-1,2] - np.round(delta_z)) if ((self.direction[2]==-2) or (self.direction[2]==0)) else int(self.elecPos[-1,2] + np.round(delta_z))
         
         self.contactPoint(0)

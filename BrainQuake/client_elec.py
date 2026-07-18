@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import QFileDialog, QGraphicsScene, QListWidget, QSizePolic
 # import utils1 # mayaviplot
 # from utils1 import Preprocess_thread, GenerateLabel_thread, PreprocessResult_thread, ContactSegment_thread
 from gui_forms.elec_form import Electrodes_gui
-from utils.elec_utils import Preprocess_thread, GenerateLabel_thread, PreprocessResult_thread, ContactSegment_thread, savenpy, lookupTable
+from utils.elec_utils import Preprocess_thread, GenerateLabel_thread, PreprocessResult_thread, ContactSegment_thread, OptimizeParams_thread, savenpy, lookupTable
 
 SUBDIR = './SurfDataset'
 
@@ -39,7 +39,8 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.axes = self.fig.add_subplot(111, projection='3d')
         self.c = ['#698E6A', '#896D47', '#D4BF89', '#106898', '#954024', '#A35F65',
                   '#535164', '#CDD171', '#BED2BB', '#4C1E1A', '#F5B087', '#CC5D20',
-                  '#003460', '#ED6D46', '#822327', '#1E2732']
+                  '#003460', '#ED6D46', '#822327', '#1E2732', '#6B4C9A', '#2E8B6B',
+                  '#C9A227', '#B24592']
         self.thread_1 = Preprocess_thread()
         self.thread_1.finished.connect(self.preprocessFinished)
         self.thread_2 = GenerateLabel_thread()
@@ -50,6 +51,9 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         # self.thread_4.finished.connect(self.genLabelFinished)
         self.thread_5 = ContactSegment_thread()
         self.thread_5.finished.connect(self.genContactFinished)
+        self.thread_6 = OptimizeParams_thread()
+        self.thread_6.progress.connect(self.optimizeProgress)
+        self.thread_6.finished.connect(self.optimizeFinished)
     
     def patientName(self):
         self.patient = self.lineEdit_1.text()
@@ -74,6 +78,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
             self.lineEdit_4.setEnabled(False)
             self.pushButton_3.setEnabled(False)
             self.pushButton_4.setEnabled(False)
+            self.pushButton_11.setEnabled(False)
             self.pushButton_5.setEnabled(False)
             self.pushButton_6.setEnabled(False)
             self.pushButton_7.setEnabled(False)
@@ -90,49 +95,58 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
             self.scene.addWidget(FigureCanvas(self.fig))
             self.graphicsView.show()
 
+            # auto-detect fslresults/xxxCT_Reg.nii.gz under the selected surf folder
+            auto_ct_path = f"{self.directory_surf}/fslresults/{self.Patname_surf}CT_Reg.nii.gz"
+            if os.path.isfile(auto_ct_path):
+                self._loadCT(auto_ct_path)
+
     def importCT(self):
         # import xxxCT_Reg.nii.gz file
-        self.directory_ct, _ = QFileDialog.getOpenFileName(self, "getOpenFileName", "", "All Files (*);;Nifti Files (*.nii.gz)")
-        if not self.directory_ct:
+        directory_ct, _ = QFileDialog.getOpenFileName(self, "getOpenFileName", "", "All Files (*);;Nifti Files (*.nii.gz)")
+        if not directory_ct:
             pass
         else: # a xxxCT_Reg.nii.gz file selected
-            self.Filename_ct = self.directory_ct.split('/')[-1] # identify ct filename
-            self.Patname_ct = self.Filename_ct.split('.')[0].split('C')[0] # identify ct patient name
-            self.directory_ct = self.directory_ct.split(self.Filename_ct)[0] # save ct directory without filename
-            # 此处应有判等/警告和break
-    
-            self.lineEdit_3.setEnabled(True) # enable 3 parameters' input
-            self.lineEdit_4.setEnabled(True)
-            self.doubleSpinBox_1.setEnabled(True)
-            
-            find_flag = 0 # check for xxxCT_intracranial_thre_K_ero.nii.gz
-            find_flag1 = 0 # check for xxx_labels.npy
-            for root, dirs, files in os.walk(self.directory_ct):
-                for filename in files:
-                    if re.search(r'_intracranial_', filename): # if found preprocessed!
-                        self.CTintra_file = os.path.join(self.directory_ct, filename) # save intra_file dir
-                        self.ero_itr = int(filename.split('_')[-1].split('.')[0]) # read 3 parameters from filename
-                        self.K = int(filename.split('_')[-2])
-                        self.thre = float(filename.split('_')[-3])
-                        
-                        self.pushButton_3.setEnabled(True) # enable preprocess btn
-                        self.pushButton_4.setEnabled(True) # enable preprocessView btn
-                        self.lineEdit_3.setText(str(self.K)) # display 3 parameters
-                        self.lineEdit_4.setText(str(self.ero_itr))
-                        self.doubleSpinBox_1.setValue(self.thre*100)
-                        find_flag = 1
-                        break
-            for root, dirs, files in os.walk(self.directory_ct):
-                for filename in files:
-                    if re.search(r'_labels.npy', filename): # if found preprocessed!
-                        self.directory_labels = os.path.join(self.directory_ct, filename) # save intra_file dir
-                        self.pushButton_6.setEnabled(True)
-                        find_flag1 = 1
-                        break        
-                    
-            if not find_flag: # if not found preprocessed!
-                self.lineEdit_4.setText(str(10)) # set 2 parameters recommended, without variable K
-                self.doubleSpinBox_1.setValue(10)
+            self._loadCT(directory_ct)
+
+    def _loadCT(self, ct_filepath):
+        self.directory_ct = ct_filepath
+        self.Filename_ct = self.directory_ct.split('/')[-1] # identify ct filename
+        self.Patname_ct = self.Filename_ct.split('.')[0].split('C')[0] # identify ct patient name
+        self.directory_ct = self.directory_ct.split(self.Filename_ct)[0] # save ct directory with
+
+        self.lineEdit_3.setEnabled(True) # enable 3 parameters' input
+        self.lineEdit_4.setEnabled(True)
+        self.doubleSpinBox_1.setEnabled(True)
+
+        find_flag = 0 # check for xxxCT_intracranial_thre_K_ero.nii.gz
+        find_flag1 = 0 # check for xxx_labels.npy
+        for root, dirs, files in os.walk(self.directory_ct):
+            for filename in files:
+                if re.search(r'_intracranial_', filename): # if found preprocessed!
+                    self.CTintra_file = os.path.join(self.directory_ct, filename) # save intra_file dir
+                    self.ero_itr = int(filename.split('_')[-1].split('.')[0]) # read 3 parameters from filename
+                    self.K = int(filename.split('_')[-2])
+                    self.thre = float(filename.split('_')[-3])
+
+                    self.pushButton_3.setEnabled(True) # enable preprocess btn
+                    self.pushButton_4.setEnabled(True) # enable preprocessView btn
+                    self.pushButton_11.setEnabled(True) # enable optimize btn
+                    self.lineEdit_3.setText(str(self.K)) # display 3 parameters
+                    self.lineEdit_4.setText(str(self.ero_itr))
+                    self.doubleSpinBox_1.setValue(self.thre*100)
+                    find_flag = 1
+                    break
+        for root, dirs, files in os.walk(self.directory_ct):
+            for filename in files:
+                if re.search(r'_labels.npy', filename): # if found preprocessed!
+                    self.directory_labels = os.path.join(self.directory_ct, filename) # save intra_file dir
+                    self.pushButton_6.setEnabled(True)
+                    find_flag1 = 1
+                    break
+
+        if not find_flag: # if not found preprocessed!
+            self.lineEdit_4.setText(str(10)) # set 2 parameters recommended, without variable K
+            self.doubleSpinBox_1.setValue(10)
             
     def preprocessData(self):
         self.pushButton_4.setEnabled(False) # disable preoprocessView btn before thread ends
@@ -175,6 +189,33 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         if not find_flag:
             # 此处提出警告，预处理失败，没有intra文件！
             pass
+
+    def optimizeParams(self):
+        try:
+            target_K = int(self.lineEdit_3.text())
+        except ValueError:
+            return
+        if target_K <= 0:
+            return
+
+        self.pushButton_11.setEnabled(False) # disable optimize btn while thread runs
+        self.pushButton_3.setEnabled(False) # avoid preprocessing with stale params mid-search
+
+        self.thread_6.patient = self.patient
+        self.thread_6.directory_ct = self.directory_ct
+        self.thread_6.directory_surf = self.directory_surf
+        self.thread_6.target_K = target_K
+        self.thread_6.start()
+
+    def optimizeProgress(self, message):
+        print(message) # optimizer status, one line per (threshold, erosion) trial
+
+    def optimizeFinished(self, thre_pct, ero_itr, K_found):
+        self.doubleSpinBox_1.setValue(thre_pct) # fill in the best-found parameters
+        self.lineEdit_4.setText(str(ero_itr))
+        print(f"Optimizer result: threshold={thre_pct}%, erosion={ero_itr} -> {K_found} tracks detected (target {self.lineEdit_3.text()})")
+        self.pushButton_11.setEnabled(True)
+        self.pushButton_3.setEnabled(True)
 
     def viewIntra(self):
         find_flag = 0 # check for intra_file
@@ -221,6 +262,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
 
     def numberK(self):
         self.pushButton_3.setEnabled(True) # if variable K is set, enable preprocess btn
+        self.pushButton_11.setEnabled(True) # ...and the optimize btn
     
     def numberEro(self):
         pass
@@ -240,6 +282,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                     
                     self.pushButton_1.setEnabled(False) # label btn clicked so disable the above processable btns
                     self.pushButton_3.setEnabled(False)
+                    self.pushButton_11.setEnabled(False)
                     self.lineEdit_3.setText(str(self.K)) # label btn clicked so disable the above editable lines
                     self.lineEdit_4.setText(str(self.ero_itr))
                     self.doubleSpinBox_1.setValue(self.thre*100)
@@ -262,6 +305,12 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         if k_flag: 
             # 此处应警告，聚类K_check<K
             print('Warning: Cannot cluster enough electrode tracks!')
+            self.pushButton_1.setEnabled(True) # label btn clicked so disable the above processable btns
+            self.pushButton_3.setEnabled(True)
+            self.pushButton_11.setEnabled(True)
+            self.lineEdit_3.setEnabled(True)
+            self.lineEdit_4.setEnabled(True)
+            self.doubleSpinBox_1.setEnabled(True)
             pass
         else:
             find_flag = 0 # check for label_file existance
@@ -327,9 +376,9 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.thread_5.K = self.K
         self.thread_5.directory_labels = self.directory_ct
         self.thread_5.patName = self.patient
-        self.thread_5.numMax = 16
-        self.thread_5.diameterSize=2
-        self.thread_5.spacing=3.5
+        self.thread_5.numMax = 20
+        self.thread_5.diameterSize=2.5
+        self.thread_5.spacing=2.5
         self.thread_5.gap=0
         self.thread_5.start()
     
@@ -355,7 +404,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                 files.remove('.DS_Store')
             for file in files:
                 elec_name = file.split('.')[0]
-                elec_info = np.loadtxt(os.path.join(root, file))
+                elec_info = np.atleast_2d(np.loadtxt(os.path.join(root, file)))
                 elec_number = elec_info.shape[0]
                 self.elec_dict[elec_name] = elec_info
                 self.elec_number_dict[elec_name] = elec_number
@@ -394,12 +443,11 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.pushButton_10.setEnabled(True)
 
     def allSet(self):
-        
-        self.vis3D(filePath=os.getcwd(), patName=self.patient)
 
-    def vis3D(self, filePath, patName):
-        # elecs_xyzDict=np.load(f"{filePath}/dataset/{patName}_data/fslresults/chnXyzDict.npy",allow_pickle=True)[()]
-        elecs_xyzDict=np.load(os.path.join(filePath, f"dataset/{patName}_data/fslresults/chnXyzDict.npy"), allow_pickle=True)[()]
+        self.vis3D(filePath=self.directory_ct)
+
+    def vis3D(self, filePath):
+        elecs_xyzDict=np.load(os.path.join(filePath, "chnXyzDict.npy"), allow_pickle=True)[()]
         # brain_data=nib.load(f"{self.directory_surf}/mri/orig.mgz")
         brain_data=nib.load(os.path.join(self.directory_surf, 'mri', 'orig.mgz'))
         aff_matrix=brain_data.header.get_affine()

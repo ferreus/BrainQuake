@@ -124,6 +124,13 @@ class Electrodes_gui(object):
         self.doubleSpinBox_1.setDecimals(2)
         self.gridlayout.addWidget(self.doubleSpinBox_1, 7, 10, 1, 1)
 
+        self.pushButton_11 = QtWidgets.QPushButton(self.groupBox_2)
+        self.pushButton_11.setObjectName("Optimize")
+        self.pushButton_11.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
+        self.pushButton_11.setText("Optimize Params")
+        self.pushButton_11.setToolTip("search threshold & erosion times to match the given number of electrodes")
+        self.gridlayout.addWidget(self.pushButton_11, 10, 9, 1, 2)
+
         # process groupbox
         self.groupBox_3 = QtWidgets.QGroupBox(Electrodes)
         self.groupBox_3.setObjectName("ProcessData")
@@ -206,6 +213,7 @@ class Electrodes_gui(object):
         self.pushButton_2.clicked.connect(Electrodes.importSurf)
         self.pushButton_3.clicked.connect(Electrodes.preprocessData)
         self.pushButton_4.clicked.connect(Electrodes.viewIntra)
+        self.pushButton_11.clicked.connect(Electrodes.optimizeParams)
         self.lineEdit_3.textEdited.connect(Electrodes.numberK)
         self.lineEdit_4.textEdited.connect(Electrodes.numberEro)
         self.doubleSpinBox_1.valueChanged.connect(Electrodes.threSel)
@@ -226,6 +234,7 @@ class Electrodes_gui(object):
         self.pushButton_1.setEnabled(False)
         self.pushButton_3.setEnabled(False)
         self.pushButton_4.setEnabled(False)
+        self.pushButton_11.setEnabled(False)
         self.pushButton_5.setEnabled(False)
         self.pushButton_6.setEnabled(False)
         self.pushButton_7.setEnabled(False)
