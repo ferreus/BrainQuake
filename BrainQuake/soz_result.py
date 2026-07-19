@@ -34,10 +34,20 @@ to override the automatic lookup.
 """
 import argparse
 import csv
+import logging
 import os
+import sys
 
 import nibabel as nib
 import numpy as np
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    stream=sys.stdout,
+)
+logger = logging.getLogger(__name__)
 
 
 def default_elec_xyz_path(subject_dir):
@@ -208,13 +218,13 @@ def main():
     ei_result_path = args.ei_result or find_result_npz(args.subject_dir, 'EIdets', '_ei.npz')
     hi_result_path = args.hi_result or find_result_npz(args.subject_dir, 'HFOdets', '_events.npz')
 
-    print(f'Loading electrode contact coordinates from {elec_xyz_path} ...')
+    logger.info(f'Loading electrode contact coordinates from {elec_xyz_path} ...')
     contact_xyz = load_contact_xyz(elec_xyz_path)
 
-    print(f'Loading EI results from {ei_result_path} ...')
+    logger.info(f'Loading EI results from {ei_result_path} ...')
     ei_by_chan = load_ei_result(ei_result_path)
 
-    print(f'Loading HI results from {hi_result_path} ...')
+    logger.info(f'Loading HI results from {hi_result_path} ...')
     hi_by_chan = load_hi_result(hi_result_path)
 
     rows = build_result_table(contact_xyz, ei_by_chan, hi_by_chan)
@@ -222,19 +232,19 @@ def main():
     out_prefix = resolve_out_prefix(args.subject_dir, args.out)
     out_csv = out_prefix + '.csv'
     save_csv(rows, out_csv)
-    print(f'\nWrote {out_csv} ({len(rows)} contacts, ranked by combined score).')
+    logger.info(f'Wrote {out_csv} ({len(rows)} contacts, ranked by combined score).')
 
-    print(f'\nTop {args.top_n} suspect contacts:')
-    print(f"{'contact':<10}{'EI':>10}{'HI':>10}{'combined':>12}{'suspect(EI/HI)':>18}")
+    logger.info(f'Top {args.top_n} suspect contacts:')
+    logger.info(f"{'contact':<10}{'EI':>10}{'HI':>10}{'combined':>12}{'suspect(EI/HI)':>18}")
     for r in rows[:args.top_n]:
-        print(f"{r['contact']:<10}{r['ei']:>10.3f}{r['hi']:>10.0f}{r['combined_score']:>12.3f}"
-              f"{str(r['suspect_ei'])+'/'+str(r['suspect_hi']):>18}")
+        logger.info(f"{r['contact']:<10}{r['ei']:>10.3f}{r['hi']:>10.0f}{r['combined_score']:>12.3f}"
+                     f"{str(r['suspect_ei'])+'/'+str(r['suspect_hi']):>18}")
 
     if not args.no_plot:
         out_png = out_prefix + '.png'
-        print(f'\nRendering 3D result onto {args.subject_dir}/surf/{{lh,rh}}.pial ...')
+        logger.info(f'Rendering 3D result onto {args.subject_dir}/surf/{{lh,rh}}.pial ...')
         plot_3d(args.subject_dir, rows, args.top_n, out_png, show=not args.no_show)
-        print(f'Saved {out_png}')
+        logger.info(f'Saved {out_png}')
 
 
 if __name__ == '__main__':

@@ -28,16 +28,14 @@ fs_flag = 0 # whether a task is done
 
 logger.info(f"Server listening on {host}:{port}")
 while True:
-    print(f"Waiting for connection on {host}:{port}...")
+    logger.info(f"Waiting for connection on {host}:{port}...")
     # Now we are listening on port 6669.
     clientsocket, address = s.accept()
-    print(f'Connection from {address} has been established.')
     logger.info(f"Accepted connection from {address}")
 
     while True:
         # receive a task request: new task or check
         task = utils_scs.text_recv(clientsocket)
-        print(f'task: {task}')
         logger.info(f"Received task code '{task}' from {address}")
 
         if task == '10' or task == '11' or task == '12': # task 1: reconstruction

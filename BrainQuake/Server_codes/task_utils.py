@@ -35,7 +35,6 @@ def recv_a_t1(clientsocket, task):
     elif task == '12':
         reconType = f"infant-surfer"
         number = utils_scs.file_recv(clientsocket, reconType)
-    print('T1 file received')
     logger.info(f"T1 file received for task={task} reconType={reconType} -> assigned {number}")
     # here we read the log
     log, i = utils.read_a_log(num=number)
@@ -45,7 +44,6 @@ def recv_a_t1(clientsocket, task):
     s.bind((host, 6666))
     s.listen(5)
     clientsocket, address = s.accept()
-    print(f'Connection from {address} has been established.')
     logger.info(f"Sending confirmation log for {number} back to client {address}")
     time.sleep(1)
     utils_scs.text_send(clientsocket, log)
@@ -62,12 +60,11 @@ def recv_a_ct(clientsocket):
     s.bind((host, 6667))
     s.listen(5)
     clientsocket, address = s.accept()
-    print(f'Connection from {address} has been established.')
+    logger.info(f"Connection from {address} has been established")
     time.sleep(1)
     utils_scs.text_send(clientsocket, 'Uploaded!')
     clientsocket.close()
     s.close()
-    print("Start registering...")
     logger.info(f"CT received for patient={name}; spawning registerrun process")
     p = multiprocessing.Process(target=utils.registerrun,args=(name,))
     p.start()
@@ -82,14 +79,13 @@ def send_fsls(clientsocket):
     s.bind((host, 6668))
     s.listen(5)
     clientsocket, address = s.accept()
-    print(f'Connection from {address} has been established.')
+    logger.info(f"Connection from {address} has been established")
     time.sleep(1)
     patName = utils_scs.text_recv(clientsocket)
-    print(patName)
     filepath = f"{FILEPATH1}/{patName}/fslresults/{patName}intracranial.nii.gz"
-    print('sending...')
+    logger.info(f"Sending {filepath} to {address}")
     utils_scs.file_send(filepath, clientsocket)
-    print('Sent!')
+    logger.info(f"Sent {filepath} to {address}")
     clientsocket.close()
     s.close()
     return
@@ -101,10 +97,10 @@ def check_recon(clientsocket):
     s.bind((host, 6665))
     s.listen(5)
     clientsocket, address = s.accept()
-    print(f'Connection from {address} has been established.')
+    logger.info(f"Connection from {address} has been established")
     time.sleep(1)
     check_log = utils_scs.text_recv(clientsocket)
-    print(check_log)
+    logger.debug(f"check_recon: received check_log={check_log}")
     [num, name, hospital, state, info] = check_log.split(' ')
     if num == 'None':
         num = None
@@ -112,7 +108,7 @@ def check_recon(clientsocket):
         name = None
     logger.info(f"Status check requested: num={num} name={name} hospital={hospital}")
     logs, i = utils.task_log(req='client', num=num, name=name, hospital=hospital)
-    print(logs)
+    logger.debug(f"check_recon: sending logs={logs}")
     time.sleep(1)
     utils_scs.text_send(clientsocket, logs)
     time.sleep(2)
@@ -127,16 +123,16 @@ def send_recon(clientsocket):
     s.bind((host, 6664))
     s.listen(5)
     clientsocket, address = s.accept()
-    print(f'Connection from {address} has been established.')
+    logger.info(f"Connection from {address} has been established")
     time.sleep(1)
     down_log = utils_scs.text_recv(clientsocket)
-    print(down_log)
+    logger.debug(f"send_recon: received down_log={down_log}")
     for log in down_log:
         [num, name, hospital, reconType, state, info] = log.split(' ')
         filepath = f"{FILEPATH}/{name}.zip"
-        print('sending...')
+        logger.info(f"Sending {filepath} to {address}")
         utils_scs.file_send(filepath, clientsocket)
-        print('Sent!')
+        logger.info(f"Sent {filepath} to {address}")
     clientsocket.close()
     s.close()
     return

@@ -26,6 +26,7 @@
 import sys
 import os
 import shutil
+import logging
 
 from PyQt5.QtWidgets import QApplication,  QSizePolicy, QMessageBox, QWidget, \
     QPushButton, QLineEdit, QDesktopWidget, QGridLayout, QFileDialog,  QListWidget, QLabel,QFrame,QGroupBox
@@ -52,6 +53,8 @@ from sklearn.cluster import KMeans
 
 import mne
 from gui_forms.ictal_form import Ictal_gui
+
+logger = logging.getLogger(__name__)
 
 
 class figure_thread(QThread):
@@ -246,7 +249,7 @@ def cal_specs_matrix(raw, sfreq, method='STFT'):
     if method == 'STFT':
         for i in range(ch_num):
             if i % 10 == 0:
-                print(str(i) + '/' + str(ch_num))
+                logger.info(str(i) + '/' + str(ch_num))
             time_signal = raw[i, :].ravel()
             time_signal = pad_zero(time_signal, 2 * half_width)
             f, t, hfo_spec = spectrogram(time_signal, fs=int(sfreq), nperseg=int(half_width),
@@ -280,10 +283,10 @@ def compute_full_band(raw_data, sfreq, ei):
     # k-means, then keep whichever cluster the top-10 EI electrodes mostly
     # fall into (find_ei_cluster_ratio).
     ei_elec_num = 10
-    print('computing spectrogram')
+    logger.info('computing spectrogram')
     raw_specs, spec_shape, t, f = cal_specs_matrix(raw_data, sfreq, 'STFT')
     raw_specs_norm = norm_specs(raw_specs)
-    print('dimensionality reducing')
+    logger.info('dimensionality reducing')
     proj_pca = PCA(n_components=10)
     # raw_specs_norm[np.where(raw_specs_norm == np.nan)] = 0
     # raw_specs_norm[np.where(raw_specs_norm == np.inf)] = 0
@@ -292,7 +295,7 @@ def compute_full_band(raw_data, sfreq, ei):
     top_elec_pca = np.zeros([ei_elec_num, spec_pca.shape[1]])
     for i in range(ei_elec_num):
         top_elec_pca[i] = spec_pca[top_elec_ind[i]]
-    print('clustering')
+    logger.info('clustering')
     k_num = choose_kmeans_k(spec_pca, range(2, 8))
     tmp_kmeans = KMeans(n_clusters=k_num)
     tmp_kmeans.fit(spec_pca)
@@ -525,13 +528,13 @@ class IctalModule(QWidget, Ictal_gui):
     def disp_add_mag_func(self):
         # Increase per-channel amplitude scaling (taller waveforms).
         self.disp_wave_mul *= 1.5
-        print(self.disp_wave_mul)
+        logger.debug(f"disp_wave_mul -> {self.disp_wave_mul}")
         self.disp_refresh()
 
     def disp_drop_mag_func(self):
         # Decrease per-channel amplitude scaling (shorter waveforms).
         self.disp_wave_mul *= 0.75
-        print(self.disp_wave_mul)
+        logger.debug(f"disp_wave_mul -> {self.disp_wave_mul}")
         self.disp_refresh()
 
     def disp_win_left_func(self):
@@ -627,13 +630,13 @@ class IctalModule(QWidget, Ictal_gui):
         # line; after 2 clicks it asks the user to confirm the window.
         if hasattr(self,'baseline_mouse') and self.baseline_mouse == 1:
             self.baseline_pos[self.baseline_count] = e.xdata
-            print(e.xdata)
+            logger.debug(f"baseline click at {e.xdata}")
             self.canvas.axes.axvline(e.xdata)
             self.canvas.draw()
             self.baseline_count += 1
             if self.baseline_count == 2:
                 self.baseline_mouse = 0
-                print('baseline time', self.baseline_pos)
+                logger.info(f"baseline time {self.baseline_pos}")
                 reply = QMessageBox.question(self, 'confirm', 'confirm baseline?', QMessageBox.Yes | QMessageBox.No,
                                              QMessageBox.Yes)
                 if reply == QMessageBox.Yes:
@@ -648,7 +651,7 @@ class IctalModule(QWidget, Ictal_gui):
             self.target_count += 1
             if self.target_count == 2:
                 self.target_mouse = 0
-                print('target time', self.target_pos)
+                logger.info(f"target time {self.target_pos}")
                 reply = QMessageBox.question(self, 'confim', 'confirm target time?', QMessageBox.Yes | QMessageBox.No,
                                              QMessageBox.Yes)
                 if reply == QMessageBox.Yes:
@@ -684,7 +687,7 @@ class IctalModule(QWidget, Ictal_gui):
                                                                            self.fs)
         ei_result_path = save_ei_result(self.mat_filename, self.disp_ch_names, self.ei_ei, self.ei_hfer,
                                          self.ei_onset_rank)
-        print(f'EI results saved to {ei_result_path}')
+        logger.info(f'EI results saved to {ei_result_path}')
         #for click-display signals
         self.tmp_origin_edf_data = self.origin_data.copy()
         remain_chInd = np.array([x in self.disp_ch_names for x in self.origin_chans])
@@ -695,7 +698,7 @@ class IctalModule(QWidget, Ictal_gui):
         for nf in notch_freqs:
             tb, ta = iirnotch(nf / (self.fs / 2), 30)
             self.tmp_origin_remainData = filtfilt(tb, ta, self.tmp_origin_remainData, axis=-1)
-        print('finish ei computation')
+        logger.info('finish ei computation')
         self.fullband_button.setEnabled(True)
         self.ei_plot_xw_func()
 
@@ -807,15 +810,14 @@ class IctalModule(QWidget, Ictal_gui):
         ei_onset_rank_ax = ei_onset_rank_fig.add_subplot(111)
         ei_data = np.stack([self.ei_hfer, self.ei_onset_rank], axis=0)
         title_data = ['High frequency Energy Coefficient', 'Time Coefficient']
-        print(len(ei_data))
+        logger.debug(f"ei_data length={len(ei_data)}")
         ei_axes = [ei_hfer_ax, ei_onset_rank_ax]
 
         ei_ei_ax.bar(range(len(self.ei_ei)), self.ei_ei)
         ei_ei_ax.set_title('High Frequency Epileptogenicity Index')
         ei_ind = list(np.squeeze(np.where(self.ei_ei > self.ei_thresh)))
-        print(ei_ind)
+        logger.debug(f"ei_ind={ei_ind}")
         for ind in ei_ind:
-            print(ind)
             ei_ei_ax.text(ind-0.8, self.ei_ei[ind]+0.01, self.disp_ch_names[ind], fontsize=8, color='k')
         ei_ei_ax.plot(np.arange(len(self.ei_ei)), self.ei_thresh * np.ones(len(self.ei_ei)), 'r--')
         for i in range(len(ei_data)):
@@ -879,16 +881,15 @@ class IctalModule(QWidget, Ictal_gui):
             plt.show()
         elif e.button == 3:
             self.ei_thresh = e.ydata
-            print(self.ei_thresh)
+            logger.debug(f"ei_thresh -> {self.ei_thresh}")
             self.ei_ei_fig.clf()
             ei_ei_ax = self.ei_ei_fig.add_axes([0.1, 0.1, 0.75, 0.8])
             # ei_ei_ax = plt.axes()
             ei_ei_ax.bar(range(len(self.ei_ei)), self.ei_ei)
             ei_ei_ax.set_title('High Frequency Epileptogenicity Index')
             ei_ind = list(np.squeeze(np.where(self.ei_ei > self.ei_thresh)))
-            print(ei_ind)
+            logger.debug(f"ei_ind={ei_ind}")
             for ind in ei_ind:
-                print(ind)
                 ei_ei_ax.text(ind - 0.8, self.ei_ei[ind] + 0.01, self.disp_ch_names[ind], fontsize=8, color='k')
             ei_ei_ax.plot(np.arange(len(self.ei_ei)), self.ei_thresh * np.ones(len(self.ei_ei)), 'r--')
             axthresh = plt.axes([0.9, 0.1, 0.02, 0.8])
@@ -930,7 +931,7 @@ class IctalModule(QWidget, Ictal_gui):
         self.fullband_ind = fullband_res[2]
 
         chs_labels = np.array(self.disp_ch_names)[self.fullband_ind]
-        print('electrodes:', chs_labels)
+        logger.info(f"electrodes: {chs_labels}")
 
         fullband_fig = plt.figure('full_band')
         fullband_ax = fullband_fig.add_subplot(111)

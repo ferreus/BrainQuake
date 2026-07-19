@@ -1,6 +1,7 @@
 #! /usr/bin/python3.7
 # encoding=utf-8
 import sys
+import logging
 
 from PyQt5.QtWidgets import QApplication,  QSizePolicy, QMessageBox, QWidget, \
     QPushButton, QLineEdit, QDesktopWidget, QGridLayout, QFileDialog,  QListWidget, QLabel,QFrame,QGroupBox,QProgressBar
@@ -28,6 +29,8 @@ import shutil
 # from HI_apis import HI_preprocess_file,HI_count_highEvents_chns
 from utils.HI_apis import HI_preprocess_file,HI_count_highEvents_chns
 from gui_forms.inter_form import Interictal_gui
+
+logger = logging.getLogger(__name__)
 
 
 class figure_thread(QThread):
@@ -232,12 +235,12 @@ class InterModule(QWidget, Interictal_gui):
 
     def disp_add_mag_func(self):
         self.disp_wave_mul *= 1.5
-        print(self.disp_wave_mul)
+        logger.debug(f"disp_wave_mul -> {self.disp_wave_mul}")
         self.disp_refresh()
 
     def disp_drop_mag_func(self):
         self.disp_wave_mul *= 0.75
-        print(self.disp_wave_mul)
+        logger.debug(f"disp_wave_mul -> {self.disp_wave_mul}")
         self.disp_refresh()
 
     def disp_win_left_func(self):

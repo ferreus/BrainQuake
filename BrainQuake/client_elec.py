@@ -227,12 +227,12 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.thread_6.start()
 
     def optimizeProgress(self, message):
-        print(message) # optimizer status, one line per (threshold, erosion) trial
+        logger.info(message) # optimizer status, one line per (threshold, erosion) trial
 
     def optimizeFinished(self, thre_pct, ero_itr, K_found):
         self.doubleSpinBox_1.setValue(thre_pct) # fill in the best-found parameters
         self.lineEdit_4.setText(str(ero_itr))
-        print(f"Optimizer result: threshold={thre_pct}%, erosion={ero_itr} -> {K_found} tracks detected (target {self.lineEdit_3.text()})")
+        logger.info(f"Optimizer result: threshold={thre_pct}%, erosion={ero_itr} -> {K_found} tracks detected (target {self.lineEdit_3.text()})")
         self.pushButton_11.setEnabled(True)
         self.pushButton_3.setEnabled(True)
 
@@ -331,7 +331,6 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         if k_flag:
             # 此处应警告，聚类K_check<K
             logger.warning('Cannot cluster enough electrode tracks!')
-            print('Warning: Cannot cluster enough electrode tracks!')
             self.pushButton_1.setEnabled(True) # label btn clicked so disable the above processable btns
             self.pushButton_3.setEnabled(True)
             self.pushButton_11.setEnabled(True)
@@ -443,8 +442,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
                 self.elec_dict[elec_name] = elec_info
                 self.elec_number_dict[elec_name] = elec_number
         logger.info(f"viewContacts: loaded {len(self.elec_dict)} electrodes: {self.elec_number_dict}")
-        print(self.elec_dict)
-        print(self.elec_number_dict)
+        logger.debug(f"viewContacts: elec_dict={self.elec_dict}")
         for item in self.elec_number_dict:
             row = self.tableWidget.rowCount()
             self.tableWidget.setRowCount(row + 1)
@@ -456,7 +454,6 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
             self.tableWidget.setItem(row, 2, QTableWidgetItem(labels_name[0]))
             self.elec_label_dict[item] = labels_name
         logger.info(f"viewContacts: anatomical labels resolved: {self.elec_label_dict}")
-        print(self.elec_label_dict)
         # mayaviplot.mayaviView(filePath=DATASETDIR, surfPath=f"{SUBDIR}/subjects", subname=self.patient)
         self.fig = Figure(figsize=(10,10))
         self.scene.addWidget(FigureCanvas(self.fig))
@@ -479,7 +476,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.pushButton_10.setEnabled(True)
 
     def allSet(self):
-        self.vis3D(filePath=self.directory_ct, self.patient)
+        self.vis3D(filePath=self.directory_ct, patName=self.patient)
 
     def vis3D(self, filePath, patName):
         logger.info(f"vis3D: filePath={filePath}, patName={patName}, directory_surf={self.directory_surf}")
@@ -488,7 +485,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         brain_data=nib.load(os.path.join(self.directory_surf, 'mri', 'orig.mgz'))
         aff_matrix=brain_data.header.get_affine()
         logger.info(f"vis3D: loaded {len(elecs_xyzDict)} electrode channels, affine matrix computed")
-        print(aff_matrix)
+        logger.debug(f"vis3D: affine matrix={aff_matrix}")
         # verl,facel=nib.freesurfer.read_geometry(f"{self.directory_surf}/surf/lh.pial")
         # verr,facer=nib.freesurfer.read_geometry(f"{self.directory_surf}/surf/rh.pial")
         verl,facel=nib.freesurfer.read_geometry(os.path.join(self.directory_surf, 'surf', 'lh.pial'))
@@ -504,10 +501,9 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         for ch,xyz in elecs_xyzDict.items():
             reCenter_xyzDict[ch]=xyz
         
-        print('------')
         for k, v in reCenter_xyzDict.items():
-            print(k, v.shape)
-        
+            logger.debug(f"{k} {v.shape}")
+
         opacity=0.4
         ambient=0.4225
         specular = 0.3

@@ -41,7 +41,6 @@ def run(cmd):
         Command to be sent to the shell.
     """
     logger.info(f"Running shell command: {cmd}")
-    print(f"Running shell command: {cmd}")
     t0 = time.time()
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     elapsed = time.time() - t0
@@ -53,7 +52,7 @@ def run(cmd):
         logger.info(f"Command finished in {elapsed:.1f}s with return code {result.returncode}: {cmd}")
     else:
         logger.error(f"Command failed in {elapsed:.1f}s with return code {result.returncode}: {cmd}")
-    print(f"Done!\n")
+    logger.info("Done!")
     return result
 
 def align(inp, ref, xfm=None, out=None, dof=12, searchrad=True, bins=256, interp=None, cost="mutualinfo", sch=None, wmseg=None, init=None, finesearch=None,):
@@ -168,7 +167,6 @@ def trackRecognition(patient, cmd_hough3d, CTresult_dir, intraFile, thre=0.2):
     hough_args = ["-o", outfile, "-minvotes", "5", fname]
     cmd_hough = f"{cmd_hough3d} -o {outfile} -minvotes 5 {fname}"
     logger.info(f"trackRecognition: hough3dlines executable={cmd_hough3d}, args={hough_args}")
-    print(f"Running cmd: [{cmd_hough}]...")
     result = run(cmd=cmd_hough)
     logger.info(f"trackRecognition: hough3dlines command={cmd_hough!r}, returncode={result.returncode}")
     return xs, ys, zs
@@ -269,12 +267,12 @@ class GenerateLabel_thread(QThread):
         K_check = elec_track.shape[0]
         logger.info(f"GenerateLabel_thread: hough3dlines result: {K_check} tracks detected (K={self.K} requested)")
         if K_check < self.K:
-            print(f"Warning: {K_check} tracks were detected, but {self.K} electrodes were implanted;")
+            logger.warning(f"{K_check} tracks were detected, but {self.K} electrodes were implanted;")
             self.finished.emit(1)
         else: # if K_check != K:
             if K_check > self.K:
-                print(f"Info: {self.K} electrodes implanted, but {K_check} tracks were detected; "
-                      f"keeping the {self.K} best-defined (highest npoints) and ignoring the rest.")
+                logger.info(f"{self.K} electrodes implanted, but {K_check} tracks were detected; "
+                            f"keeping the {self.K} best-defined (highest npoints) and ignoring the rest.")
 
             # process a gaussian mixture model for bug fixing
             # column 0 is npoints (track support); pick the K best-supported tracks
@@ -450,14 +448,13 @@ class ContactSegment_thread(QThread):
 
     def run(self):
         logger.info(f"ContactSegment_thread: starting for patient={self.patName}, K={self.K}, directory_labels={self.directory_labels}, numMax={self.numMax}, diameterSize={self.diameterSize}, spacing={self.spacing}, gap={self.gap}")
-        print('Yaah!')
         for i in range(self.K):
             iLabel = i + 1
             # xxx = electrode.ElectrodeSeg(filePath=self.directory_labels, patName=self.patName, iLabel=iLabel, numMax=self.numMax, diameterSize=self.diameterSize, spacing=self.spacing, gap=self.gap)
             xxx = ElectrodeSeg(filePath=self.directory_labels, patName=self.patName, iLabel=iLabel, numMax=self.numMax, diameterSize=self.diameterSize, spacing=self.spacing, gap=self.gap)
             xxx.pipeline()
             logger.info(f"ContactSegment_thread: segmented electrode label={iLabel}, name={xxx.nameLabel}, {xxx.elecPos.shape[0]} contacts")
-            print(xxx.elecPos)
+            logger.debug(f"ContactSegment_thread: elecPos={xxx.elecPos}")
         logger.info("ContactSegment_thread: finished")
         self.finished.emit()
 
@@ -584,11 +581,11 @@ class ElectrodeSeg:
             self.alphaList.pop(8)
         else:
             self.alphaList = [chr(i) for i in range(65, 65+self.numElecs)]
-        print(self.iLabel)
+        logger.debug(f"iLabel={self.iLabel}")
         self.iValue = self.labelValues[self.iLabel]
-        print(self.iValue)
+        logger.debug(f"iValue={self.iValue}")
         self.nameLabel = self.alphaList[self.iLabel-1]
-        print(self.nameLabel)
+        logger.debug(f"nameLabel={self.nameLabel}")
         data_elec = np.copy(self.labels)
         data_elec[np.where(self.labels != self.iValue)] = 0 ## isolate a single cluster of voxels belonging to the ith electrode
         self.xs, self.ys, self.zs = np.where(data_elec != 0) 
@@ -719,10 +716,10 @@ class ElectrodeSeg:
         seq_c = np.arange(z - delta, z + delta + 1)
 
         if not ((np.array(seq_s) > 0).all() and (np.array(seq_r) > 0).all() and (np.array(seq_c) > 0).all()):
-            print('Error: index too small 0!')
+            logger.error('index too small 0!')
             return 0, 0, 0
         elif not ((np.array(seq_s) < 256).all() and (np.array(seq_r) < 256).all() and (np.array(seq_c) < 256).all()):
-            print('Error: index too large 256!')
+            logger.error('index too large 256!')
             return 0, 0, 0
         
         else:
@@ -732,7 +729,7 @@ class ElectrodeSeg:
             sumVoxels = np.sum(matrixVoxels)
 
             if (np.sum(matrixVoxels)== 0):
-                print('Error: Converge to non-elec region!')
+                logger.error('Converge to non-elec region!')
                 return 0, 0, 0
             else:
                 f = np.zeros((1, 4))
@@ -760,7 +757,7 @@ class ElectrodeSeg:
         x = int(round(x0))
         y = int(round(y0))
         z = int(round(z0))
-        print(f"initial start voxel:({x0}, {y0}, {z0})")
+        logger.debug(f"initial start voxel:({x0}, {y0}, {z0})")
         
         # test!!!
         self.rawData_local = self.rawData_single
@@ -781,22 +778,22 @@ class ElectrodeSeg:
                 flag_convergence = 1
                 break
         
-        print(f"Convergent center voxel coordinates:({x1},{y1},{z1})")
-        print(f"Convergent center voxel value:{self.rawData[int(round(x1)), int(round(y1)), int(round(z1))]}")
-        
+        logger.debug(f"Convergent center voxel coordinates:({x1},{y1},{z1})")
+        logger.debug(f"Convergent center voxel value:{self.rawData[int(round(x1)), int(round(y1)), int(round(z1))]}")
+
         self.flag_step_stop = 0
         if (x1, y1, z1) == (0, 0, 0):
             self.flag_step_stop = 1
-            print('here1,converged to 0!')
+            logger.debug('here1,converged to 0!')
             # self.elecPos = np.vstack([self.elecPos, [x1, y1, z1]])
-        
+
         else:
             if not flag_convergence:
-                print('here2,converged normally!') 
+                logger.debug('here2,converged normally!')
                 self.targetPoint = [x1, y1, z1] if target == 1 else self.targetPoint
                 self.elecPos = np.vstack([self.elecPos, [x1, y1, z1]])
             else:
-                print('here3, maybe not convergent!') 
+                logger.debug('here3, maybe not convergent!')
                 self.targetPoint = [x1, y1, z1] if target == 1 else self.targetPoint
                 self.elecPos = np.vstack([self.elecPos, [x1, y1, z1]])
 

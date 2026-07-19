@@ -36,7 +36,6 @@ def _run_cmd(cmd, num, step, use_freesurfer_env=False):
         FREESURFER_HOME env var) before running cmd, by default False
     """
     full_cmd = f"{eePipeline.freesurfer_env_prefix()}{cmd}" if use_freesurfer_env else cmd
-    print(full_cmd)
     logger.info(f"Task {num}: starting step '{step}': {full_cmd}")
     t0 = time.time()
     ret = subprocess.run(full_cmd, shell=True, executable='/bin/bash').returncode
@@ -84,13 +83,11 @@ def task_log(req, num=None, name=None, hospital=None, reconType=None, state=None
     if req == "client":
         logs, i = read_a_log(num, name, hospital)
         if i > 0: # we've found sth.
-            print(f"Here are what we've checked!")
             logger.info(f"client query for num={num} name={name} hospital={hospital} matched {i} log line(s)")
-            print(logs)
+            logger.debug(f"task_log: matched logs={logs}")
             return logs, i
         else: # find nothing
             ## here we should ask for the patient's data from either client or dataset.
-            print(f"Patient {num} {name} from {hospital} has not been found! Check out your input or please upload the patient's data! [y/n]")
             logger.warning(f"client query for num={num} name={name} hospital={hospital} matched no logs")
             logs = f"Patient {num} {name} from {hospital} has not been found! Check out your input or please upload the patient's data!"
             # reply = input()
@@ -105,7 +102,6 @@ def task_log(req, num=None, name=None, hospital=None, reconType=None, state=None
     elif req == "freesurfer":
         if state == "finished":
             write_a_log(num, name, hospital, reconType, state, info)
-            print(f"{req} has finished a task {num}!")
             logger.info(f"Task {num} ({name}, reconType={reconType}) marked FINISHED")
             # new_flag, log = pick_a_log(num)
             # if new_flag:
@@ -119,19 +115,16 @@ def task_log(req, num=None, name=None, hospital=None, reconType=None, state=None
             return
         else: # state == "running"
             write_a_log(num, name, hospital, reconType, state, info)
-            print(f"Log {num} has been updated!")
             logger.info(f"Task {num} ({name}, reconType={reconType}) state -> RUNNING (info={info})")
             return
 
     elif req == "polling":
         new_flag, log = pick_a_log(num)
         if new_flag:
-            print(f"A task {log} has been detected by {req}!")
             logger.info(f"Polling detected a new waiting task after {num}: {log.strip()}")
             # Here we should call a freesurfer program!
             return new_flag, log
         else:
-            print(f"No task has been detected by {req}!")
             logger.info(f"Polling found no new waiting task after {num}")
             return new_flag, log
 
@@ -440,21 +433,21 @@ def fastrun(cmd, num, name, hospital, reconType):
     """
     assert reconType=='fast-surfer', 'Wrong reconType!'
     logger.info(f"Task {num}: fastrun starting for patient={name} hospital={hospital}")
-    print(f"Running shell command: {cmd}")
+    logger.info(f"Running shell command: {cmd}")
     task_log(req='freesurfer', num=num, reconType='fast-surfer', state='running', info=0)
     # os.system(cmd)
 
     task_log(req='freesurfer', num=num, reconType='fast-surfer', state='finished', info=1)
     write_to_done(req='freesurfer', num=num, name=name, hospital=hospital, reconType='fast-surfer', state='finished', info=1)
     cmd1 = f"cd {SUBJECTS_DIR} && zip -r {name}fast.zip {name}fast"
-    print(cmd1)
+    logger.info(cmd1)
     # os.system(cmd1)
     logger.info(f"Task {num}: fastrun finished for patient={name}")
     return
 
 def infantrun(cmd, num, name, hospital, reconType):
     logger.info(f"Task {num}: infantrun starting for patient={name} hospital={hospital}")
-    print('infant function to be waiting...')
+    logger.info('infant function to be waiting...')
 
     task_log(req='freesurfer', num=num, reconType='infant-surfer', state='running', info=0)
     # os.system(cmd)
@@ -462,7 +455,7 @@ def infantrun(cmd, num, name, hospital, reconType):
     task_log(req='freesurfer', num=num, reconType='infant-surfer', state='finished', info=1)
     write_to_done(req='freesurfer', num=num, name=name, hospital=hospital, reconType='infant-surfer', state='finished', info=1)
     cmd1 = f"cd {SUBJECTS_DIR} && zip -r {name}fast.zip {name}fast"
-    print(cmd1)
+    logger.info(cmd1)
     # os.system(cmd1)
     logger.info(f"Task {num}: infantrun finished for patient={name}")
     return

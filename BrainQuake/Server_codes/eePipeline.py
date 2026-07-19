@@ -1,5 +1,6 @@
 import os
 import subprocess
+import logging
 import nibabel as nib
 import numpy as np
 import matplotlib
@@ -9,6 +10,8 @@ import skimage
 from skimage import measure
 import scipy
 from scipy import ndimage
+
+logger = logging.getLogger(__name__)
 
 # patient = 'yejiguo'
 # CT_dir = f"/Users/fangcai/Documents/MATLAB/{patient}_test/CT"
@@ -22,7 +25,7 @@ def freesurfer_env_prefix():
     environment (PATH, SUBJECTS_DIR default, etc.).
     """
     if not FREESURFER_HOME:
-        print("Warning: FREESURFER_HOME is not set; FreeSurfer commands may fail to locate their environment")
+        logger.warning("FREESURFER_HOME is not set; FreeSurfer commands may fail to locate their environment")
         return ""
     setup_script = os.path.join(FREESURFER_HOME, 'SetUpFreeSurfer.sh')
     return f"export FREESURFER_HOME={FREESURFER_HOME} && source {setup_script} && "
@@ -40,9 +43,9 @@ def run(cmd, use_freesurfer_env=False):
         whether to source FreeSurfer's SetUpFreeSurfer.sh before running cmd, by default False
     """
     full_cmd = f"{freesurfer_env_prefix()}{cmd}" if use_freesurfer_env else cmd
-    print(f"Running shell command: {full_cmd}")
+    logger.info(f"Running shell command: {full_cmd}")
     subprocess.run(full_cmd, shell=True, executable='/bin/bash')
-    print(f"Done!")
+    logger.info("Done!")
 
 def align(
     inp,

@@ -4,6 +4,7 @@
 import sys
 import os
 import time
+import logging
 import nibabel as nib
 import numpy as np
 from surfer import Brain
@@ -19,11 +20,13 @@ from mayavi import mlab
 # filePath = f"/Users/fangcai/Documents/PYTHON/{patientName}_test"
 filePath1 = '/Applications/freesurfer/7.1.0/subjects'
 
+logger = logging.getLogger(__name__)
+
 def vis3D(filePath, patName):
     elecs_xyzDict=np.load(f"{filePath}/{patName}_data/chnXyzDict.npy",allow_pickle=True)[()]
     brain_data=nib.load(f"{filePath1}/{patName}/mri/orig.mgz")
     aff_matrix=brain_data.header.get_affine()
-    print(aff_matrix)
+    logger.debug(f"vis3D: affine matrix={aff_matrix}")
     verl,facel=nib.freesurfer.read_geometry(f"{filePath1}/{patName}/surf/lh.pial")
     verr,facer=nib.freesurfer.read_geometry(f"{filePath1}/{patName}/surf/rh.pial")
     
@@ -43,10 +46,9 @@ def vis3D(filePath, patName):
     # # for songzishuo
     # reCenter_xyzDict["E'"]=reCenter_xyzDict["E'"][:-2, :]
     # reCenter_xyzDict["F'"]=reCenter_xyzDict["F'"][:-1, :]
-    print('------')
     for k, v in reCenter_xyzDict.items():
-        print(k, v.shape)
-    
+        logger.debug(f"{k} {v.shape}")
+
     opacity=0.4
     ambient=0.4225
     specular = 0.3

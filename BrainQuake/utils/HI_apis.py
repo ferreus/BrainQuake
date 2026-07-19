@@ -3,8 +3,11 @@ import numpy as np
 import os
 import gc
 import shutil
+import logging
 # from HI_utils import *
 from .interictal_utils import *
+
+logger = logging.getLogger(__name__)
 
 segment_time=50
 
@@ -33,7 +36,7 @@ def HI_preprocess_file(filename,remain_chns,highpass_freqband,progress_cb):
     time_ranges=np.array(list(zip(time_inter[:-1],time_inter[1:])))
 
     for id,tr in enumerate(time_ranges):
-        print('part {}/{}'.format(id+1,time_ranges.shape[0]))
+        logger.info('part {}/{}'.format(id+1,time_ranges.shape[0]))
         start,end=edf_data.time_as_index(tr)
         batch_data=edf_data[valid_chns_index,start:end][0]
         batch_data=batch_data-batch_data.mean(axis=0)

@@ -7,6 +7,7 @@ import time
 import pickle
 import os
 import shutil
+import logging
 import mayavi
 from mayavi import mlab
 import nibabel as nib
@@ -28,6 +29,8 @@ from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QGraphicsScene
 # import utils_cs
 from utils import surfer_utils
 from gui_forms.surfer_form import Ui_reconSurfer
+
+logger = logging.getLogger(__name__)
 
 HEADERSIZE = 10
 SEPARATOR = '<SEPARATOR>'
@@ -283,7 +286,7 @@ class reconSurferUi(QtWidgets.QWidget, Ui_reconSurfer):
     
     def mayaviplot(self, name):
         self.previewlist = name
-        print(self.previewlist)
+        logger.info(self.previewlist)
         self.zipfilepath = os.path.join(Filepath, "download", f"{self.previewlist}.zip")
         self.unzipfilepath = os.path.join(Filepath, "download", f"{self.previewlist}")
         if os.path.exists(self.zipfilepath):

@@ -5,7 +5,10 @@ import socket
 import time
 import pickle
 import os
+import logging
 import tqdm
+
+logger = logging.getLogger(__name__)
 
 HEADERSIZE = 10
 SEPARATOR = '<SEPARATOR>'
@@ -62,9 +65,9 @@ def file_send(socket, pat_name):
             bytes_read = f.read(BUFFER_SIZE)
             if not bytes_read:
                 # file transmitting is done
-                # print(f"transmission completed")
+                logger.debug("transmission completed")
                 break
-            # we use sendall to assure transimission in 
+            # we use sendall to assure transimission in
             # busy networks
             socket.sendall(bytes_read)
             # update the progress bar
@@ -89,10 +92,10 @@ def file_recv(socket):
         for _ in progress:
             # read bytes from the socket (receive)
             bytes_read = socket.recv(BUFFER_SIZE)
-            if not bytes_read:    
+            if not bytes_read:
                 # nothing is received
                 # file transmitting is done
-                # print(f"transmission completed")
+                logger.debug("transmission completed")
                 break
             # write to the file the bytes we just received
             f.write(bytes_read)

@@ -24,7 +24,6 @@ while True: ## poll and recon
         last_line = lines[-1]
         num = last_line.split(" ")[0]
     f.close()
-    print(f"Last finished task is: {num}.")
     logger.info(f"Poll tick: last finished task is {num}")
 
     # send a check request to task_log.py
