@@ -102,7 +102,7 @@ pytest tests/test_api.py::test_subject_crud
 
 **Job state machine**: `queued → running → finished | failed | cancelled`
 
-**Job types implemented so far**: `recon`, `ct_register`. Pending: `elec_detect`, `elec_segment`, `ei_compute`, `hi_compute`, `soz_fuse`.
+**Job types implemented so far**: `recon`, `ct_register`, `elec_detect`, `elec_segment`, `ei_compute`, `hfo_compute`, `soz_fuse`.
 
 **File storage**: server disk under `SUBJECTS_DIR` (FreeSurfer convention) + `DATA_ROOT/recv/{subject}/` for raw uploads. DB records artifact kind + relative path; the files themselves are not in the DB.
 
@@ -114,20 +114,20 @@ pytest tests/test_api.py::test_subject_crud
 |---|---|---|
 | `BrainQuake/Server_codes/utils.py` | `reconrun`/`fastrun`/`infantrun` shell-outs, file task queue | Done (`services/recon.py`) |
 | `BrainQuake/Server_codes/eePipeline.py` | CT→MRI FSL registration pipeline | Done (`services/ct_register.py`) |
-| `BrainQuake/utils/elec_utils.py` | hough3dlines subprocess, GMM, `ElectrodeSeg` — split into `detect`/`segment` | Pending Phase (b) |
-| `BrainQuake/client_ictal.py` | `compute_hfer`, `compute_ei_index`, `compute_full_band` | Pending Phase (b) |
-| `BrainQuake/utils/HI_apis.py` + `interictal_utils.py` | HFO/HI detection | Pending Phase (b) |
-| `BrainQuake/soz_result.py` | SOZ fusion/ranking (mayavi call stays client-side) | Pending Phase (b) |
+| `BrainQuake/utils/elec_utils.py` | hough3dlines subprocess, GMM, `ElectrodeSeg` — split into `detect`/`segment` | Done (`services/electrodes.py`) |
+| `BrainQuake/client_ictal.py` | `compute_hfer`, `compute_ei_index`, `compute_full_band` | Done (`services/ictal.py`) |
+| `BrainQuake/utils/HI_apis.py` + `interictal_utils.py` | HFO/HI detection | Done (`services/interictal.py`) |
+| `BrainQuake/soz_result.py` | SOZ fusion/ranking (mayavi call stays client-side) | Done (`services/soz.py`) |
 
 ## Current plan (PLAN.md phases)
 
 See [PLAN.md](PLAN.md) for the full itemized checklist. Summary:
 
 - **Phase (a) — FastAPI+SQLite skeleton**: done (subjects, jobs, recon, ct_register, artifacts routers + worker; 5 passing tests)
-- **Phase (b) — Numeric pipeline port + golden-output harness**: next — snapshot S1 dataset outputs from legacy app *before* porting, then port electrode-seg, EI/HFER, HI/HFO, SOZ services with zero unexplained diffs
+- **Phase (b) — Numeric pipeline port**: services + routers done (electrode-seg detect/segment/labels/chn-xyz/contacts, EI, HFO, SOZ fusion — see `v2/server/app/services/{electrodes,ictal,interictal,soz}.py`); still pending the user's own manual comparison against the legacy app on the S1 dataset (no automated golden-output harness — EI/HFO depend on manual GUI inputs the legacy app never persists, so captured outputs aren't reproducible from scratch)
 - **Phase (c) — Docker image**: `FROM freesurfer/freesurfer:<pinned>` + FSL + hough-3d-lines; FS_LICENSE mounted at runtime, never baked in
 - **Phase (d) — Client REST integration**: replace socket protocol + local compute calls with REST + polling in `v2/client/`
 - **Phase (e) — Unified Qt UI**: single `QMainWindow` with tabs per stage + dockable Jobs/Logs panel with `QProgressBar` + log tail
 - **Phase (f) — Integration/E2E**: full S1 pipeline end-to-end via Docker server + redesigned client
 
-**Key constraint**: Phase (b) correctness is the highest-risk item — zero tests exist on the numeric code today. Golden-output snapshots (EI values, HFO event counts, electrode contact coordinates) from the unmodified legacy app on the S1 dataset must be created before any numeric code is touched.
+**Key constraint**: Phase (b) correctness is the highest-risk item — zero tests exist on the numeric code today, and no automated golden-output harness is being built (per explicit user decision). The user manually verifies each ported service (EI values, HFO event counts, electrode contact coordinates) against the unmodified legacy app on the S1 dataset.

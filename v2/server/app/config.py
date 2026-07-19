@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     FS_LICENSE: str = Field(
         default_factory=lambda: os.getenv("FS_LICENSE", "")
     )
+    HOUGH3DLINES_BIN: str = Field(
+        default_factory=lambda: os.getenv("HOUGH3DLINES_BIN", "hough3dlines")
+    )
 
 settings = Settings()
 

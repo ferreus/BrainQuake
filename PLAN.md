@@ -6,8 +6,8 @@ All new work lives under a new top-level `v2/` directory in the repo (`/home/fer
 `v2/server/` (FastAPI+SQLite service, own dependency set) and `v2/client/` (redesigned PyQt5 client,
 own dependency set). **Nothing under the existing `BrainQuake/` app directory is modified** — the
 current socket server (`BrainQuake/Server_codes/`) and current 5-window PyQt5 client keep running
-exactly as today, so there is always a known-good baseline to run side-by-side and diff against
-(golden-output verification, visual comparison) throughout the whole migration. This also removes the
+exactly as today, so there is always a known-good baseline to run side-by-side and compare against
+(manual output verification, visual comparison) throughout the whole migration. This also removes the
 "big-bang cutover" risk noted earlier — since old and new can coexist on disk indefinitely, cutover
 becomes "when v2 is validated, start using it," not "flip a switch and hope."
 
@@ -83,7 +83,6 @@ server/app/
   services/          # ported numeric modules (elec_utils, HI_apis, ictal compute_*, eePipeline, soz_result)
   workers/           # polling job worker(s): recon_runner, elec_runner, ei_runner, hi_runner, soz_runner
 alembic/             # schema migrations
-tests/golden/        # golden-output regression tests against bundled S1 dataset
 ```
 Direct, low-invention mapping of the existing task types onto routers + a single `jobs` table, now
 also covering electrode-seg/EI/HI/SOZ (previously local-only) as first-class job types.
@@ -104,7 +103,7 @@ artifacts(id, subject_id, job_id NULL, kind,   -- orig_mgz|ct_reg_nii|chnXyzDict
 Replaces `task_log.txt`/`task_done.txt` (unlocked flat-file appends) with transactional rows. The
 existing file tree convention (`fslresults/chnXyzDict.npy`, `edf/EIdets/*.npz`, `edf/HFOdets/*.npz`,
 `*_labels.npy`, `*_result/*.txt`) is preserved on disk server-side — the DB indexes what exists,
-numeric services still read/write `.npy`/`.npz` exactly as today, keeping golden-output testing simple.
+numeric services still read/write `.npy`/`.npz` exactly as today, keeping manual output comparison simple.
 
 ### 2.3 Background jobs — polling worker table, not Celery/Redis
 A dedicated worker process polls `jobs` (`queued` → claim → `running` → execute → `finished`/`failed`),
@@ -142,8 +141,8 @@ scikit-learn) + the FastAPI app + worker. Run via `docker compose` (api + worker
   `FS_LICENSE` env var — confirmed this is how the official image expects it too, so no change needed
   from the original plan; the license key must never be baked into the image.
 - **Version pinning matters**: `recon-all` output can shift subtly between major FreeSurfer versions.
-  Pin a specific tag (not `latest`) and treat a version bump as something to re-validate against the
-  golden-output harness (§ Phase (b)), not just a routine dependency bump.
+  Pin a specific tag (not `latest`) and treat a version bump as something to re-validate manually
+  (§ Phase (b)), not just a routine dependency bump.
 - Net effect on effort: **Phase (c) gets smaller/lower-risk** than originally estimated — building
   FreeSurfer from source (the biggest unknown in a from-scratch Dockerfile) is eliminated; remaining
   work is mostly FSL install + hough-3d-lines build + our own app layer on a known-good base. Image
@@ -215,7 +214,7 @@ integrate; (f) depends on everything.
 | Phase | What | Size (raw effort) | Key risk |
 |---|---|---|---|
 | (a) FastAPI+SQLite service skeleton | Job table, routers, worker, port recon-all/FSL shell-outs | **M — 1.5-2.5 wk** | Protocol replacement (pickle-socket → REST) touches every call site |
-| (b) Numeric pipeline port + golden-output harness | Electrode-seg (detect/segment split), EI/HFER, HI/HFO, SOZ fusion → services + job endpoints | **L — 3-5 wk** | **Highest correctness risk in the project** — zero existing tests; must snapshot today's outputs on the bundled S1 dataset *before* touching code |
+| (b) Numeric pipeline port | Electrode-seg (detect/segment split), EI/HFER, HI/HFO, SOZ fusion → services + job endpoints | **L — 3-5 wk** | **Highest correctness risk in the project** — zero existing tests; correctness is verified by the user manually comparing ported output against the legacy app's output on the S1 dataset, not an automated diff |
 | (c) Docker image | Dockerfile `FROM freesurfer/freesurfer:<pinned>` + FSL + hough-3d-lines + app, license/env handling, compose file | **S — 0.5-1 wk** | Lower risk now (FreeSurfer install itself is inherited from the official image); remaining work is FSL install, hough-3d-lines build, app layer, and version-pin validation |
 | (d) Client REST integration | Replace socket protocol + all local compute calls across client_surf/elec/ictal/inter/soz with REST+polling | **M — 1.5-2.5 wk** | Mechanical but touches every module; needs careful mapping of today's QThreads onto async job polling |
 | (e) Unified Qt UI redesign | Single QMainWindow + tabs + shared Jobs/Logs dock with progress bars/log tail | **M — 1.5-2 wk** | Moderate — new dock widget + tab consolidation, but reuses existing per-tab widget code largely as-is |
@@ -230,8 +229,13 @@ installing FreeSurfer from scratch.
 ## 6. Top Cross-Cutting Risks (ranked)
 
 1. **Zero test coverage on numeric code.** Unchanged from before — still the biggest correctness risk.
-   Mandatory: build a golden-output harness from the bundled S1 dataset *before* any numeric porting,
-   as part of Phase (b)'s definition of done, covering electrode-seg, EI/HFER, and HI/HFO outputs.
+   No automated golden-output harness: EI/HFO computation depends on manual GUI inputs (baseline/target
+   click ranges, band-pass/threshold params) that the legacy app never persists alongside its output, so
+   a captured `.npz` can't be reproduced from scratch without knowing the exact session that made it.
+   Electrode-segmentation params (threshold %, K, erosion iterations) *are* fully recoverable from
+   filenames, but per the user's explicit decision, no automated diff test is being built for any of it —
+   correctness for all of Phase (b) is verified by the user manually running the ported service and the
+   legacy app side-by-side on the S1 dataset and comparing results.
 2. **New network dependency for previously-offline workflows.** Today, electrode segmentation and
    EI/HFO computation run **entirely locally**, no network needed (only the FreeSurfer recon step ever
    talked to a server). Moving all compute server-side means every workflow now requires a reachable
@@ -244,7 +248,7 @@ installing FreeSurfer from scratch.
    (`FS_LICENSE`), never baked in — confirmed this matches the official image's own convention. Build/CI
    time and registry storage remain a real but bounded ops cost, not a correctness risk. New sub-risk:
    **version pinning** — a FreeSurfer version bump can subtly change `recon-all` output, so pin a tag
-   and re-run the golden-output harness on any upgrade rather than tracking `latest`.
+   and manually re-validate on any upgrade rather than tracking `latest`.
 4. **Electrode-segmentation workflow decomposition.** Splitting the old in-process, live-tuning flow
    (`OptimizeParams_thread`, GMM label review, per-contact review) into discrete `detect`/`labels`/
    `segment` job endpoints is the most involved API-design piece of Phase (b) — lower risk than the
@@ -268,12 +272,12 @@ work.
 scaffolding, (c) Dockerfile, (d) REST-wiring the client, (e) the new Jobs/Logs dock widget — compress
 well with AI assistance, since they're largely well-specified translation of existing logic onto a new
 transport, not novel design. What does **not** compress: wall-clock waits on `recon-all` runs (hours),
-the human review/validation cycles needed to trust golden-output diffs for electrode-seg/EI/HFO
+the human review/validation cycles needed for the user to manually trust electrode-seg/EI/HFO
 correctness (Phase (b)), and end-to-end pipeline runs in Phase (f).
 
 Net: **roughly 5-9 calendar weeks (1-2 months)** of near-daily user+assistant collaboration, weighted
-toward the low end if golden-output/domain review turns around quickly, toward the high end if Phase
-(b)'s correctness validation is the pacing factor (likely, given zero existing tests).
+toward the low end if manual domain review turns around quickly, toward the high end if Phase (b)'s
+correctness validation is the pacing factor (likely, given zero existing tests).
 
 **Assumptions:**
 - Existing recon-all/FSL/electrode-seg/EI/HFO **algorithms are trusted as-is** — faithful port +
@@ -323,24 +327,30 @@ existing `BrainQuake/` directory — it stays runnable as the verification basel
       (`queued→running→finished`), artifact registration, cancel, download, and artifact filtering;
       real FreeSurfer/FSL smoke test deferred to Phase (c) once the Docker image exists
 
-### Phase (b) — Numeric pipeline port + golden-output harness
-- [ ] `v2/server/tests/golden/` — run **today's unmodified** `BrainQuake/` code against the bundled S1
-      dataset (`S1_ictal.edf`, `S1_interictal.edf`, `S1CT.nii.gz`) and snapshot outputs (EI values, HFO
-      event list, electrode contact coordinates) *before* porting anything
-- [ ] `v2/server/app/services/electrodes.py` — port `utils/elec_utils.py` (hough3dlines subprocess,
-      GMM clustering, `ElectrodeSeg`), split into `detect()` / `segment()` per plan §2.7
-- [ ] `v2/server/app/routers/electrodes.py` — `register-ct`, `detect`, `labels` (PUT), `segment`,
+### Phase (b) — Numeric pipeline port
+- [x] `v2/server/app/services/electrodes.py` — port `utils/elec_utils.py` (hough3dlines subprocess,
+      GMM clustering, `ElectrodeSeg`), split into `detect()` / `segment()` per plan §2.7. Ad-hoc
+      verification against real S1 data (not a committed golden test, per the no-automated-harness
+      decision above): `segment()`'s contact coordinates exactly match the legacy `chnXyzDict.npy`;
+      a full `detect()` run with the real `hough3dlines.exe` reproduces the identical 822-voxel
+      detection mask, with only expected GMM cluster-boundary nondeterminism (the legacy code also
+      uses `random_state=None`) in how boundary voxels split between adjacent electrodes.
+- [x] `v2/server/app/routers/electrodes.py` — `register-ct`, `detect`, `labels` (PUT), `segment`,
       `chn-xyz`, `contacts/{label}`
-- [ ] `v2/server/app/services/ictal.py` — port `client_ictal.py`'s `compute_hfer`/`compute_ei_index`/
-      `compute_full_band` near-verbatim
-- [ ] `v2/server/app/routers/ictal.py` — `POST .../ei`, `GET .../ei-result`
-- [ ] `v2/server/app/services/interictal.py` — port `utils/HI_apis.py` + `utils/interictal_utils.py`
-- [ ] `v2/server/app/routers/interictal.py` — `POST .../hfo`, `GET .../hfo-result`
-- [ ] `v2/server/app/services/soz.py` — port `soz_result.py`'s fusion/ranking logic (drop the mayavi
-      `plot_3d` call — that stays client-side)
-- [ ] `v2/server/app/routers/soz.py` — `POST .../fuse`, `GET .../result`
-- [ ] Diff every ported service's output against the Phase (b) golden snapshots; zero unexplained
-      deviations before moving on
+- [x] `v2/server/app/services/ictal.py` — port `client_ictal.py`'s `compute_hfer`/`compute_ei_index`/
+      `compute_full_band` near-verbatim. Ran end-to-end against the real S1 ictal edf: normalized EI
+      in [0,1], no NaNs, plausible channel ranking.
+- [x] `v2/server/app/routers/ictal.py` — `POST .../ei`, `GET .../ei-result`
+- [x] `v2/server/app/services/interictal.py` — port `utils/HI_apis.py` + `utils/interictal_utils.py`.
+      Ran end-to-end against the real S1 interictal edf (5 min, 140 channels): completed cleanly with
+      progress callbacks firing correctly.
+- [x] `v2/server/app/routers/interictal.py` — `POST .../hfo`, `GET .../hfo-result`
+- [x] `v2/server/app/services/soz.py` — port `soz_result.py`'s fusion/ranking logic (drop the mayavi
+      `plot_3d` call — that stays client-side). Ran end-to-end fusing the real S1 electrode
+      coordinates with the EI/HFO results above; produced a plausible ranked contact table.
+- [x] `v2/server/app/routers/soz.py` — `POST .../fuse`, `GET .../result`
+- [ ] User manually runs each ported service against the legacy app on the S1 dataset and confirms the
+      results match (or that any deviation is understood/acceptable) before moving on
 
 ### Phase (c) — Docker image
 - [ ] `v2/docker/Dockerfile` — `FROM freesurfer/freesurfer:<pinned>`, install FSL, build
@@ -389,9 +399,9 @@ existing `BrainQuake/` directory — it stays runnable as the verification basel
 
 ## How to Validate This Plan (once/if execution starts)
 
-- **Phase (b) done-criteria**: golden-output diffs (EI values, HFO event counts/timestamps, electrode
-  contact coordinates) between the old client's unmodified local output and the new server's output on
-  the bundled S1 dataset are zero (or explained/approved deviations).
+- **Phase (b) done-criteria**: the user has manually run each ported service against the legacy app on
+  the bundled S1 dataset (EI values, HFO event counts/timestamps, electrode contact coordinates) and
+  confirmed the results match, or that any deviation is understood and accepted. No automated diff test.
 - **Phase (c) done-criteria**: image builds `FROM freesurfer/freesurfer:<pinned>`; `docker compose up`
   brings up API+worker, a fresh subject runs recon-all end-to-end inside the container using a mounted
   `FS_LICENSE`, no host FreeSurfer/FSL install required.
