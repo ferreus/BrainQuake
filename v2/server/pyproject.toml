@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brainquake-server"
+version = "2.0.0"
+description = "BrainQuake v2 REST API server for epilepsy surgery planning"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.100",
+    "uvicorn>=0.20",
+    "sqlalchemy>=2.0",
+    "alembic>=1.10",
+    "pydantic-settings>=2.0",
+    "mne>=1.0",
+    "nibabel>=5.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "python-multipart>=0.0.5",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    "httpx2>=2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

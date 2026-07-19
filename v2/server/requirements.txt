@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+sqlalchemy
+alembic
+pydantic-settings
+mne
+nibabel
+numpy
+scipy
+scikit-learn
+pytest
+httpx
+python-multipart
