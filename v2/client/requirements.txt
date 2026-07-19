@@ -4,3 +4,6 @@ mayavi==4.6.2
 vtk==8.1.2
 nibabel
 requests
+mne
+scipy
+numpy

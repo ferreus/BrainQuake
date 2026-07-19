@@ -11,8 +11,8 @@ BrainQuake is a pre-surgical epilepsy planning tool for SEEG electrode localizat
 ```
 BrainQuake/     # Legacy client/server — do NOT modify; kept as golden-output baseline
 v2/
-  server/       # FastAPI + SQLite REST service (currently being built)
-  client/       # Redesigned PyQt5 client (to be built)
+  server/       # FastAPI + SQLite REST service (phases a+b done)
+  client/       # PyQt5 client rewired to REST (phase d done; still 5 separate windows, no unified UI yet)
 datasets/       # Bundled S1 and Bella sample data (T1, CT, EDF)
 tutorials/      # Jupyter tutorial + electrode module install notes
 ```
@@ -125,8 +125,8 @@ See [PLAN.md](PLAN.md) for the full itemized checklist. Summary:
 
 - **Phase (a) — FastAPI+SQLite skeleton**: done (subjects, jobs, recon, ct_register, artifacts routers + worker; 5 passing tests)
 - **Phase (b) — Numeric pipeline port**: services + routers done (electrode-seg detect/segment/labels/chn-xyz/contacts, EI, HFO, SOZ fusion — see `v2/server/app/services/{electrodes,ictal,interictal,soz}.py`); still pending the user's own manual comparison against the legacy app on the S1 dataset (no automated golden-output harness — EI/HFO depend on manual GUI inputs the legacy app never persists, so captured outputs aren't reproducible from scratch)
-- **Phase (c) — Docker image**: `FROM freesurfer/freesurfer:<pinned>` + FSL + hough-3d-lines; FS_LICENSE mounted at runtime, never baked in
-- **Phase (d) — Client REST integration**: replace socket protocol + local compute calls with REST + polling in `v2/client/`
+- **Phase (c) — Docker image**: skipped for now (deliberately, per user request) — `FROM freesurfer/freesurfer:<pinned>` + FSL + hough-3d-lines; FS_LICENSE mounted at runtime, never baked in
+- **Phase (d) — Client REST integration**: done — `v2/client/` has its own copy of every legacy GUI module (`client_main/surf/elec/ictal/inter/soz.py` + `gui_forms/`) rewired to `api_client.py` instead of sockets/local compute; `BrainQuake/` itself untouched. A few buttons have no v2 server endpoint yet and say so instead of doing nothing: electrodes' threshold/erosion auto-tuner, ictal's HFER heatmap and full-band clustering
 - **Phase (e) — Unified Qt UI**: single `QMainWindow` with tabs per stage + dockable Jobs/Logs panel with `QProgressBar` + log tail
 - **Phase (f) — Integration/E2E**: full S1 pipeline end-to-end via Docker server + redesigned client
 

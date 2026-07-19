@@ -131,7 +131,7 @@ pulls/week). This removes FreeSurfer installation entirely from our own build co
 working, upstream-maintained FreeSurfer environment instead of scripting `recon-all`'s install
 ourselves. On top of that base we add: **FSL** (confirmed NOT bundled in `freesurfer/freesurfer` — a
 separate install/license from FMRIB, still needed for `flirt`/`fnirt`), `hough-3d-lines` built from the
-vendored submodule (C++ compiler + libeigen3, build-time only — not needed in the client toolchain
+git https://github.com/cdalitz/hough-3d-lines.git repo (C++ compiler + libeigen3, build-time only — not needed in the client toolchain
 anymore), and our Python deps (fastapi, uvicorn, sqlalchemy, mne, nibabel, numpy, scipy,
 scikit-learn) + the FastAPI app + worker. Run via `docker compose` (api + worker containers sharing a
 `SUBJECTS_DIR` volume + the SQLite file).
@@ -354,22 +354,44 @@ existing `BrainQuake/` directory — it stays runnable as the verification basel
 
 ### Phase (c) — Docker image
 - [ ] `v2/docker/Dockerfile` — `FROM freesurfer/freesurfer:<pinned>`, install FSL, build
-      `hough-3d-lines` from the vendored submodule, install `v2/server`'s Python deps + app
+      `hough-3d-lines` from the git https://github.com/cdalitz/hough-3d-lines.git repo, install `v2/server`'s Python deps + app
 - [ ] `v2/docker/docker-compose.yml` — `api` + `worker` services sharing a `SUBJECTS_DIR` volume + the
       SQLite file; `FS_LICENSE` passed via env/mounted file, never baked into the image
 - [ ] Validate: `docker compose up`, run one recon-all job end-to-end inside the container with no host
       FreeSurfer/FSL install
 
-### Phase (d) — Client REST integration
-- [ ] `v2/client/api_client.py` — thin `requests`-based HTTP client wrapping every endpoint from §3
-- [ ] Rewire `client_surf.py`-equivalent recon tab to `api_client` instead of
-      `utils/surfer_utils.py`'s socket protocol
-- [ ] Rewire electrode tab's buttons (`detect`/`labels`/`segment`) to `api_client` instead of local
-      `utils/elec_utils.py` calls
-- [ ] Rewire ictal/interictal "compute" buttons to `api_client` instead of local `compute_*`/`HI_apis`
-      calls; keep the existing matplotlib range-selector UI untouched
-- [ ] Rewire SOZ tab to fetch `GET .../soz/result` instead of calling `soz_result.py` locally; keep the
-      existing mayavi rendering code untouched
+### Phase (d) — Client REST integration  ✅ DONE (Docker/Phase (c) skipped for now)
+- [x] `v2/client/api_client.py` — thin `requests`-based HTTP client wrapping every endpoint from §3,
+      plus a blocking `wait_for_job()` poll helper for use inside QThreads
+- [x] `v2/client/local_store.py` — per-subject local cache dir (edf copies, downloaded/unzipped recon
+      zip for `.pial`/`.mgz` files) replacing the legacy user-picked `subject_dir` convention, since
+      subjects are now server-managed rows instead of arbitrary folders
+- [x] `v2/client/client_main.py` — launcher rewired to `api_client`: server-URL field replaces
+      host/port, plus a new subject picker/creator (the legacy app never had a subject list -- v2
+      requires one to exist before any job can be queued)
+- [x] Rewired `client_surf.py`-equivalent recon tab to `api_client` instead of
+      `utils/surfer_utils.py`'s socket protocol (upload -> `POST .../recon` -> poll -> `download.zip`)
+- [x] Rewired electrode tab's buttons (`detect`/`labels`/`segment`) to `api_client` instead of local
+      `utils/elec_utils.py` calls. Two legacy steps collapse: "Preprocess" and "Label Gen" were separate
+      threads client-side, but the v2 `detect` job does both server-side in one call, so both buttons
+      now trigger the same `detect()`. `OptimizeParams_thread`'s grid-search tuner has no v2 server
+      endpoint (out of scope per this phase's router checklist) -- its button now just explains that.
+- [x] Rewired ictal/interictal "compute" buttons to `api_client` instead of local `compute_*`/`HI_apis`
+      calls; the matplotlib range-selector/trace-viewer UI is untouched (still 100% local -- it never
+      needed server data, just the edf file already on disk). Two ictal buttons have no v2 endpoint:
+      "Compute HFER" needs the full time-resolved channels x time matrix, but `ei-result` only returns
+      the per-channel scalar summary; "Full band" (`compute_full_band`) was ported to
+      `services/ictal.py` but never wired to a router endpoint. Both now explain the gap instead of
+      silently doing nothing.
+- [x] Rewired SOZ tab to fetch `GET .../soz/result` instead of calling `soz_result.py` locally; the
+      mayavi `plot_3d` rendering code is unchanged, just fed by REST rows instead of a local computation
+      and reading `.pial` files out of `local_store`'s downloaded recon dir.
+- [x] Verified: full offscreen PyQt5 instantiation of all 5 tabs + the launcher against a live v2
+      server (`QT_QPA_PLATFORM=offscreen`), which caught and fixed a real bug (gui_forms/elec_form.py
+      wires `lineEdit_1`/`lineEdit_2`/`lineEdit_3`/`lineEdit_4`/`doubleSpinBox_1` signals to
+      `patientName`/`hospitalName`/`numberK`/`numberEro`/`threSel`, which the initial port had dropped).
+      Also ran a full live round trip (detect -> labels -> segment -> chn-xyz -> contacts) against real
+      S1 CT/mask data through a running server+worker, confirming every request/response shape matches.
 
 ### Phase (e) — Unified Qt UI redesign
 - [ ] `v2/client/main_window.py` — single `QMainWindow` with a tab per stage (Recon/Electrodes/Ictal/
