@@ -1,9 +1,17 @@
 #! /usr/bin/python3.7
 # -- coding: utf-8 -- **
+"""Electrodes tab layout -- standard Qt theme (no custom stylesheets/backgrounds),
+per the same redesign rules applied to new_patient_dialog.py. The old "Import Data"
+groupbox (CT/surf browse buttons) is gone entirely -- the CT and reconstruction are
+already server-side by the time this tab is used (uploaded via the New Patient
+dialog), so client_elec.py just checks readiness and disables the whole page with an
+explanatory status_label if the data isn't there yet, instead of offering an import
+step.
+"""
 
 from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtWidgets import QApplication,  QMainWindow, QSizePolicy, QMessageBox, QWidget, \
-    QPushButton, QLineEdit, QDesktopWidget, QGridLayout, QFileDialog,  QListWidget, QLabel, \
+from PyQt5.QtWidgets import QApplication, QMainWindow, QSizePolicy, QMessageBox, QWidget, \
+    QPushButton, QLineEdit, QDesktopWidget, QGridLayout, QFileDialog, QListWidget, QLabel, \
     QFrame, QGroupBox, QTableWidget
 from PyQt5.QtCore import Qt, QThread
 
@@ -13,171 +21,120 @@ class Electrodes_gui(object):
     def setupUi(self, Electrodes):
         Electrodes.setObjectName("Electrodes")
         self.setWindowTitle('Electrode Module')
-        self.setStyleSheet("background-color:lightgrey;")
         self.gridlayout = QGridLayout()
         self.gridlayout.setSpacing(10)
-        self.gridlayout.setContentsMargins(35, 35, 35, 35)
+        self.gridlayout.setContentsMargins(15, 15, 15, 15)
         self.gridlayout.setColumnMinimumWidth(0, 800)
         Electrodes.setLayout(self.gridlayout)
-        
+
+        # status banner -- explains why the page is disabled (no subject, no
+        # reconstruction, no CT), or that it's ready / a background step is running
+        self.status_label = QtWidgets.QLabel(Electrodes)
+        self.status_label.setWordWrap(True)
+        self.gridlayout.addWidget(self.status_label, 0, 0, 1, 12)
+
+        # the container everything below lives in -- toggled enabled/disabled as a
+        # whole based on subject readiness (see client_elec.py's set_subject/
+        # _apply_readiness)
+        self.content = QtWidgets.QWidget(Electrodes)
+        self.gridlayout.addWidget(self.content, 1, 0, 28, 12)
+        content_layout = QGridLayout(self.content)
+        content_layout.setSpacing(10)
+        content_layout.setColumnMinimumWidth(0, 800)
+
         # display box
-        self.graphicsView = QtWidgets.QGraphicsView(Electrodes)
+        self.graphicsView = QtWidgets.QGraphicsView(self.content)
         self.graphicsView.setObjectName("DisplayData")
         self.graphicsView.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.graphicsView.setStyleSheet("QGraphicsView{border-radius:5px;background-color:#ffffff;}")
-        self.gridlayout.addWidget(self.graphicsView, 0, 0, 28, 7)
-
-        # import-data groupbox
-        self.groupBox_1 = QtWidgets.QGroupBox(Electrodes)
-        self.groupBox_1.setObjectName("ImportData")
-        self.groupBox_1.setTitle("Import Data")
-        self.groupBox_1.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.groupBox_1.setStyleSheet("QGroupBox{border: 2px solid gray; border-radius: 5px;background-color:lightgrey;}QGroupBox:title{subcontrol-origin: margin;subcontrol-position: top left;padding: 0 3px 0 3px;}")
-        self.gridlayout.addWidget(self.groupBox_1, 0, 8, 4, 4)
-
-        self.lineEdit_1 = QtWidgets.QLineEdit(self.groupBox_1)
-        self.lineEdit_1.setObjectName("Name")
-        # self.lineEdit_1.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        self.lineEdit_1.setStyleSheet("QLineEdit{border-style:none;border-radius:5px;padding:5px;background-color:#ffffff}QLineEdit:focus{border:2px solid gray; }")
-        self.lineEdit_1.setText("patient name")
-        self.gridlayout.addWidget(self.lineEdit_1, 1, 9, 1, 2)
-
-        self.pushButton_1 = QtWidgets.QPushButton(self.groupBox_1)
-        self.pushButton_1.setObjectName("Import CT data")
-        # self.pushButton_1.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_1.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
-        self.pushButton_1.setText("Import CT data")
-        self.pushButton_1.setToolTip("choose a raw CT file (.nii.gz)")
-        self.gridlayout.addWidget(self.pushButton_1, 2, 10, 1, 1)
-
-        self.pushButton_2 = QtWidgets.QPushButton(self.groupBox_1)
-        self.pushButton_2.setObjectName("Import Surf data")
-        # self.pushButton_2.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_2.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
-        self.pushButton_2.setText("Import Surf data")
-        self.pushButton_2.setToolTip("use this subject's server-side reconstruction (from the New Patient upload) and unlock CT import")
-        self.gridlayout.addWidget(self.pushButton_2, 2, 9, 1, 1)
+        content_layout.addWidget(self.graphicsView, 0, 0, 28, 7)
 
         # preprocess groupbox
-        self.groupBox_2 = QtWidgets.QGroupBox(Electrodes)
+        self.groupBox_2 = QtWidgets.QGroupBox(self.content)
         self.groupBox_2.setObjectName("PreprocessData")
         self.groupBox_2.setTitle("Preprocess Data")
         self.groupBox_2.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.groupBox_2.setStyleSheet("QGroupBox{border: 2px solid gray; border-radius: 5px;background-color:lightgrey;}QGroupBox:title{subcontrol-origin: margin;subcontrol-position: top left;padding: 0 3px 0 3px;}")
-        self.gridlayout.addWidget(self.groupBox_2, 5, 8, 6, 4)
-        
+        content_layout.addWidget(self.groupBox_2, 0, 8, 6, 4)
+
         self.pushButton_3 = QtWidgets.QPushButton(self.groupBox_2)
         self.pushButton_3.setObjectName("Preprocess")
-        # self.pushButton_1.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_3.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_3.setText("Preprocess")
-        # self.pushButton_3.setToolTip("")
-        self.gridlayout.addWidget(self.pushButton_3, 9, 9, 1, 1)
+        content_layout.addWidget(self.pushButton_3, 4, 9, 1, 1)
 
         self.pushButton_4 = QtWidgets.QPushButton(self.groupBox_2)
         self.pushButton_4.setObjectName("View")
-        # self.pushButton_2.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_4.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_4.setText("View Results")
-        # self.pushButton_4.setToolTip("")
-        self.gridlayout.addWidget(self.pushButton_4, 9, 10, 1, 1)
+        content_layout.addWidget(self.pushButton_4, 4, 10, 1, 1)
 
         self.label_1 = QtWidgets.QLabel(self.groupBox_2)
         self.label_1.setText("Number of Electrodes:")
-        self.gridlayout.addWidget(self.label_1, 6, 9, 1, 1)
+        content_layout.addWidget(self.label_1, 1, 9, 1, 1)
         self.label_2 = QtWidgets.QLabel(self.groupBox_2)
         self.label_2.setText("Threshold:")
-        self.gridlayout.addWidget(self.label_2, 7, 9, 1, 1)
+        content_layout.addWidget(self.label_2, 2, 9, 1, 1)
         self.label_3 = QtWidgets.QLabel(self.groupBox_2)
         self.label_3.setText("Erosion times:")
-        self.gridlayout.addWidget(self.label_3, 8, 9, 1, 1)
+        content_layout.addWidget(self.label_3, 3, 9, 1, 1)
 
         self.lineEdit_3 = QtWidgets.QLineEdit(self.groupBox_2)
         self.lineEdit_3.setObjectName("NumberofElecs")
-        # self.lineEdit_3.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        self.lineEdit_3.setStyleSheet("QLineEdit{border-style:none;border-radius:5px;padding:5px;background-color:#ffffff}QLineEdit:focus{border:2px solid gray; }")
-        self.gridlayout.addWidget(self.lineEdit_3, 6, 10, 1, 1)
+        content_layout.addWidget(self.lineEdit_3, 1, 10, 1, 1)
 
         self.lineEdit_4 = QtWidgets.QLineEdit(self.groupBox_2)
         self.lineEdit_4.setObjectName("NumberofErosions")
-        # self.lineEdit_4.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        self.lineEdit_4.setStyleSheet("QLineEdit{border-style:none;border-radius:5px;padding:5px;background-color:#ffffff}QLineEdit:focus{border:2px solid gray; }")
-        self.gridlayout.addWidget(self.lineEdit_4, 8, 10, 1, 1)
+        content_layout.addWidget(self.lineEdit_4, 3, 10, 1, 1)
 
         self.doubleSpinBox_1 = QtWidgets.QDoubleSpinBox(self.groupBox_2)
         self.doubleSpinBox_1.setObjectName("threshold")
-        # self.doubleSpinBox_1.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        # self.doubleSpinBox_1.setStyleSheet("QDoubleSpinBox{border-style:none;border-radius:5px;padding:5px;background-color:#ffffff}QDoubleSpinBox:up-arrow{border:1px solid black;}")
         self.doubleSpinBox_1.setFixedWidth(100)
         self.doubleSpinBox_1.setSuffix("%")
         self.doubleSpinBox_1.setMinimum(0)
         self.doubleSpinBox_1.setMaximum(100)
         self.doubleSpinBox_1.setSingleStep(1)
         self.doubleSpinBox_1.setDecimals(2)
-        self.gridlayout.addWidget(self.doubleSpinBox_1, 7, 10, 1, 1)
+        content_layout.addWidget(self.doubleSpinBox_1, 2, 10, 1, 1)
 
         self.pushButton_11 = QtWidgets.QPushButton(self.groupBox_2)
         self.pushButton_11.setObjectName("Optimize")
-        self.pushButton_11.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_11.setText("Optimize Params")
         self.pushButton_11.setToolTip("search threshold & erosion times to match the given number of electrodes")
-        self.gridlayout.addWidget(self.pushButton_11, 10, 9, 1, 2)
+        content_layout.addWidget(self.pushButton_11, 5, 9, 1, 2)
 
         # process groupbox
-        self.groupBox_3 = QtWidgets.QGroupBox(Electrodes)
+        self.groupBox_3 = QtWidgets.QGroupBox(self.content)
         self.groupBox_3.setObjectName("ProcessData")
         self.groupBox_3.setTitle("Process Data")
         self.groupBox_3.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.groupBox_3.setStyleSheet("QGroupBox{border: 2px solid gray; border-radius: 5px;background-color:lightgrey;}QGroupBox:title{subcontrol-origin: margin;subcontrol-position: top left;padding: 0 3px 0 3px;}")
-        self.gridlayout.addWidget(self.groupBox_3, 12, 8, 16, 4)
+        content_layout.addWidget(self.groupBox_3, 7, 8, 16, 4)
 
         self.pushButton_5 = QtWidgets.QPushButton(self.groupBox_3)
         self.pushButton_5.setObjectName("Label")
-        # self.pushButton_5.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_5.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_5.setText("Label")
-        # self.pushButton_5.setToolTip("")
-        self.gridlayout.addWidget(self.pushButton_5, 13, 9, 1, 1)
+        content_layout.addWidget(self.pushButton_5, 8, 9, 1, 1)
 
         self.pushButton_6 = QtWidgets.QPushButton(self.groupBox_3)
         self.pushButton_6.setObjectName("ViewLabels")
-        # self.pushButton_6.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_6.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_6.setText("View Labels")
-        # self.pushButton_6.setToolTip("")
-        self.gridlayout.addWidget(self.pushButton_6, 13, 10, 1, 1)
+        content_layout.addWidget(self.pushButton_6, 8, 10, 1, 1)
 
         self.pushButton_7 = QtWidgets.QPushButton(self.groupBox_3)
         self.pushButton_7.setObjectName("Segment")
-        # self.pushButton_7.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_7.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_7.setText("Contact Segment")
-        # self.pushButton_7.setToolTip("")
-        self.gridlayout.addWidget(self.pushButton_7, 15, 9, 1, 1)
+        content_layout.addWidget(self.pushButton_7, 10, 9, 1, 1)
 
         self.pushButton_8 = QtWidgets.QPushButton(self.groupBox_3)
         self.pushButton_8.setObjectName("labelsDone")
-        # self.pushButton_8.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_8.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_8.setText("Done")
-        # self.pushButton_8.setToolTip("")
-        self.gridlayout.addWidget(self.pushButton_8, 14, 9, 1, 1)
+        content_layout.addWidget(self.pushButton_8, 9, 9, 1, 1)
 
         self.pushButton_9 = QtWidgets.QPushButton(self.groupBox_3)
         self.pushButton_9.setObjectName("contactView")
-        # self.pushButton_9.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_9.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_9.setText("View Contacts")
-        # self.pushButton_9.setToolTip("")
-        self.gridlayout.addWidget(self.pushButton_9, 14, 10, 1, 1)
+        content_layout.addWidget(self.pushButton_9, 9, 10, 1, 1)
 
         self.pushButton_10 = QtWidgets.QPushButton(self.groupBox_3)
         self.pushButton_10.setObjectName("contactDone")
-        # self.pushButton_10.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.pushButton_10.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_10.setText("All set")
-        # self.pushButton_10.setToolTip("")
-        self.gridlayout.addWidget(self.pushButton_10, 15, 10, 1, 1)
+        content_layout.addWidget(self.pushButton_10, 10, 10, 1, 1)
 
         self.tableWidget = QtWidgets.QTableWidget(self.groupBox_3)
         self.tableWidget.setObjectName("CheckList")
@@ -186,22 +143,15 @@ class Electrodes_gui(object):
         self.tableWidget.setColumnWidth(0, 100)
         self.tableWidget.setColumnWidth(1, 100)
         self.tableWidget.setColumnWidth(2, 305)
-        self.tableWidget.setHorizontalHeaderLabels(['Label','#Contact','Location'])
+        self.tableWidget.setHorizontalHeaderLabels(['Label', '#Contact', 'Location'])
         self.tableWidget.setSelectionMode(QTableWidget.SingleSelection)
         self.tableWidget.setSelectionBehavior(QTableWidget.SelectRows)
         self.tableWidget.horizontalHeader().setSectionsClickable(False)
-        self.tableWidget.setStyleSheet("QTableView{border-radius:5px;background-color:#ffffff;color:black;selection-background-color:dimgrey} \
-            QHeaderView:section{background-color:dimgrey;color:white;border: 5px solid#6c6c6c; \
-            border-top-right-radius:5px;border-top-left-radius:5px;}")
         self.tableWidget.verticalHeader().setVisible(False)
         self.tableWidget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.tableWidget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.gridlayout.addWidget(self.tableWidget, 16, 9, 11, 2)
+        content_layout.addWidget(self.tableWidget, 11, 9, 11, 2)
 
-        # self.retranslateUi(Electrodes)
-        self.lineEdit_1.editingFinished.connect(Electrodes.patientName)
-        self.pushButton_1.clicked.connect(Electrodes.importCT)
-        self.pushButton_2.clicked.connect(Electrodes.importSurf)
         self.pushButton_3.clicked.connect(Electrodes.preprocessData)
         self.pushButton_4.clicked.connect(Electrodes.viewIntra)
         self.pushButton_11.clicked.connect(Electrodes.optimizeParams)
@@ -216,11 +166,9 @@ class Electrodes_gui(object):
         self.pushButton_10.clicked.connect(Electrodes.allSet)
         self.tableWidget.itemDoubleClicked.connect(Electrodes.elecAdjust)
         QtCore.QMetaObject.connectSlotsByName(Electrodes)
-        
-        self.lineEdit_1.setReadOnly(False)
+
         self.lineEdit_3.setEnabled(False)
         self.lineEdit_4.setEnabled(False)
-        self.pushButton_1.setEnabled(False)
         self.pushButton_3.setEnabled(False)
         self.pushButton_4.setEnabled(False)
         self.pushButton_11.setEnabled(False)
@@ -230,36 +178,8 @@ class Electrodes_gui(object):
         self.pushButton_8.setEnabled(False)
         self.pushButton_9.setEnabled(False)
         self.pushButton_10.setEnabled(False)
-        # self.doubleSpinBox_1.setEnabled(False)
-        
-    
-    def retranslateUi(self, Electrodes):
-        _translate = QtCore.QCoreApplication.translate
-        Electrodes.setWindowTitle(_translate("Electrodes", "Electrode Extraction"))
-        self.groupBox_1.setTitle(_translate("Electrodes", "加载数据"))
-        self.groupBox_2.setTitle(_translate("Electrodes", "预处理"))
-        self.groupBox_3.setTitle(_translate("Electrodes", "处理电极"))
-        self.pushButton_1.setText(_translate("Electrodes", "选择CT数据"))
-        self.pushButton_1.setToolTip(_translate("Electrodes", "选择原始CT的nii文件"))
-        self.pushButton_2.setText(_translate("Electrodes", "选择皮层数据"))
-        self.pushButton_2.setToolTip(_translate("Electrodes", "选择皮层文件夹的路径"))
-        self.pushButton_3.setText(_translate("Electrodes", "数据预处理"))
-        self.pushButton_3.setToolTip(_translate("Electrodes", "配准/剥颅"))
-        self.pushButton_4.setText(_translate("Electrodes", "查看预处理结果"))
-        # self.pushButton_4.setToolTip(_translate("Electrodes", ""))
-        self.pushButton_5.setText(_translate("Electrodes", "电极分割"))
-        # self.pushButton_5.setToolTip(_translate("Electrodes", ""))
-        self.pushButton_6.setText(_translate("Electrodes", "查看电极标签"))
-        # self.pushButton_6.setToolTip(_translate("Electrodes", ""))
-        self.pushButton_7.setText(_translate("Electrodes", "触点分割"))
-        # self.pushButton_7.setToolTip(_translate("Electrodes", ""))
-        self.pushButton_8.setText(_translate("Electrodes", "标签完成"))
-        # self.pushButton_8.setToolTip(_translate("Electrodes", ""))
-        self.pushButton_9.setText(_translate("Electrodes", "查看触点"))
-        # self.pushButton_9.setToolTip(_translate("Electrodes", ""))
-        self.pushButton_10.setText(_translate("Electrodes", "流程完成"))
-        # self.pushButton_10.setToolTip(_translate("Electrodes", ""))
-        self.label_1.setText(_translate("Electrodes", "电极根数:"))
-        self.label_2.setText(_translate("Electrodes", "设置阈值:"))
-        self.label_3.setText(_translate("Electrodes", "腐蚀次数:"))
-        
+
+        # the whole content area starts disabled -- client_elec.py's set_subject /
+        # readiness check re-enables it once a subject with a finished reconstruction
+        # (and CT) is selected
+        self.content.setEnabled(False)

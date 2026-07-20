@@ -18,6 +18,15 @@ polls it instead. Two workflow changes fall out of that:
     "Optimize" (btn11) just explains that and does nothing else. Set threshold/K/
     erosion by hand for now.
 
+Redesign (per explicit user decision): there is no "Import Data" step anymore -- the
+CT and reconstruction are already server-side by the time this tab is used (uploaded
+via the New Patient dialog), so importing/browsing files here would just be redundant.
+Instead, set_subject() kicks off a background readiness check (ReadinessThread) the
+moment a subject is selected: if reconstruction or CT are missing, the whole page's
+content area is disabled with an explanatory status_label instead of silently doing
+nothing; if a CT is present but not yet registered to the reconstruction, CT
+registration fires automatically (tracked in the Jobs panel, not a manual button).
+
 All matplotlib 3D scatter / mayavi rendering code is unchanged from the legacy
 version -- only its data source changed, from locally-computed arrays to
 REST-downloaded artifacts (via local_store / api_client).
@@ -39,7 +48,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import PyQt5
 from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import QThread, pyqtSignal
-from PyQt5.QtWidgets import QFileDialog, QGraphicsScene, QTableWidgetItem
+from PyQt5.QtWidgets import QGraphicsScene, QTableWidgetItem
 
 from gui_forms.elec_form import Electrodes_gui
 from api_client import ApiError
@@ -48,20 +57,81 @@ from anat_lookup import lookupTable
 
 logger = logging.getLogger(__name__)
 
+NO_SUBJECT = 'no_subject'
+NO_RECON = 'no_recon'
+NO_CT = 'no_ct'
+NEEDS_CT_REGISTER = 'needs_ct_register'
+READY = 'ready'
+
+STATUS_MESSAGES = {
+    NO_SUBJECT: 'Select a subject in the Patients panel to begin.',
+    NO_RECON: "No surface reconstruction found for {name}. Did you run recon-all? "
+               "Use File > New Patient... to start one, or check the Jobs panel if one's already running.",
+    NO_CT: "No CT scan found for {name}. Electrode extraction needs a CT -- "
+           "upload one via File > New Patient... (or re-upload if this subject predates that dialog).",
+    NEEDS_CT_REGISTER: 'Registering CT scan to the reconstruction... (see Jobs panel)',
+    READY: 'Ready -- {name}',
+}
+
+
+class ReadinessThread(QThread):
+    """Checks whether a subject has everything this tab needs (finished
+    reconstruction, uploaded CT, registered CT) without blocking the GUI thread --
+    same reasoning as every other background poller in this app (PHASE_E_PLAN.md's
+    threading model): a slow/unreachable server must not freeze the window while this
+    check runs. Emits `checked(subject_id, state)`."""
+    checked = pyqtSignal(int, str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, api, subject_id, parent=None):
+        super().__init__(parent)
+        self.api = api
+        self.subject_id = subject_id
+
+    def run(self):
+        try:
+            try:
+                self.api.get_recon_result(self.subject_id)
+            except ApiError as e:
+                if e.status_code == 404:
+                    self.checked.emit(self.subject_id, NO_RECON)
+                    return
+                raise
+
+            if self.api.list_artifacts(self.subject_id, kind='ct_reg_nii'):
+                self.checked.emit(self.subject_id, READY)
+                return
+            if self.api.list_artifacts(self.subject_id, kind='raw_ct'):
+                self.checked.emit(self.subject_id, NEEDS_CT_REGISTER)
+                return
+            self.checked.emit(self.subject_id, NO_CT)
+        except (ApiError, Exception) as e:
+            self.failed.emit(str(e))
+
 
 class JobPollThread(QThread):
     """Generic "start a job, poll until terminal" thread -- replaces the legacy
     per-stage QThreads (Preprocess_thread/GenerateLabel_thread/ContactSegment_thread),
     which each ran their numeric work in-process. Now the numeric work runs
     server-side; this thread just starts the job and polls app.services.electrodes
-    via api_client.wait_for_job."""
+    via api_client.wait_for_job.
+
+    Takes `get_api` (a callable, not a fixed ApiClient) because -- unlike the
+    ictal/interictal/soz compute threads, which are constructed fresh on every
+    button click and so always capture whatever `self.api` currently is -- these
+    threads are created once in Electrodes.__init__ and reused across the tab's
+    whole lifetime via repeated .start() calls. A fixed `api` object would go stale
+    the moment main_window.py's server-settings dialog swaps in a new ApiClient after
+    construction, silently polling the wrong server (found via manual testing: the
+    job gets created on the new server correctly since start_fn reads Electrodes.api
+    live, but wait_for_job then 404s polling the OLD server for that job id)."""
     progress = pyqtSignal(str)
     finished_ok = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, api, start_fn):
+    def __init__(self, get_api, start_fn):
         super(JobPollThread, self).__init__()
-        self.api = api
+        self.get_api = get_api
         self.start_fn = start_fn  # callable() -> job dict (already queued)
 
     def run(self):
@@ -71,7 +141,7 @@ class JobPollThread(QThread):
             def on_progress(j):
                 self.progress.emit(j.get('progress_message') or '')
 
-            final_job = self.api.wait_for_job(job['id'], poll_interval=2.0, on_progress=on_progress)
+            final_job = self.get_api().wait_for_job(job['id'], poll_interval=2.0, on_progress=on_progress)
             if final_job['state'] != 'finished':
                 self.failed.emit(final_job.get('progress_message') or f"job {final_job['state']}")
                 return
@@ -100,35 +170,40 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.chn_xyz = None
         self.mayavi_view = None  # attached by main_window.py; None => fall back to a pop-out mlab window
 
-        self.thread_register = JobPollThread(self.api, self._start_ct_register)
+        self.thread_register = JobPollThread(lambda: self.api, self._start_ct_register)
         self.thread_register.finished_ok.connect(self.ctRegisterFinished)
-        self.thread_register.failed.connect(self.jobFailed)
-        self.thread_detect = JobPollThread(self.api, self._start_detect)
+        self.thread_register.failed.connect(self.ctRegisterFailed)
+        self.thread_detect = JobPollThread(lambda: self.api, self._start_detect)
         self.thread_detect.finished_ok.connect(self.detectFinished)
         self.thread_detect.failed.connect(self.jobFailed)
-        self.thread_segment = JobPollThread(self.api, self._start_segment)
+        self.thread_segment = JobPollThread(lambda: self.api, self._start_segment)
         self.thread_segment.finished_ok.connect(self.segmentFinished)
         self.thread_segment.failed.connect(self.jobFailed)
 
-        # the whole workflow below is subject-scoped (CT registration, detect,
-        # segment...) so "Import Surf data" -- this tab's entry point -- stays
-        # disabled until a subject is selected in the Patients panel
-        self.pushButton_2.setEnabled(False)
+        self._readiness_thread = None
+        self._readiness_seq = 0
+        self._set_status(NO_SUBJECT)
         if subject:
             self.set_subject(subject)
 
     def jobFailed(self, msg):
         QtWidgets.QMessageBox.critical(self, '', msg)
 
+    def _set_status(self, state, **fmt):
+        self.content.setEnabled(state == READY)
+        message = STATUS_MESSAGES[state].format(name=self.patient or '', **fmt)
+        self.status_label.setText(message)
+
     def set_subject(self, subject):
         """Called by main_window.py when the Patients panel selection changes (and
         by __init__ if constructed with one already). Unlike client_surf.py, this
         tab's entire workflow is subject-scoped, so switching subjects re-initializes
         the tab's state and requires the workflow to be re-run from the top."""
+        self._readiness_seq += 1
         if subject is None:
             self.subject = None
             self.patient = None
-            self.pushButton_2.setEnabled(False)
+            self._set_status(NO_SUBJECT)
             return
         if self.subject and subject['id'] == self.subject['id']:
             return
@@ -137,18 +212,41 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.labels = None
         self.K = None
         self.chn_xyz = None
-        self.lineEdit_1.setText(self.patient)
-        self.lineEdit_1.setReadOnly(True)
-        self.pushButton_2.setEnabled(True)
         logger.info(f"Electrodes GUI subject set to {self.patient}")
         if self.mayavi_view is not None:
             self.mayavi_view.clear()
+        self._check_readiness()
+
+    def _check_readiness(self):
+        self.content.setEnabled(False)
+        self.status_label.setText(f"Checking {self.patient}'s data...")
+        seq = self._readiness_seq
+        thread = ReadinessThread(self.api, self.subject['id'], parent=self)
+        thread.checked.connect(lambda subject_id, state, s=seq: self._on_readiness_checked(s, state))
+        thread.failed.connect(lambda msg, s=seq: self._on_readiness_failed(s, msg))
+        self._readiness_thread = thread
+        thread.start()
+
+    def _on_readiness_checked(self, seq, state):
+        if seq != self._readiness_seq:
+            return  # a newer subject was selected before this check finished
+        if state == NEEDS_CT_REGISTER:
+            self._set_status(NEEDS_CT_REGISTER)
+            logger.info(f"auto-starting CT registration for {self.patient}")
+            self.thread_register.start()
+            return
+        if state == READY:
+            self._enable_detect_controls()
+        self._set_status(state)
+
+    def _on_readiness_failed(self, seq, msg):
+        if seq != self._readiness_seq:
+            return
+        self.content.setEnabled(False)
+        self.status_label.setText(f"Could not check {self.patient}'s data -- server unreachable:\n{msg}")
 
     def attach_mayavi_view(self, view):
         self.mayavi_view = view
-
-    def patientName(self):
-        self.patient = self.lineEdit_1.text()
 
     def numberK(self):
         self.pushButton_3.setEnabled(True)
@@ -160,51 +258,22 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
     def threSel(self):
         pass
 
-    # -- surf/CT import (btn2/btn1) -----------------------------------------
-
-    def importSurf(self):
-        # Legacy picked a local FreeSurfer subject folder here; in v2 the subject's
-        # reconstruction already lives server-side (uploaded/queued via the "New
-        # Patient..." dialog), so there's no folder to browse -- this just confirms
-        # the linkage and unlocks CT import. No dialog appears by design, but it must
-        # still give some visible confirmation, since silently enabling a button
-        # below is easy to miss.
-        if not self.subject:
-            QtWidgets.QMessageBox.warning(self, '', 'Select a subject first.')
-            return
-        self.pushButton_1.setEnabled(True)
-        try:
-            reg_artifacts = self.api.list_artifacts(self.subject['id'], kind='ct_reg_nii')
-        except (ApiError, Exception) as e:
-            logger.warning(f"could not check existing CT registration: {e}")
-            reg_artifacts = []
-        if reg_artifacts:
-            self._enable_detect_controls()
-            QtWidgets.QMessageBox.information(
-                self, '',
-                f"Using {self.patient}'s reconstruction -- a CT registration already exists, "
-                "so detect controls are unlocked below.")
-        else:
-            QtWidgets.QMessageBox.information(
-                self, '',
-                f"Using {self.patient}'s reconstruction. Click 'Import CT data' next "
-                "to register a CT scan.")
-
-    def importCT(self):
-        path, _ = QFileDialog.getOpenFileName(self, "getOpenFileName", "", "All Files (*);;Nifti Files (*.nii.gz)")
-        if not path:
-            return
-        self.pushButton_1.setEnabled(False)
-        self._ct_local_path = path
-        self.thread_register.start()
+    # -- CT registration (automatic, triggered by _check_readiness) -----------------------------------------
 
     def _start_ct_register(self):
-        self.api.upload_file(self.subject['id'], 'ct', self._ct_local_path)
+        # The CT is already uploaded server-side (via the New Patient dialog) by the
+        # time this fires -- no local file to browse/upload here, just kick off the
+        # registration job against what's already there.
         return self.api.register_ct(self.subject['id'])
 
     def ctRegisterFinished(self, job):
-        logger.info("CT registration finished")
+        logger.info(f"CT registration finished for {self.patient}")
+        self._set_status(READY)
         self._enable_detect_controls()
+
+    def ctRegisterFailed(self, msg):
+        self.content.setEnabled(False)
+        self.status_label.setText(f"CT registration failed for {self.patient}:\n{msg}")
 
     def _enable_detect_controls(self):
         self.lineEdit_3.setEnabled(True)
@@ -325,7 +394,6 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         except (ApiError, Exception) as e:
             QtWidgets.QMessageBox.critical(self, '', f'Could not confirm labels:\n{e}')
             return
-        self.pushButton_1.setEnabled(False)
         self.pushButton_3.setEnabled(False)
         self.pushButton_5.setEnabled(False)
         self.pushButton_6.setEnabled(False)
