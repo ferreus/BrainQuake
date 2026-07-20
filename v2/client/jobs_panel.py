@@ -1,12 +1,21 @@
-"""Jobs/Logs bottom dock (PHASE_E_PLAN.md §3).
+"""Jobs/Logs bottom dock (PHASE_E_PLAN.md §3, extended for the "New Patient" upload flow).
 
 Live table of jobs across (or scoped to) the current subject, each with a progress bar,
 cancel button, and an expandable log tail. Polling runs on its own QThread
 (JobsPollThread) -- never a GUI-thread QTimer calling `requests` directly -- backing off
 from a 2s cycle (while anything is in flight) to a 10s idle cycle, so a hung server
 can't freeze the window and idle polling doesn't hammer it either.
+
+Also renders "pending" entries that aren't real server-side Job rows yet -- the file
+upload phase of the New Patient dialog (new_patient_dialog.py) has no job row on the
+server until the upload finishes and the recon job is queued, but the user still needs
+to see *something* with a live progress bar the moment they click Upload. The dialog
+closes immediately on click (see new_patient_dialog.py), so this panel is the only
+place upload failures ever become visible -- a pending row's "failed" state must stay
+on screen with the error message until the user dismisses it, not disappear silently.
 """
 import threading
+import itertools
 import logging
 
 from PyQt5 import QtWidgets, QtCore, QtGui
@@ -25,7 +34,28 @@ STATE_COLORS = {
     'finished': '#2e7d32',
     'failed': '#c62828',
     'cancelled': '#e65100',
+    'uploading': '#1565c0',
+    'starting': '#1565c0',
 }
+
+_pending_id_seq = itertools.count(1)
+
+
+class PendingJob:
+    """A client-side-only row shown in the Jobs table before a real server Job
+    exists -- see module docstring. `cancel_event`, if given, is a threading.Event
+    the owning upload thread polls; setting it (via the panel's Cancel button)
+    signals that thread to abort."""
+
+    def __init__(self, subject_id, subject_name, label, cancel_event=None):
+        self.id = f"pending-{next(_pending_id_seq)}"
+        self.subject_id = subject_id
+        self.subject_name = subject_name
+        self.label = label
+        self.state = 'uploading'
+        self.progress_pct = 0.0
+        self.message = ''
+        self.cancel_event = cancel_event
 
 
 class JobsPollThread(QThread):
@@ -140,7 +170,8 @@ class JobsPanel(QtWidgets.QDockWidget):
         self.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable)
 
         self._current_subject_only = True
-        self._jobs = []
+        self._last_jobs = []
+        self._pending = {}  # id -> PendingJob, insertion order preserved (dict, py3.7+)
         self._init_ui()
 
         self.poll_thread = JobsPollThread(
@@ -196,37 +227,119 @@ class JobsPanel(QtWidgets.QDockWidget):
 
     def _on_jobs_updated(self, jobs):
         self.error_banner.hide()
-        self._jobs = jobs
+        self._last_jobs = jobs
+        self._rebuild_table()
+
+    # -- pending (client-side, pre-job) rows -----------------------------------------
+
+    def add_pending(self, subject_id, subject_name, label='upload', cancel_event=None):
+        """Adds a pending row and returns its id. Caller drives it forward with
+        update_pending()/remove_pending() -- there is no automatic timeout or
+        server-side backing for this entry."""
+        pending = PendingJob(subject_id, subject_name, label, cancel_event=cancel_event)
+        self._pending[pending.id] = pending
+        self._rebuild_table()
+        return pending.id
+
+    def update_pending(self, pending_id, progress_pct=None, message=None, state=None):
+        pending = self._pending.get(pending_id)
+        if pending is None:
+            return
+        if progress_pct is not None:
+            pending.progress_pct = progress_pct
+        if message is not None:
+            pending.message = message
+        if state is not None:
+            pending.state = state
+        self._rebuild_table()
+
+    def remove_pending(self, pending_id):
+        if self._pending.pop(pending_id, None) is not None:
+            self._rebuild_table()
+
+    # -- rendering -----------------------------------------
+
+    def _rebuild_table(self):
         self.table.setRowCount(0)
-        for job in jobs:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(job['id'])))
-            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(job.get('subject_id', ''))))
-            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(job['job_type']))
+        for pending in self._pending.values():
+            self._append_pending_row(pending)
+        for job in self._last_jobs:
+            self._append_job_row(job)
 
-            state_item = QtWidgets.QTableWidgetItem(job['state'])
-            color = STATE_COLORS.get(job['state'], '#000000')
-            state_item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
-            self.table.setItem(row, 3, state_item)
+    def _append_pending_row(self, pending):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        subject_label = (pending.subject_name if pending.subject_id is None
+                         else f"{pending.subject_name} (#{pending.subject_id})")
+        self.table.setItem(row, 0, QtWidgets.QTableWidgetItem('--'))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(subject_label))
+        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(pending.label))
 
-            progress = QtWidgets.QProgressBar()
-            progress.setValue(int(job.get('progress_pct') or 0))
-            self.table.setCellWidget(row, 4, progress)
+        state_item = QtWidgets.QTableWidgetItem(pending.state)
+        color = STATE_COLORS.get(pending.state, '#000000')
+        state_item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+        if pending.message:
+            state_item.setToolTip(pending.message)
+        self.table.setItem(row, 3, state_item)
 
-            self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(str(job.get('created_at', ''))))
+        progress = QtWidgets.QProgressBar()
+        progress.setValue(int(pending.progress_pct))
+        self.table.setCellWidget(row, 4, progress)
 
-            actions = QtWidgets.QWidget()
-            actions_layout = QtWidgets.QHBoxLayout(actions)
-            actions_layout.setContentsMargins(0, 0, 0, 0)
-            log_btn = QtWidgets.QPushButton('Log')
-            log_btn.clicked.connect(lambda _checked, j=job: self._show_log(j))
-            actions_layout.addWidget(log_btn)
-            if job['state'] in ('queued', 'running'):
-                cancel_btn = QtWidgets.QPushButton('Cancel')
-                cancel_btn.clicked.connect(lambda _checked, j=job: self._cancel(j))
-                actions_layout.addWidget(cancel_btn)
-            self.table.setCellWidget(row, 6, actions)
+        self.table.setItem(row, 5, QtWidgets.QTableWidgetItem('--'))
+
+        actions = QtWidgets.QWidget()
+        actions_layout = QtWidgets.QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        if pending.message:
+            info_btn = QtWidgets.QPushButton('Info')
+            info_btn.clicked.connect(lambda _checked, p=pending: self._show_pending_message(p))
+            actions_layout.addWidget(info_btn)
+        if pending.state in ('uploading', 'starting') and pending.cancel_event is not None:
+            cancel_btn = QtWidgets.QPushButton('Cancel')
+            cancel_btn.clicked.connect(lambda _checked, p=pending: self._cancel_pending(p))
+            actions_layout.addWidget(cancel_btn)
+        if pending.state in ('failed', 'cancelled'):
+            dismiss_btn = QtWidgets.QPushButton('Dismiss')
+            dismiss_btn.clicked.connect(lambda _checked, p=pending: self.remove_pending(p.id))
+            actions_layout.addWidget(dismiss_btn)
+        self.table.setCellWidget(row, 6, actions)
+
+    def _show_pending_message(self, pending):
+        QtWidgets.QMessageBox.information(self, '', pending.message or '(no message)')
+
+    def _cancel_pending(self, pending):
+        pending.cancel_event.set()
+
+    def _append_job_row(self, job):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(job['id'])))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(job.get('subject_id', ''))))
+        self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(job['job_type']))
+
+        state_item = QtWidgets.QTableWidgetItem(job['state'])
+        color = STATE_COLORS.get(job['state'], '#000000')
+        state_item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+        self.table.setItem(row, 3, state_item)
+
+        progress = QtWidgets.QProgressBar()
+        progress.setValue(int(job.get('progress_pct') or 0))
+        self.table.setCellWidget(row, 4, progress)
+
+        self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(str(job.get('created_at', ''))))
+
+        actions = QtWidgets.QWidget()
+        actions_layout = QtWidgets.QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        log_btn = QtWidgets.QPushButton('Log')
+        log_btn.clicked.connect(lambda _checked, j=job: self._show_log(j))
+        actions_layout.addWidget(log_btn)
+        if job['state'] in ('queued', 'running'):
+            cancel_btn = QtWidgets.QPushButton('Cancel')
+            cancel_btn.clicked.connect(lambda _checked, j=job: self._cancel(j))
+            actions_layout.addWidget(cancel_btn)
+        self.table.setCellWidget(row, 6, actions)
 
     def _show_log(self, job):
         dlg = LogDialog(self.app_state.api, job, parent=self)

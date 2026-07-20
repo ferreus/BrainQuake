@@ -4,7 +4,6 @@ from pydantic import BaseModel, ConfigDict
 
 class SubjectBase(BaseModel):
     name: str
-    hospital: Optional[str] = None
     recon_type: Optional[str] = None
 
 class SubjectCreate(SubjectBase):

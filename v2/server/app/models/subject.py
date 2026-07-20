@@ -8,7 +8,6 @@ class Subject(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     name = Column(String, unique=True, index=True, nullable=False)
-    hospital = Column(String, nullable=True)
     recon_type = Column(String, nullable=True)  # recon-all, fast-surfer, infant-surfer
     subject_dir = Column(String, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

@@ -139,7 +139,6 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.chn_xyz = None
         self.lineEdit_1.setText(self.patient)
         self.lineEdit_1.setReadOnly(True)
-        self.lineEdit_2.setText(subject.get('hospital') or '')
         self.pushButton_2.setEnabled(True)
         logger.info(f"Electrodes GUI subject set to {self.patient}")
         if self.mayavi_view is not None:
@@ -150,9 +149,6 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
 
     def patientName(self):
         self.patient = self.lineEdit_1.text()
-
-    def hospitalName(self):
-        pass
 
     def numberK(self):
         self.pushButton_3.setEnabled(True)
@@ -168,10 +164,11 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
 
     def importSurf(self):
         # Legacy picked a local FreeSurfer subject folder here; in v2 the subject's
-        # reconstruction already lives server-side (see the Recon tab), so there's no
-        # folder to browse -- this just confirms the linkage and unlocks CT import.
-        # No dialog appears by design, but it must still give some visible
-        # confirmation, since silently enabling a button below is easy to miss.
+        # reconstruction already lives server-side (uploaded/queued via the "New
+        # Patient..." dialog), so there's no folder to browse -- this just confirms
+        # the linkage and unlocks CT import. No dialog appears by design, but it must
+        # still give some visible confirmation, since silently enabling a button
+        # below is easy to miss.
         if not self.subject:
             QtWidgets.QMessageBox.warning(self, '', 'Select a subject first.')
             return
@@ -190,8 +187,8 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         else:
             QtWidgets.QMessageBox.information(
                 self, '',
-                f"Using {self.patient}'s reconstruction from the Recon tab. "
-                "Click 'Import CT data' next to register a CT scan.")
+                f"Using {self.patient}'s reconstruction. Click 'Import CT data' next "
+                "to register a CT scan.")
 
     def importCT(self):
         path, _ = QFileDialog.getOpenFileName(self, "getOpenFileName", "", "All Files (*);;Nifti Files (*.nii.gz)")

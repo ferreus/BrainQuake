@@ -24,7 +24,6 @@ def upgrade() -> None:
     op.create_table('subjects',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('name', sa.String(), nullable=False),
-    sa.Column('hospital', sa.String(), nullable=True),
     sa.Column('recon_type', sa.String(), nullable=True),
     sa.Column('subject_dir', sa.String(), nullable=True),
     sa.Column('created_at', sa.DateTime(), nullable=True),

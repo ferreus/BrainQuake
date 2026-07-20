@@ -7,7 +7,6 @@ from PyQt5.QtWidgets import QApplication,  QMainWindow, QSizePolicy, QMessageBox
     QFrame, QGroupBox, QTableWidget
 from PyQt5.QtCore import Qt, QThread
 
-HOSPITAL = 'Hospital'
 
 class Electrodes_gui(object):
 
@@ -41,14 +40,7 @@ class Electrodes_gui(object):
         # self.lineEdit_1.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         self.lineEdit_1.setStyleSheet("QLineEdit{border-style:none;border-radius:5px;padding:5px;background-color:#ffffff}QLineEdit:focus{border:2px solid gray; }")
         self.lineEdit_1.setText("patient name")
-        self.gridlayout.addWidget(self.lineEdit_1, 1, 9, 1, 1)
-
-        self.lineEdit_2 = QtWidgets.QLineEdit(self.groupBox_1)
-        self.lineEdit_2.setObjectName("Hospital")
-        # self.lineEdit_2.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        self.lineEdit_2.setStyleSheet("QLineEdit{border-style:none;border-radius:5px;padding:5px;background-color:#ffffff}QLineEdit:focus{border:2px solid gray; }")
-        self.lineEdit_2.setText("Hospital")
-        self.gridlayout.addWidget(self.lineEdit_2, 1, 10, 1, 1)
+        self.gridlayout.addWidget(self.lineEdit_1, 1, 9, 1, 2)
 
         self.pushButton_1 = QtWidgets.QPushButton(self.groupBox_1)
         self.pushButton_1.setObjectName("Import CT data")
@@ -63,7 +55,7 @@ class Electrodes_gui(object):
         # self.pushButton_2.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.pushButton_2.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_2.setText("Import Surf data")
-        self.pushButton_2.setToolTip("use this subject's server-side reconstruction (run in the Recon tab) and unlock CT import")
+        self.pushButton_2.setToolTip("use this subject's server-side reconstruction (from the New Patient upload) and unlock CT import")
         self.gridlayout.addWidget(self.pushButton_2, 2, 9, 1, 1)
 
         # preprocess groupbox
@@ -208,7 +200,6 @@ class Electrodes_gui(object):
 
         # self.retranslateUi(Electrodes)
         self.lineEdit_1.editingFinished.connect(Electrodes.patientName)
-        self.lineEdit_2.editingFinished.connect(Electrodes.hospitalName)
         self.pushButton_1.clicked.connect(Electrodes.importCT)
         self.pushButton_2.clicked.connect(Electrodes.importSurf)
         self.pushButton_3.clicked.connect(Electrodes.preprocessData)
@@ -227,8 +218,6 @@ class Electrodes_gui(object):
         QtCore.QMetaObject.connectSlotsByName(Electrodes)
         
         self.lineEdit_1.setReadOnly(False)
-        self.lineEdit_2.setText(HOSPITAL)
-        self.lineEdit_2.setReadOnly(True)
         self.lineEdit_3.setEnabled(False)
         self.lineEdit_4.setEnabled(False)
         self.pushButton_1.setEnabled(False)

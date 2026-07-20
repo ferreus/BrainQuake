@@ -26,7 +26,6 @@ def create_subject(subject_in: SubjectCreate, db: Session = Depends(get_db)):
     subject_dir = os.path.join(settings.SUBJECTS_DIR, subject_in.name)
     subject = Subject(
         name=subject_in.name,
-        hospital=subject_in.hospital,
         recon_type=subject_in.recon_type,
         subject_dir=subject_dir
     )

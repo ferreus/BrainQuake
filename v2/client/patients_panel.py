@@ -1,10 +1,18 @@
 """Patients (subjects) side dock (PHASE_E_PLAN.md §2).
 
 Replaces client_main.py's subject combo box with a persistent, always-visible list that
-every tab reacts to via AppState.subjectChanged, plus create/delete actions. Background
+every tab reacts to via AppState.subjectChanged, plus a delete action. Background
 refresh runs on its own QThread (SubjectPollThread) -- never a GUI-thread QTimer calling
 `requests` directly -- so a slow/unreachable server can't freeze the dock (or the rest
 of the window) while it waits on a response.
+
+There is no inline "create subject by name" field here -- subjects are only ever
+created via the "New Patient..." flow (new_patient_dialog.py), since the patient name
+is always derived from the uploaded MRI file, never typed in by hand. This panel just
+emits newPatientRequested when its button is clicked; main_window.py owns actually
+opening the dialog (it needs both the api client and the Jobs panel, and keeping this
+panel decoupled from jobs_panel.py mirrors how every other cross-panel interaction goes
+through AppState/signals instead of direct references).
 """
 import threading
 import logging
@@ -50,6 +58,8 @@ class SubjectPollThread(QThread):
 
 
 class PatientsPanel(QtWidgets.QDockWidget):
+    newPatientRequested = pyqtSignal()
+
     def __init__(self, app_state, parent=None):
         super().__init__('Patients', parent)
         self.app_state = app_state
@@ -86,15 +96,9 @@ class PatientsPanel(QtWidgets.QDockWidget):
         self.subject_list.currentRowChanged.connect(self._on_row_selected)
         layout.addWidget(self.subject_list, stretch=1)
 
-        new_row = QtWidgets.QHBoxLayout()
-        self.new_name_edit = QtWidgets.QLineEdit(self)
-        self.new_name_edit.setPlaceholderText('new subject name')
-        self.new_name_edit.returnPressed.connect(self.create_subject)
-        new_row.addWidget(self.new_name_edit)
-        self.new_btn = QtWidgets.QPushButton('New', self)
-        self.new_btn.clicked.connect(self.create_subject)
-        new_row.addWidget(self.new_btn)
-        layout.addLayout(new_row)
+        self.new_patient_btn = QtWidgets.QPushButton('New Patient...', self)
+        self.new_patient_btn.clicked.connect(self.newPatientRequested.emit)
+        layout.addWidget(self.new_patient_btn)
 
         action_row = QtWidgets.QHBoxLayout()
         self.delete_btn = QtWidgets.QPushButton('Delete', self)
@@ -147,19 +151,6 @@ class PatientsPanel(QtWidgets.QDockWidget):
         subject_id = self.subject_list.item(row).data(Qt.UserRole)
         subject = next((s for s in self._subjects_by_row if s['id'] == subject_id), None)
         self.app_state.set_subject(subject)
-
-    def create_subject(self):
-        name = self.new_name_edit.text().strip()
-        if not name:
-            QtWidgets.QMessageBox.warning(self, '', 'Enter a subject name first.')
-            return
-        try:
-            self.app_state.api.create_subject(name)
-        except (ApiError, Exception) as e:
-            QtWidgets.QMessageBox.critical(self, '', f'Failed to create subject:\n{e}')
-            return
-        self.new_name_edit.clear()
-        self.poll_thread.refresh_now()
 
     def delete_selected(self):
         subject = self.app_state.subject

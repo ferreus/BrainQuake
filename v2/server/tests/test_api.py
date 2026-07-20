@@ -153,8 +153,7 @@ def test_full_e2e_flow(mock_run):
     # 1. Create a subject
     response = client.post(
         "/subjects",
-        json={"name": "TestPatient", "hospital": "General Hospital",
-              "recon_type": "recon-all"},
+        json={"name": "TestPatient", "recon_type": "recon-all"},
     )
     assert response.status_code == 200
     subject_data = response.json()
@@ -271,7 +270,7 @@ def test_full_e2e_flow(mock_run):
 def test_subject_crud(mock_run):
     # Create
     r = client.post("/subjects",
-                    json={"name": "S1", "hospital": "H1"})
+                    json={"name": "S1"})
     assert r.status_code == 200
     sid = r.json()["id"]
 
@@ -287,7 +286,7 @@ def test_subject_crud(mock_run):
 
     # Duplicate
     r = client.post("/subjects",
-                    json={"name": "S1", "hospital": "H1"})
+                    json={"name": "S1"})
     assert r.status_code == 400
 
     # Delete
@@ -300,7 +299,7 @@ def test_subject_crud(mock_run):
 @patch("subprocess.run", side_effect=mock_subprocess_run)
 def test_job_cancel(mock_run):
     r = client.post("/subjects",
-                    json={"name": "Cancel", "hospital": "H"})
+                    json={"name": "Cancel"})
     sid = r.json()["id"]
     r = client.post(f"/subjects/{sid}/recon",
                     json={"recon_type": "recon-all"})
@@ -316,7 +315,7 @@ def test_job_cancel(mock_run):
 @patch("subprocess.run", side_effect=mock_subprocess_run)
 def test_artifacts_and_recon_result(mock_run):
     # Setup: create subject, upload T1, run recon job
-    r = client.post("/subjects", json={"name": "ArtTest", "hospital": "H"})
+    r = client.post("/subjects", json={"name": "ArtTest"})
     sid = r.json()["id"]
 
     client.post(
@@ -348,7 +347,7 @@ def test_artifacts_and_recon_result(mock_run):
     assert "orig_nii" in result_kinds
 
     # 404 when no finished recon job exists for a fresh subject
-    r2 = client.post("/subjects", json={"name": "Fresh", "hospital": "H"})
+    r2 = client.post("/subjects", json={"name": "Fresh"})
     sid2 = r2.json()["id"]
     r = client.get(f"/subjects/{sid2}/recon/result")
     assert r.status_code == 404
@@ -357,7 +356,7 @@ def test_artifacts_and_recon_result(mock_run):
 @patch("subprocess.run", side_effect=mock_subprocess_run)
 def test_artifact_download_and_subject_zip(mock_run):
     # Setup: create subject, upload T1, run recon job
-    r = client.post("/subjects", json={"name": "DlTest", "hospital": "H"})
+    r = client.post("/subjects", json={"name": "DlTest"})
     sid = r.json()["id"]
 
     client.post(
@@ -384,7 +383,7 @@ def test_artifact_download_and_subject_zip(mock_run):
     assert r.headers["content-type"].startswith("application/zip")
 
     # 404 when no recon has been run
-    r2 = client.post("/subjects", json={"name": "NoRecon", "hospital": "H"})
+    r2 = client.post("/subjects", json={"name": "NoRecon"})
     sid2 = r2.json()["id"]
     r = client.get(f"/subjects/{sid2}/download.zip")
     assert r.status_code == 404

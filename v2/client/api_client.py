@@ -6,7 +6,9 @@ functions -- the GUI modules now POST a job / GET a result instead of running nu
 code (or talking sockets) in-process.
 """
 import time
+import os
 import requests
+from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 
@@ -22,6 +24,12 @@ class ApiError(Exception):
         self.status_code = status_code
         self.detail = detail
         super().__init__(f"[{status_code}] {detail}")
+
+
+class UploadCancelled(Exception):
+    """Raised from upload_file_with_progress's byte-callback when the caller's
+    cancel_event gets set mid-upload -- propagates up through requests' read loop
+    to abort the in-flight POST."""
 
 
 class ApiClient:
@@ -68,8 +76,8 @@ class ApiClient:
     def list_subjects(self):
         return self._get("/subjects")
 
-    def create_subject(self, name, hospital=None, recon_type=None):
-        return self._post("/subjects", json={"name": name, "hospital": hospital, "recon_type": recon_type})
+    def create_subject(self, name, recon_type=None):
+        return self._post("/subjects", json={"name": name, "recon_type": recon_type})
 
     def get_subject(self, subject_id):
         return self._get(f"/subjects/{subject_id}")
@@ -84,6 +92,38 @@ class ApiClient:
             resp = self.session.post(
                 self._url(f"/subjects/{subject_id}/upload"),
                 params={"file_type": file_type}, files=files, timeout=self.timeout)
+        return self._handle(resp).json()
+
+    def upload_file_with_progress(self, subject_id, file_type, file_path, on_progress=None,
+                                   cancel_event=None, filename=None):
+        """Like upload_file, but reports real byte-level progress via
+        requests-toolbelt's MultipartEncoderMonitor -- used by new_patient_dialog.py
+        to drive the Jobs panel's upload progress bar (PHASE_E_PLAN.md's "New Patient"
+        redesign). `on_progress(bytes_sent, total_bytes)` is invoked synchronously on
+        whatever thread calls this method -- callers running this from a QThread must
+        marshal to the GUI thread themselves (e.g. via a Qt signal), never touch
+        widgets directly from here. If `cancel_event` (a threading.Event) is set
+        mid-upload, raises UploadCancelled, aborting the in-flight POST.
+        No per-request timeout is set -- large MRI/CT files on a slow link can
+        legitimately take longer than ApiClient's default 30s."""
+        with open(file_path, "rb") as f:
+            encoder = MultipartEncoder(
+                fields={"file": (filename or _basename(file_path), f, "application/octet-stream")})
+            total = encoder.len
+
+            def _callback(monitor):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise UploadCancelled("upload cancelled")
+                if on_progress:
+                    on_progress(monitor.bytes_read, total)
+
+            monitor = MultipartEncoderMonitor(encoder, _callback)
+            resp = self.session.post(
+                self._url(f"/subjects/{subject_id}/upload"),
+                params={"file_type": file_type},
+                data=monitor,
+                headers={"Content-Type": monitor.content_type},
+                timeout=None)
         return self._handle(resp).json()
 
     def list_artifacts(self, subject_id, kind=None):
