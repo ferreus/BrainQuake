@@ -1,0 +1,51 @@
+# Usage:
+#   1. Get a FreeSurfer license.txt (free, https://surfer.nmr.mgh.harvard.edu/registration.html)
+#   2. Copy v2/docker/.env.example to v2/docker/.env and point FS_LICENSE_HOST at it
+#   3. docker compose -f v2/docker/docker-compose.yml up --build
+#
+# api and worker share the same image, the same SUBJECTS_DIR/DATA_ROOT volume, and
+# the same SQLite DB file (WAL mode) -- mirrors the single-process legacy layout,
+# just split across two containers per PLAN.md 2.3.
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      # DEV: local FreeSurfer tarball cache dir, read via a buildx bind mount in
+      # the Dockerfile's FreeSurfer step -- drop this once that step goes back to
+      # wget-downloading the official tarball.
+      additional_contexts:
+        fsdist: /media/data/opt/freesurfer
+    image: brainquake-server:latest
+    ports:
+      - "8000:8000"
+    environment:
+      FS_LICENSE: /usr/local/freesurfer/license.txt
+    volumes:
+      - subjects_data:/data
+      - ${FS_LICENSE_HOST:-./license.txt}:/usr/local/freesurfer/license.txt:ro
+    restart: unless-stopped
+
+  worker:
+    image: brainquake-server:latest
+    depends_on:
+      api:
+        # api's healthcheck only passes once uvicorn is serving, which happens after
+        # main.py's Base.metadata.create_all() -- guarantees the jobs table exists
+        # before the worker's first poll.
+        condition: service_healthy
+    environment:
+      FS_LICENSE: /usr/local/freesurfer/license.txt
+    volumes:
+      - subjects_data:/data
+      - ${FS_LICENSE_HOST:-./license.txt}:/usr/local/freesurfer/license.txt:ro
+    command: ["python3", "-m", "app.workers.jobs_worker"]
+    # the image's HEALTHCHECK probes localhost:8000, which only the api container
+    # serves -- the worker runs no HTTP server, so that check would never pass here.
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
+volumes:
+  subjects_data:

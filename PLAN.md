@@ -353,14 +353,33 @@ existing `BrainQuake/` directory — it stays runnable as the verification basel
       results match (or that any deviation is understood/acceptable) before moving on
 
 ### Phase (c) — Docker image
-- [ ] `v2/docker/Dockerfile` — `FROM freesurfer/freesurfer:<pinned>`, install FSL, build
-      `hough-3d-lines` from the git https://github.com/cdalitz/hough-3d-lines.git repo, install `v2/server`'s Python deps + app
-- [ ] `v2/docker/docker-compose.yml` — `api` + `worker` services sharing a `SUBJECTS_DIR` volume + the
-      SQLite file; `FS_LICENSE` passed via env/mounted file, never baked into the image
-- [ ] Validate: `docker compose up`, run one recon-all job end-to-end inside the container with no host
-      FreeSurfer/FSL install
+- [x] `v2/docker/Dockerfile` — deviated from the original "`FROM freesurfer/freesurfer`" idea (see below):
+      `FROM ubuntu:22.04`, FreeSurfer **7.4.1** (not 8.2.0 -- matches the version the legacy `BrainQuake/`
+      app was built against, per explicit user decision; upgrade to latest FreeSurfer is a deliberately
+      deferred follow-up once v2 is otherwise validated) installed from the official Ubuntu22 tarball,
+      FSL 6.0.7 via the official `fslinstaller.py`, `hough-3d-lines` built from source
+      (github.com/cdalitz/hough-3d-lines.git, `libeigen3-dev` headers land exactly where its Makefile
+      already expects them on Ubuntu, no Makefile edits needed), `v2/server`'s Python deps + app in a venv.
+      **Deviation from §2.6/checklist wording above**: not based on the official `freesurfer/freesurfer`
+      Docker Hub image -- built FreeSurfer's own Ubuntu22 tarball onto a plain `ubuntu:22.04` base instead,
+      per explicit user decision. DEV-only wrinkle: the FreeSurfer step currently reads the ~9.5GB tarball
+      from a local cache dir via a buildx additional build-context (`fsdist`, pointed at
+      `/media/data/opt/freesurfer` in `docker-compose.yml`) instead of `wget`-ing it on every rebuild --
+      the commented-out `wget` block in the Dockerfile is the real, portable path to restore before
+      anyone else builds this image.
+- [x] `v2/docker/docker-compose.yml` — `api` + `worker` services sharing a `subjects_data` volume + the
+      SQLite file; `FS_LICENSE` mounted read-only via `FS_LICENSE_HOST` (`.env`, gitignored), never baked
+      into the image. Fixed a real startup race found during validation: the worker polled the `jobs`
+      table before `api`'s `Base.metadata.create_all()` had run, so `worker` now `depends_on: api:
+      condition: service_healthy` (api's HTTP healthcheck only passes after tables exist); the image's
+      HEALTHCHECK (HTTP GET on :8000) is disabled for the worker service since it runs no HTTP server.
+- [x] Validate: `docker compose up` brings up both containers healthy; confirmed inside the built image
+      that `recon-all`/`mri_convert` (FreeSurfer 7.4.1), `flirt` (FSL 6.0.7), `hough3dlines`, and all
+      server Python deps are present and runnable, and did a live `POST/GET /subjects` round trip against
+      the SQLite DB on the shared volume. **Not done as part of this validation** (deferred to the user,
+      needs a real `FS_LICENSE` + a multi-hour run): an actual end-to-end `recon-all` job on real T1 data.
 
-### Phase (d) — Client REST integration  ✅ DONE (Docker/Phase (c) skipped for now)
+### Phase (d) — Client REST integration  ✅ DONE (done before Phase (c); Docker was skipped at the time)
 - [x] `v2/client/api_client.py` — thin `requests`-based HTTP client wrapping every endpoint from §3,
       plus a blocking `wait_for_job()` poll helper for use inside QThreads
 - [x] `v2/client/local_store.py` — per-subject local cache dir (edf copies, downloaded/unzipped recon
@@ -424,9 +443,12 @@ existing `BrainQuake/` directory — it stays runnable as the verification basel
 - **Phase (b) done-criteria**: the user has manually run each ported service against the legacy app on
   the bundled S1 dataset (EI values, HFO event counts/timestamps, electrode contact coordinates) and
   confirmed the results match, or that any deviation is understood and accepted. No automated diff test.
-- **Phase (c) done-criteria**: image builds `FROM freesurfer/freesurfer:<pinned>`; `docker compose up`
-  brings up API+worker, a fresh subject runs recon-all end-to-end inside the container using a mounted
-  `FS_LICENSE`, no host FreeSurfer/FSL install required.
+- **Phase (c) done-criteria**: ✅ image builds (`FROM ubuntu:22.04` + FreeSurfer 7.4.1 + FSL 6.0.7 +
+  hough-3d-lines, not the originally-planned `FROM freesurfer/freesurfer:<pinned>` -- see checklist
+  deviation note above); `docker compose up` brings up API+worker healthy, confirmed all native binaries
+  present/runnable and a live DB round trip, no host FreeSurfer/FSL install required. Still open: the
+  user running an actual `recon-all` end-to-end inside the container with a real `FS_LICENSE` (multi-hour,
+  not exercised in this validation pass).
 - **Phase (f) done-criteria**: one full pipeline run (recon → CT-reg → electrode-seg → EI → HI → SOZ)
   completes end-to-end on the S1 dataset via the redesigned Qt client talking only to the Dockerized
   REST API, with visual output (trace views, 3D mayavi views) matching the pre-change baseline.

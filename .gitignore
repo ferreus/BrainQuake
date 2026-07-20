@@ -132,3 +132,7 @@ dmypy.json
 BrainQuake/Server_codes/data/recv/
 BrainQuake/upload/
 datasets/
+
+# FreeSurfer license (never commit; mounted at runtime via v2/docker/.env)
+v2/docker/license.txt
+
