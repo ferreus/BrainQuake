@@ -79,19 +79,47 @@ class HiComputeThread(QThread):
 
 # main class
 class InterModule(QWidget, Interictal_gui):
-    def __init__(self, api, subject):
+    def __init__(self, api, subject=None):
         super(InterModule, self).__init__()
         self.setupUi(self)
         self.api = api
-        self.subject = subject
-        self.subject_dir = local_store.subject_dir(subject['name'])
-        self.lineedit_subject_dir.setText(self.subject_dir)
-        self.lineedit_patient_name.setText(subject['name'])
-        self.button_inputedf.setEnabled(True)
+        self.subject = None
+        self.subject_dir = None
         self.edf_artifact_id = None
         self.hi_thread = None
         self.hfoDets_chns = None
         self.hfoDets_times = None
+        self.button_inputedf.setEnabled(False)
+        if subject:
+            self.set_subject(subject)
+
+    def set_subject(self, subject):
+        """Called by main_window.py when the Patients panel selection changes (and
+        by __init__ if constructed with one already). Same reasoning as
+        client_ictal.py's IctalModule.set_subject: the trace-viewer/edf state is
+        tied to one subject's uploaded edf, so switching subjects resets the tab."""
+        if subject is None:
+            self.subject = None
+            self.button_inputedf.setEnabled(False)
+            return
+        if self.subject and subject['id'] == self.subject['id']:
+            return
+        self.subject = subject
+        self.subject_dir = local_store.subject_dir(subject['name'])
+        self.lineedit_subject_dir.setText(self.subject_dir)
+        self.lineedit_patient_name.setText(subject['name'])
+        self.edf_artifact_id = None
+        self.hfoDets_chns = None
+        self.hfoDets_times = None
+        self.button_inputedf.setEnabled(True)
+        self.canvas.axes.cla()
+        self.canvas.draw()
+        for btn in (self.reset_data_display, self.chans_del_button, self.filter_button,
+                    self.dis_up, self.dis_down, self.dis_add_mag, self.dis_drop_mag,
+                    self.dis_more_chans, self.dis_less_chans, self.dis_shrink_time,
+                    self.dis_expand_time, self.dis_left, self.dis_right, self.HI_button,
+                    self.hiDetsFilt_button, self.hiDetsRaw_button):
+            btn.setEnabled(False)
 
     def center(self):
         qr = self.frameGeometry()

@@ -412,11 +412,30 @@ existing `BrainQuake/` directory — it stays runnable as the verification basel
       Also ran a full live round trip (detect -> labels -> segment -> chn-xyz -> contacts) against real
       S1 CT/mask data through a running server+worker, confirming every request/response shape matches.
 
-### Phase (e) — Unified Qt UI redesign
-- [ ] `v2/client/main_window.py` — single `QMainWindow` with a tab per stage (Recon/Electrodes/Ictal/
-      Interictal/SOZ), reusing existing `gui_forms/*.py`-style widget content per tab
-- [ ] `v2/client/jobs_panel.py` — new dockable Jobs/Logs widget: `QTimer`-polled job list, one
-      `QProgressBar` + expandable log tail per in-flight/recent job
+### Phase (e) — Unified Qt UI redesign ✅ DONE (see PHASE_E_PLAN.md for the detailed plan/checklist)
+- [x] `v2/client/main_window.py` — single `QMainWindow`, tabs in the requested order (MRI/CT Surface
+      Reconstruction / Electrodes Extraction / Ictal module / Interictal module / Visualization
+      Results), reusing existing `gui_forms/*.py`-style widget content per tab; retired
+      `client_main.py` (fully superseded, deleted per user confirmation)
+- [x] `v2/client/patients_panel.py` — new dockable Patients (subjects) widget: list/search/create/
+      delete, background-thread refresh (`SubjectPollThread`), broadcasts the selected subject to
+      all 5 tabs via `app_state.py`'s `AppState.subjectChanged`
+- [x] `v2/client/jobs_panel.py` — new dockable Jobs/Logs widget: background-thread-polled job list
+      (2s cycle while anything's in flight, 10s idle), one `QProgressBar` + cancel button + log-tail
+      dialog per job
+- [x] `v2/client/connection_monitor.py` — background health-check thread driving a status-bar
+      connection indicator + inline "can't refresh" banners on both docks; verified live (killed the
+      server mid-session) that the UI stays responsive (tab switch ~39ms) while red
+- [x] `v2/client/mayavi_view.py` — embeddable mayavi scene (TraitsUI `SceneEditor`) used by the
+      recon/electrodes/SOZ tabs instead of legacy pop-out `mlab.show()` windows, per explicit user
+      decision (higher-risk option, see PHASE_E_PLAN.md's Risks section). **Confirmed real
+      trade-off during smoke-testing**: the embedded pattern segfaults on Python/VTK teardown at
+      process exit on this dev machine (a bare pop-out `mlab.show()` does not); mitigated with
+      `os._exit(0)` after `app.exec_()` in `main_window.py`'s entry point instead of
+      `sys.exit(app.exec_())` -- flagged for re-verification on the actual target machine.
+- [x] Live smoke-test against a real `v2/server` instance: subject creation/selection propagates
+      into all 5 tabs' `.subject`; a fresh `AttributeError` in `PatientsPanel.__init__`
+      (`poll_thread` referenced before construction) was caught and fixed this way.
 
 ### Phase (f) — Integration/E2E testing
 - [ ] One full pipeline run (recon → CT-reg → electrode-seg → EI → HI → SOZ) via `v2/client` talking

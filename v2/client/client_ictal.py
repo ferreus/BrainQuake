@@ -85,18 +85,43 @@ class EiComputeThread(QThread):
 
 # main class
 class IctalModule(QWidget, Ictal_gui):
-    def __init__(self, api, subject):
+    def __init__(self, api, subject=None):
         super(IctalModule, self).__init__()
         self.setupUi(self)
         self.api = api
+        self.subject = None
+        self.subject_dir = None
+        self.edf_artifact_id = None
+        self.ei_thread = None
+        self.button_inputedf.setEnabled(False)
+        if subject:
+            self.set_subject(subject)
+
+    def set_subject(self, subject):
+        """Called by main_window.py when the Patients panel selection changes (and
+        by __init__ if constructed with one already). The trace-viewer/edf state is
+        tied to one subject's uploaded edf, so switching subjects resets the tab back
+        to its pre-import state -- there's no cross-subject edf carryover."""
+        if subject is None:
+            self.subject = None
+            self.button_inputedf.setEnabled(False)
+            return
+        if self.subject and subject['id'] == self.subject['id']:
+            return
         self.subject = subject
         self.subject_dir = local_store.subject_dir(subject['name'])
         self.lineedit_subject_dir.setText(self.subject_dir)
         self.lineedit_patient_name.setText(subject['name'])
-        self.button_inputedf.setEnabled(True)
         self.edf_artifact_id = None
-
-        self.ei_thread = None
+        self.button_inputedf.setEnabled(True)
+        self.canvas.axes.cla()
+        self.canvas.draw()
+        for btn in (self.reset_data_display, self.target_button, self.baseline_button,
+                    self.chans_del_button, self.filter_button, self.dis_up, self.dis_down,
+                    self.dis_add_mag, self.dis_drop_mag, self.dis_more_chans, self.dis_less_chans,
+                    self.dis_shrink_time, self.dis_expand_time, self.dis_left, self.dis_right,
+                    self.ei_button, self.hfer_button, self.fullband_button):
+            btn.setEnabled(False)
 
     def center(self):
         qr = self.frameGeometry()

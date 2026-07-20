@@ -63,7 +63,7 @@ class Electrodes_gui(object):
         # self.pushButton_2.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.pushButton_2.setStyleSheet("QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}QPushButton:hover{background-color:k;}")
         self.pushButton_2.setText("Import Surf data")
-        self.pushButton_2.setToolTip("choose a surf file folder")
+        self.pushButton_2.setToolTip("use this subject's server-side reconstruction (run in the Recon tab) and unlock CT import")
         self.gridlayout.addWidget(self.pushButton_2, 2, 9, 1, 1)
 
         # preprocess groupbox

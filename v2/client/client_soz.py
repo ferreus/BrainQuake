@@ -13,10 +13,10 @@ import csv
 import os
 
 from PyQt5 import QtWidgets
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtWidgets import (QMessageBox, QPushButton, QLineEdit, QLabel,
                               QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView,
-                              QDesktopWidget)
+                              QDesktopWidget, QSplitter)
 from PyQt5.QtGui import QFont
 
 import nibabel as nib
@@ -24,6 +24,7 @@ import numpy as np
 
 from api_client import ApiError
 import local_store
+from mayavi_view import MayaviView
 
 
 def save_csv(rows, out_csv):
@@ -33,8 +34,16 @@ def save_csv(rows, out_csv):
         writer.writerows(rows)
 
 
-def plot_3d(recon_dir, rows, top_n, out_png, show):
-    from mayavi import mlab
+def plot_3d(recon_dir, rows, top_n, out_png, show, mayavi_view=None):
+    """Draws into `mayavi_view` (Phase (e) embedded scene) if given -- never the
+    mayavi.mlab global singleton -- otherwise falls back to the legacy pop-out
+    mlab.figure()/mlab.show() window (standalone/__main__ use)."""
+    if mayavi_view is not None:
+        mayavi_view.clear()
+        m = mayavi_view.mlab
+    else:
+        from mayavi import mlab as m
+        m.figure(bgcolor=(0.9, 0.9, 0.9), size=(1200, 1200))
 
     verl, facel = nib.freesurfer.read_geometry(os.path.join(recon_dir, 'surf', 'lh.pial'))
     verr, facer = nib.freesurfer.read_geometry(os.path.join(recon_dir, 'surf', 'rh.pial'))
@@ -46,22 +55,24 @@ def plot_3d(recon_dir, rows, top_n, out_png, show):
     zs = np.array([r['z'] for r in rows])
     scores = np.array([r['combined_score'] for r in rows])
 
-    mlab.figure(bgcolor=(0.9, 0.9, 0.9), size=(1200, 1200))
-    mesh = mlab.triangular_mesh(all_ver[:, 0], all_ver[:, 1], all_ver[:, 2], all_face,
-                                 color=(1., 1., 1.), opacity=0.35, line_width=1.)
+    mesh = m.triangular_mesh(all_ver[:, 0], all_ver[:, 1], all_ver[:, 2], all_face,
+                              color=(1., 1., 1.), opacity=0.35, line_width=1.)
     mesh.actor.property.backface_culling = True
 
-    pts = mlab.points3d(xs, ys, zs, scores, scale_mode='none', scale_factor=2.5,
-                        colormap='plasma', vmin=0.0, vmax=1.0)
-    mlab.colorbar(pts, title='SOZ suspicion score', orientation='vertical')
+    pts = m.points3d(xs, ys, zs, scores, scale_mode='none', scale_factor=2.5,
+                      colormap='plasma', vmin=0.0, vmax=1.0)
+    m.colorbar(pts, title='SOZ suspicion score', orientation='vertical')
 
     for r in rows[:top_n]:
-        mlab.text3d(r['x'] + 3, r['y'] + 3, r['z'] + 3, r['contact'], scale=1.8, color=(0, 0, 1))
+        m.text3d(r['x'] + 3, r['y'] + 3, r['z'] + 3, r['contact'], scale=1.8, color=(0, 0, 1))
 
     if out_png:
-        mlab.savefig(out_png)
-    if show:
-        mlab.show()
+        m.savefig(out_png)
+
+    if mayavi_view is not None:
+        mayavi_view.render()
+    elif show:
+        m.show()
 
 
 class SozFuseThread(QThread):
@@ -87,17 +98,45 @@ class SozFuseThread(QThread):
 
 
 class SOZResultModule(QtWidgets.QWidget):
-    def __init__(self, api, subject, parent=None):
+    def __init__(self, api, subject=None, parent=None):
         super(SOZResultModule, self).__init__(parent)
         self.api = api
-        self.subject = subject
+        self.subject = None
         self.rows = None
         self.fuse_thread = None
         self.init_gui()
+        if subject:
+            self.set_subject(subject)
+
+    def set_subject(self, subject):
+        """Called by main_window.py when the Patients panel selection changes (and
+        by __init__ if constructed with one already). The fused SOZ table/3D view is
+        specific to one subject's EI+HI results, so switching subjects resets it."""
+        if subject is None:
+            self.subject = None
+            self.compute_button.setEnabled(False)
+            self.show3d_button.setEnabled(False)
+            self.status_label.setText('Select a subject to fuse its EI/HI results.')
+            self.table.setRowCount(0)
+            self.rows = None
+            self.mayavi_view.clear()
+            return
+        if self.subject and subject['id'] == self.subject['id']:
+            return
+        self.subject = subject
+        self.rows = None
+        self.compute_button.setEnabled(True)
+        self.show3d_button.setEnabled(False)
+        self.table.setRowCount(0)
+        self.mayavi_view.clear()
+        self.setWindowTitle(f"SOZ Result (EI + HI fusion) -- {subject['name']}")
+        self.status_label.setText(
+            "Fuses the subject's most recent EI (ictal) and HI (inter-ictal) results -- "
+            "run those tabs first.")
 
     def init_gui(self):
-        self.setWindowTitle(f"SOZ Result (EI + HI fusion) -- {self.subject['name']}")
-        self.resize(700, 560)
+        self.setWindowTitle("SOZ Result (EI + HI fusion)")
+        self.resize(1100, 640)
         self.centerWin()
 
         button_font = QFont()
@@ -123,6 +162,7 @@ class SOZResultModule(QtWidgets.QWidget):
             "QPushButton{border-radius:5px;padding:5px;color:#ffffff;background-color:dimgrey;}"
             "QPushButton:hover{background-color:k;}")
         self.compute_button.clicked.connect(self.run_computation)
+        self.compute_button.setEnabled(False)  # needs a subject selected first
         layout.addWidget(self.compute_button, 2, 0, 1, 2)
 
         self.show3d_button = QPushButton('Show 3D result', self)
@@ -138,7 +178,17 @@ class SOZResultModule(QtWidgets.QWidget):
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels(['contact', 'EI', 'HI', 'combined', 'suspect(EI/HI)'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.table, 3, 0, 8, 5)
+
+        # embedded mayavi fusion view (Phase (e)) -- replaces the legacy pop-out
+        # mlab.show() window; lives side-by-side with the table in a splitter so both
+        # are visible without needing a separate window
+        self.mayavi_view = MayaviView(bgcolor=(0.9, 0.9, 0.9))
+
+        splitter = QSplitter(Qt.Horizontal, self)
+        splitter.addWidget(self.table)
+        splitter.addWidget(self.mayavi_view)
+        splitter.setSizes([450, 650])
+        layout.addWidget(splitter, 3, 0, 8, 5)
 
         self.setLayout(layout)
 
@@ -149,6 +199,9 @@ class SOZResultModule(QtWidgets.QWidget):
         self.move(qr.topLeft())
 
     def run_computation(self):
+        if not self.subject:
+            QMessageBox.warning(self, '', 'Select a subject first.')
+            return
         self.compute_button.setEnabled(False)
         self.fuse_thread = SozFuseThread(self.api, self.subject['id'])
         self.fuse_thread.done.connect(self._fuse_done)
@@ -191,4 +244,4 @@ class SOZResultModule(QtWidgets.QWidget):
             QMessageBox.critical(self, '', f'Could not fetch reconstruction for 3D view:\n{e}')
             return
         out_png = os.path.join(local_store.subject_dir(self.subject['name']), 'soz_result.png')
-        plot_3d(recon_dir, self.rows, top_n, out_png, show=True)
+        plot_3d(recon_dir, self.rows, top_n, out_png, show=True, mayavi_view=self.mayavi_view)

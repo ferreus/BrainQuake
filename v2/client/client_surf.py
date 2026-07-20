@@ -38,13 +38,16 @@ class UploadAndReconThread(QThread):
     def __init__(self, api):
         super(UploadAndReconThread, self).__init__()
         self.api = api
+        self.subject_id = None  # set by the caller when a global subject is already selected
 
     def run(self):
         try:
-            # create-or-reuse the subject this T1 belongs to
-            existing = [s for s in self.api.list_subjects() if s['name'] == self.patientName]
-            subject = existing[0] if existing else self.api.create_subject(self.patientName)
-            self.subject_id = subject['id']
+            if self.subject_id is None:
+                # no subject selected in the Patients panel -- fall back to the legacy
+                # create-or-reuse-by-filename behavior
+                existing = [s for s in self.api.list_subjects() if s['name'] == self.patientName]
+                subject = existing[0] if existing else self.api.create_subject(self.patientName)
+                self.subject_id = subject['id']
 
             self.progressBarValue.emit(5)
             self.api.upload_file(self.subject_id, 't1', self.t1Filepath)
@@ -100,6 +103,8 @@ class reconSurferUi(QtWidgets.QWidget, Ui_reconSurfer):
         self.Filename_ct = None
         self.ctFilepath = None
         self.subjects_by_row = []
+        self.subject = None    # globally-selected subject (Patients panel), if any
+        self.mayavi_view = None  # attached by main_window.py; None => fall back to a pop-out mlab window
         self.thread_1 = UploadAndReconThread(api)
         self.thread_1.progressBarValue.connect(self.progressValue)
         self.thread_1.log.connect(self.progressLog)
@@ -108,6 +113,19 @@ class reconSurferUi(QtWidgets.QWidget, Ui_reconSurfer):
         self.thread_3.downloadValue.connect(self.downloadProgress)
         self.thread_3.failed.connect(self.downloadFailed)
         self.refreshSubjects()
+
+    def set_subject(self, subject):
+        """Called by main_window.py when the Patients panel selection changes. This
+        tab still lets a T1 upload create/reuse a subject by filename (legacy
+        behavior, for the "no subject picked yet" case), but if a subject is already
+        selected here, uploads go to that subject instead of deriving a new one."""
+        self.subject = subject
+        if subject:
+            self.Patname = subject['name']
+            self.textBrowser_2.setText(self.Patname)
+
+    def attach_mayavi_view(self, view):
+        self.mayavi_view = view
 
     def browseT1File(self):
         self.directory = QFileDialog.getOpenFileName(self, \
@@ -130,6 +148,7 @@ class reconSurferUi(QtWidgets.QWidget, Ui_reconSurfer):
     def uploadT1File(self):
         self.reconType = ['recon-all', 'fast-surfer', 'infant-surfer'][self.comboBox.currentIndex()]
         self.thread_1.patientName = self.Patname
+        self.thread_1.subject_id = self.subject['id'] if self.subject else None
         self.thread_1.t1Filepath = self.Filepath_t1
         self.thread_1.ctFilepath = self.ctFilepath
         self.thread_1.reconType = self.reconType
@@ -198,9 +217,18 @@ class reconSurferUi(QtWidgets.QWidget, Ui_reconSurfer):
         verall = np.concatenate([verl, verr], axis=0)
         facer = facer + verl.shape[0]
         faceall = np.concatenate([facel, facer], axis=0)
-        mlab.triangular_mesh(verall[:, 0], verall[:, 1], verall[:, 2], faceall)
-        mlab.draw()
-        mlab.show()
+        if self.mayavi_view is not None:
+            # embedded scene (Phase (e)) -- draw into our own scoped mlab, never the
+            # mayavi.mlab global singleton, and never call mlab.show() (the Qt event
+            # loop already owns rendering once this widget is on-screen)
+            self.mayavi_view.clear()
+            self.mayavi_view.mlab.triangular_mesh(verall[:, 0], verall[:, 1], verall[:, 2], faceall)
+            self.mayavi_view.render()
+        else:
+            # standalone/legacy fallback (e.g. running this module's __main__ block)
+            mlab.triangular_mesh(verall[:, 0], verall[:, 1], verall[:, 2], faceall)
+            mlab.draw()
+            mlab.show()
 
     def itemsSelected(self):
         items = self.tableWidget.selectedItems()

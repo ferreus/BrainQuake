@@ -81,12 +81,12 @@ class JobPollThread(QThread):
 
 
 class Electrodes(QtWidgets.QWidget, Electrodes_gui):
-    def __init__(self, api, subject):
+    def __init__(self, api, subject=None):
         super(Electrodes, self).__init__()
         self.setupUi(self)
         self.api = api
-        self.subject = subject
-        self.patient = subject['name']
+        self.subject = None
+        self.patient = None
         self.scene = QGraphicsScene()
         self.graphicsView.setScene(self.scene)
         self.fig = Figure(figsize=(10, 10))
@@ -98,6 +98,7 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.labels = None
         self.K = None
         self.chn_xyz = None
+        self.mayavi_view = None  # attached by main_window.py; None => fall back to a pop-out mlab window
 
         self.thread_register = JobPollThread(self.api, self._start_ct_register)
         self.thread_register.finished_ok.connect(self.ctRegisterFinished)
@@ -109,13 +110,43 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         self.thread_segment.finished_ok.connect(self.segmentFinished)
         self.thread_segment.failed.connect(self.jobFailed)
 
-        logger.info(f"Electrodes GUI initialized for subject={self.patient}")
-        self.lineEdit_1.setText(self.patient)
-        self.lineEdit_1.setReadOnly(True)
-        self.lineEdit_2.setText(subject.get('hospital') or '')
+        # the whole workflow below is subject-scoped (CT registration, detect,
+        # segment...) so "Import Surf data" -- this tab's entry point -- stays
+        # disabled until a subject is selected in the Patients panel
+        self.pushButton_2.setEnabled(False)
+        if subject:
+            self.set_subject(subject)
 
     def jobFailed(self, msg):
         QtWidgets.QMessageBox.critical(self, '', msg)
+
+    def set_subject(self, subject):
+        """Called by main_window.py when the Patients panel selection changes (and
+        by __init__ if constructed with one already). Unlike client_surf.py, this
+        tab's entire workflow is subject-scoped, so switching subjects re-initializes
+        the tab's state and requires the workflow to be re-run from the top."""
+        if subject is None:
+            self.subject = None
+            self.patient = None
+            self.pushButton_2.setEnabled(False)
+            return
+        if self.subject and subject['id'] == self.subject['id']:
+            return
+        self.subject = subject
+        self.patient = subject['name']
+        self.labels = None
+        self.K = None
+        self.chn_xyz = None
+        self.lineEdit_1.setText(self.patient)
+        self.lineEdit_1.setReadOnly(True)
+        self.lineEdit_2.setText(subject.get('hospital') or '')
+        self.pushButton_2.setEnabled(True)
+        logger.info(f"Electrodes GUI subject set to {self.patient}")
+        if self.mayavi_view is not None:
+            self.mayavi_view.clear()
+
+    def attach_mayavi_view(self, view):
+        self.mayavi_view = view
 
     def patientName(self):
         self.patient = self.lineEdit_1.text()
@@ -136,10 +167,14 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
     # -- surf/CT import (btn2/btn1) -----------------------------------------
 
     def importSurf(self):
-        # Legacy picked a local FreeSurfer subject folder here; in v2 the subject
-        # is already selected on the main window, so this just confirms it and
-        # moves on to CT import (auto-skipping straight past it if CT
-        # registration was already run for this subject in an earlier session).
+        # Legacy picked a local FreeSurfer subject folder here; in v2 the subject's
+        # reconstruction already lives server-side (see the Recon tab), so there's no
+        # folder to browse -- this just confirms the linkage and unlocks CT import.
+        # No dialog appears by design, but it must still give some visible
+        # confirmation, since silently enabling a button below is easy to miss.
+        if not self.subject:
+            QtWidgets.QMessageBox.warning(self, '', 'Select a subject first.')
+            return
         self.pushButton_1.setEnabled(True)
         try:
             reg_artifacts = self.api.list_artifacts(self.subject['id'], kind='ct_reg_nii')
@@ -148,6 +183,15 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
             reg_artifacts = []
         if reg_artifacts:
             self._enable_detect_controls()
+            QtWidgets.QMessageBox.information(
+                self, '',
+                f"Using {self.patient}'s reconstruction -- a CT registration already exists, "
+                "so detect controls are unlocked below.")
+        else:
+            QtWidgets.QMessageBox.information(
+                self, '',
+                f"Using {self.patient}'s reconstruction from the Recon tab. "
+                "Click 'Import CT data' next to register a CT scan.")
 
     def importCT(self):
         path, _ = QFileDialog.getOpenFileName(self, "getOpenFileName", "", "All Files (*);;Nifti Files (*.nii.gz)")
@@ -379,9 +423,20 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         all_face = np.concatenate([facel, tmp_facer], axis=0)
 
         opacity = 0.4
-        mlab.figure(bgcolor=(0.8, 0.8, 0.8), size=(1500, 1500))
-        mesh = mlab.triangular_mesh(all_ver[:, 0], all_ver[:, 1], all_ver[:, 2], all_face,
-                                     color=(1., 1., 1.), representation='surface', opacity=opacity, line_width=1.)
+        embedded = self.mayavi_view is not None
+        if embedded:
+            # embedded scene (Phase (e)) -- draw into our own scoped mlab, never the
+            # mayavi.mlab global singleton
+            self.mayavi_view.clear()
+            self.mayavi_view.scene.background = (0.8, 0.8, 0.8)
+            m = self.mayavi_view.mlab
+        else:
+            # standalone/legacy fallback (e.g. running this module's __main__ block)
+            mlab.figure(bgcolor=(0.8, 0.8, 0.8), size=(1500, 1500))
+            m = mlab
+
+        mesh = m.triangular_mesh(all_ver[:, 0], all_ver[:, 1], all_ver[:, 2], all_face,
+                                  color=(1., 1., 1.), representation='surface', opacity=opacity, line_width=1.)
         mesh.actor.property.ambient = 0.4225
         mesh.actor.property.specular = 0.3
         mesh.actor.property.specular_power = 20
@@ -390,19 +445,23 @@ class Electrodes(QtWidgets.QWidget, Electrodes_gui):
         mesh.actor.property.backface_culling = True
         if opacity <= 1.0:
             mesh.scene.renderer.trait_set(use_depth_peeling=True)
-        for child in mlab.get_engine().scenes[0].children:
+        scene_root = self.mayavi_view.scene.mayavi_scene if embedded else mlab.get_engine().scenes[0]
+        for child in scene_root.children:
             poly_data_normals = child.children[0]
             poly_data_normals.filter.feature_angle = 80.0
 
         for chnn, xyz in chn_xyz.items():
             for j in range(xyz.shape[0]):
-                mlab.points3d(xyz[j, 0], xyz[j, 1], xyz[j, 2], color=(0, 0, 0), scale_factor=1.5)
-            mlab.text3d(xyz[-1, 0] + 4, xyz[-1, 1] + 4, xyz[-1, 2] + 4, chnn, orient_to_camera=True,
-                        color=(0, 0, 1), line_width=10, scale=2)
+                m.points3d(xyz[j, 0], xyz[j, 1], xyz[j, 2], color=(0, 0, 0), scale_factor=1.5)
+            m.text3d(xyz[-1, 0] + 4, xyz[-1, 1] + 4, xyz[-1, 2] + 4, chnn, orient_to_camera=True,
+                     color=(0, 0, 1), line_width=10, scale=2)
 
         logger.info("vis3D: 3D scene drawn")
-        mlab.draw()
-        mlab.show()
+        if embedded:
+            self.mayavi_view.render()
+        else:
+            mlab.draw()
+            mlab.show()
 
 
 if __name__ == "__main__":
