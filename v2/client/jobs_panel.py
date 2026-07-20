@@ -199,10 +199,6 @@ class JobsPanel(QtWidgets.QDockWidget):
         self.scope_checkbox.toggled.connect(self._on_scope_toggled)
         top_row.addWidget(self.scope_checkbox)
         top_row.addStretch(1)
-        self.error_banner = QtWidgets.QLabel(self)
-        self.error_banner.setStyleSheet('color: white; background-color: #b00020; padding: 2px 6px; border-radius: 3px;')
-        self.error_banner.hide()
-        top_row.addWidget(self.error_banner)
         layout.addLayout(top_row)
 
         self.table = QtWidgets.QTableWidget(self)
@@ -213,6 +209,8 @@ class JobsPanel(QtWidgets.QDockWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.table)
 
         self.setWidget(container)
@@ -222,11 +220,12 @@ class JobsPanel(QtWidgets.QDockWidget):
         self.poll_thread.refresh_now()
 
     def _on_refresh_failed(self, msg):
-        self.error_banner.setText(f"Can't refresh jobs -- server unreachable: {msg}")
-        self.error_banner.show()
+        # The main window's status bar already shows a prominent connection
+        # indicator (connection_monitor.py) -- a second red banner here per panel
+        # was too much visual noise for the same underlying fact, per user feedback.
+        logger.warning(f"Could not refresh jobs -- server unreachable: {msg}")
 
     def _on_jobs_updated(self, jobs):
-        self.error_banner.hide()
         self._last_jobs = jobs
         self._rebuild_table()
 
@@ -261,10 +260,13 @@ class JobsPanel(QtWidgets.QDockWidget):
 
     def _rebuild_table(self):
         self.table.setRowCount(0)
+        self._row_items = []  # parallel to table rows: PendingJob or job dict, for the context menu
         for pending in self._pending.values():
             self._append_pending_row(pending)
+            self._row_items.append(pending)
         for job in self._last_jobs:
             self._append_job_row(job)
+            self._row_items.append(job)
 
     def _append_pending_row(self, pending):
         row = self.table.rowCount()
@@ -339,11 +341,45 @@ class JobsPanel(QtWidgets.QDockWidget):
             cancel_btn = QtWidgets.QPushButton('Cancel')
             cancel_btn.clicked.connect(lambda _checked, j=job: self._cancel(j))
             actions_layout.addWidget(cancel_btn)
+        if job['state'] in ('failed', 'cancelled'):
+            retry_btn = QtWidgets.QPushButton('Retry')
+            retry_btn.clicked.connect(lambda _checked, j=job: self._retry(j))
+            actions_layout.addWidget(retry_btn)
         self.table.setCellWidget(row, 6, actions)
+
+    def _show_context_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0 or row >= len(self._row_items):
+            return
+        item = self._row_items[row]
+        if isinstance(item, PendingJob):
+            return  # pending (pre-job) rows use their own inline Info/Cancel/Dismiss buttons
+        job = item
+        menu = QtWidgets.QMenu(self)
+        retry_action = menu.addAction('Retry') if job['state'] in ('failed', 'cancelled') else None
+        cancel_action = menu.addAction('Cancel') if job['state'] in ('queued', 'running') else None
+        log_action = menu.addAction('View Log')
+        chosen = menu.exec_(self.table.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is retry_action:
+            self._retry(job)
+        elif chosen is cancel_action:
+            self._cancel(job)
+        elif chosen is log_action:
+            self._show_log(job)
 
     def _show_log(self, job):
         dlg = LogDialog(self.app_state.api, job, parent=self)
         dlg.show()
+
+    def _retry(self, job):
+        try:
+            self.app_state.api.retry_job(job)
+        except (ApiError, ValueError, Exception) as e:
+            QtWidgets.QMessageBox.critical(self, '', f"Could not retry job #{job['id']}:\n{e}")
+            return
+        self.poll_thread.refresh_now()
 
     def _cancel(self, job):
         try:

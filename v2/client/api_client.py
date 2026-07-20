@@ -236,6 +236,45 @@ class ApiClient:
     def get_soz_result(self, subject_id):
         return self._get(f"/subjects/{subject_id}/soz/result")
 
+    # -- retry ------------------------------------------------------------
+
+    # Every job type's params_json already carries everything its original POST
+    # body needed (confirmed against each router: recon's recon_type, electrodes'
+    # detect/segment params, ictal/interictal's edf_artifact_id + thresholds, soz's
+    # artifact ids) -- retrying is just re-issuing the same call with those same
+    # params, giving the user a way forward after a failure without deleting and
+    # recreating the subject (e.g. a transient recon-all failure).
+    _RETRY_DISPATCH = {
+        "recon": lambda self, subject_id, p: self.run_recon(
+            subject_id, recon_type=p.get("recon_type", "recon-all")),
+        "ct_register": lambda self, subject_id, p: self.register_ct(subject_id),
+        "elec_detect": lambda self, subject_id, p: self.detect_electrodes(
+            subject_id, K=p["K"], threshold_pct=p["threshold_pct"],
+            erosion_iterations=p["erosion_iterations"]),
+        "elec_segment": lambda self, subject_id, p: self.segment_electrodes(
+            subject_id, numMax=p.get("numMax", 20), diameterSize=p.get("diameterSize", 2.5),
+            spacing=p.get("spacing", 2.5), gap=p.get("gap", 0.0)),
+        "ei_compute": lambda self, subject_id, p: self.compute_ei(
+            subject_id, p["edf_artifact_id"], p["baseline_start"], p["baseline_end"],
+            p["target_start"], p["target_end"], p.get("band_low", 1.0), p.get("band_high", 500.0)),
+        "hfo_compute": lambda self, subject_id, p: self.compute_hfo(
+            subject_id, p["edf_artifact_id"], band_low=p.get("band_low", 80.0),
+            band_high=p.get("band_high", 250.0), rel_thresh=p.get("rel_thresh", 2.0),
+            abs_thresh=p.get("abs_thresh", 2.0), min_gap=p.get("min_gap", 20.0),
+            min_last=p.get("min_last", 50.0), remain_chns=p.get("remain_chns")),
+        "soz_fuse": lambda self, subject_id, p: self.fuse_soz(
+            subject_id, ei_artifact_id=p.get("ei_artifact_id"), hi_artifact_id=p.get("hi_artifact_id")),
+    }
+
+    def retry_job(self, job):
+        """Re-queues a new job of the same type/subject/params as `job` (a job dict
+        from list_jobs/get_job) and returns the newly created job. Raises ValueError
+        for a job_type this client doesn't know how to retry."""
+        dispatch = self._RETRY_DISPATCH.get(job["job_type"])
+        if dispatch is None:
+            raise ValueError(f"Don't know how to retry job type '{job['job_type']}'")
+        return dispatch(self, job["subject_id"], job.get("params_json") or {})
+
 
 def _basename(path):
     import os

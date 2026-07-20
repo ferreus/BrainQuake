@@ -33,7 +33,13 @@ def create_subject(subject_in: SubjectCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(subject)
 
-    os.makedirs(subject_dir, exist_ok=True)
+    # NOTE: subject_dir (SUBJECTS_DIR/<name>) is deliberately NOT created here.
+    # recon-all/fast-surfer/infant_recon_all all treat that directory merely
+    # *existing* (regardless of contents) as "this subject already has a prior run"
+    # when given -i, and refuse with "You are trying to re-run an existing subject".
+    # Pre-creating it here caused exactly that failure on a genuinely first-ever run
+    # (see services/recon.py's run_recon_job, which now owns creating/clearing this
+    # directory immediately before invoking the recon tool).
     os.makedirs(os.path.join(settings.DATA_ROOT, "recv", subject.name), exist_ok=True)
 
     return subject

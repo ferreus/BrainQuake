@@ -25,7 +25,7 @@ import shutil
 import logging
 
 from PyQt5.QtWidgets import QApplication, QSizePolicy, QMessageBox, QWidget, \
-    QPushButton, QLineEdit, QDesktopWidget, QGridLayout, QFileDialog, QListWidget, QLabel, QFrame, QGroupBox
+    QPushButton, QLineEdit, QGridLayout, QFileDialog, QListWidget, QLabel, QFrame, QGroupBox
 from PyQt5.QtCore import Qt, QThread
 import PyQt5.QtWidgets as QtWidgets
 import PyQt5.QtCore as QtCore
@@ -93,9 +93,21 @@ class IctalModule(QWidget, Ictal_gui):
         self.subject_dir = None
         self.edf_artifact_id = None
         self.ei_thread = None
-        self.button_inputedf.setEnabled(False)
+        # guards disp_scroll_mouse/canvas_press_button (matplotlib events aren't
+        # gated by Qt's widget-enabled state) against firing before any edf has been
+        # loaded -- see the module docstring / PHASE_E_PLAN.md follow-up notes on the
+        # "AttributeError: no attribute 'disp_time_start'" crash this fixes
+        self._edf_loaded = False
+        self._set_status(subject is not None)
         if subject:
             self.set_subject(subject)
+
+    def _set_status(self, has_subject):
+        self.content.setEnabled(has_subject)
+        if has_subject:
+            self.status_label.setText(f"Ready -- {self.subject['name']}. Import an .edf file to begin.")
+        else:
+            self.status_label.setText('Select a patient in the Patients panel to begin.')
 
     def set_subject(self, subject):
         """Called by main_window.py when the Patients panel selection changes (and
@@ -104,15 +116,17 @@ class IctalModule(QWidget, Ictal_gui):
         to its pre-import state -- there's no cross-subject edf carryover."""
         if subject is None:
             self.subject = None
+            self._edf_loaded = False
             self.button_inputedf.setEnabled(False)
+            self._set_status(False)
             return
         if self.subject and subject['id'] == self.subject['id']:
             return
         self.subject = subject
         self.subject_dir = local_store.subject_dir(subject['name'])
-        self.lineedit_subject_dir.setText(self.subject_dir)
-        self.lineedit_patient_name.setText(subject['name'])
         self.edf_artifact_id = None
+        self._edf_loaded = False
+        self._set_status(True)
         self.button_inputedf.setEnabled(True)
         self.canvas.axes.cla()
         self.canvas.draw()
@@ -122,18 +136,6 @@ class IctalModule(QWidget, Ictal_gui):
                     self.dis_shrink_time, self.dis_expand_time, self.dis_left, self.dis_right,
                     self.ei_button, self.hfer_button, self.fullband_button):
             btn.setEnabled(False)
-
-    def center(self):
-        qr = self.frameGeometry()
-        cp = QDesktopWidget().availableGeometry().center()
-        qr.moveCenter(cp)
-        self.move(qr.topLeft())
-
-    def dialog_subject_dir(self):
-        # The subject's local cache dir is fixed (local_store.subject_dir) now that
-        # subjects are server-managed rows rather than an arbitrary folder the user
-        # picks -- nothing to do here besides re-showing where it is.
-        QMessageBox.information(self, '', f'Using local cache dir:\n{self.subject_dir}')
 
     def dialog_inputedfdata(self):
         picked_filename, b = QFileDialog.getOpenFileName(self, 'open edf file', './', '(*.edf)')
@@ -152,7 +154,7 @@ class IctalModule(QWidget, Ictal_gui):
             return
         self.edf_artifact_id = artifact['id']
 
-        self.patient_name = self.lineedit_patient_name.text()
+        self.patient_name = self.subject['name']
         self.edf_data = mne.io.read_raw_edf(self.mat_filename, preload=True, stim_channel=None)
         self.preprocess_xw()
         self.band_low = 1.0
@@ -161,7 +163,6 @@ class IctalModule(QWidget, Ictal_gui):
         self.disp_flag = 0
         self.data_fomat = 1  # edf
 
-        QMessageBox.information(self, '', 'data loaded')
         self.init_display_params()
         self.disp_refresh()
 
@@ -180,6 +181,7 @@ class IctalModule(QWidget, Ictal_gui):
         self.dis_expand_time.setEnabled(True)
         self.dis_left.setEnabled(True)
         self.dis_right.setEnabled(True)
+        self._edf_loaded = True
 
     def init_display_params(self):
         self.disp_chans_num = 20
@@ -327,6 +329,12 @@ class IctalModule(QWidget, Ictal_gui):
         self.disp_refresh()
 
     def disp_scroll_mouse(self, e):
+        # matplotlib's scroll_event isn't gated by Qt's widget-enabled state (unlike
+        # the dis_left/dis_right buttons that call the same functions), so this can
+        # fire from a scroll over the canvas before any edf has loaded -- guard here
+        # rather than assume the buttons' disabled state protects it
+        if not self._edf_loaded:
+            return
         if e.button == 'up':
             self.disp_win_left_func()
         elif e.button == 'down':

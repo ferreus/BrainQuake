@@ -13,7 +13,7 @@ import sys
 import logging
 
 from PyQt5.QtWidgets import QApplication, QSizePolicy, QMessageBox, QWidget, \
-    QPushButton, QLineEdit, QDesktopWidget, QGridLayout, QFileDialog, QListWidget, QLabel, QFrame, QGroupBox, QProgressBar
+    QPushButton, QLineEdit, QGridLayout, QFileDialog, QListWidget, QLabel, QFrame, QGroupBox, QProgressBar
 from PyQt5.QtCore import Qt, QThread
 import PyQt5.QtWidgets as QtWidgets
 import PyQt5.QtCore as QtCore
@@ -89,9 +89,20 @@ class InterModule(QWidget, Interictal_gui):
         self.hi_thread = None
         self.hfoDets_chns = None
         self.hfoDets_times = None
-        self.button_inputedf.setEnabled(False)
+        # guards disp_scroll_mouse against firing before any edf has been loaded --
+        # matplotlib events aren't gated by Qt's widget-enabled state (see the
+        # client_ictal.py fix for the same class of bug)
+        self._edf_loaded = False
+        self._set_status(subject is not None)
         if subject:
             self.set_subject(subject)
+
+    def _set_status(self, has_subject):
+        self.content.setEnabled(has_subject)
+        if has_subject:
+            self.status_label.setText(f"Ready -- {self.subject['name']}. Import an .edf file to begin.")
+        else:
+            self.status_label.setText('Select a patient in the Patients panel to begin.')
 
     def set_subject(self, subject):
         """Called by main_window.py when the Patients panel selection changes (and
@@ -100,17 +111,19 @@ class InterModule(QWidget, Interictal_gui):
         tied to one subject's uploaded edf, so switching subjects resets the tab."""
         if subject is None:
             self.subject = None
+            self._edf_loaded = False
             self.button_inputedf.setEnabled(False)
+            self._set_status(False)
             return
         if self.subject and subject['id'] == self.subject['id']:
             return
         self.subject = subject
         self.subject_dir = local_store.subject_dir(subject['name'])
-        self.lineedit_subject_dir.setText(self.subject_dir)
-        self.lineedit_patient_name.setText(subject['name'])
         self.edf_artifact_id = None
         self.hfoDets_chns = None
         self.hfoDets_times = None
+        self._edf_loaded = False
+        self._set_status(True)
         self.button_inputedf.setEnabled(True)
         self.canvas.axes.cla()
         self.canvas.draw()
@@ -120,15 +133,6 @@ class InterModule(QWidget, Interictal_gui):
                     self.dis_expand_time, self.dis_left, self.dis_right, self.HI_button,
                     self.hiDetsFilt_button, self.hiDetsRaw_button):
             btn.setEnabled(False)
-
-    def center(self):
-        qr = self.frameGeometry()
-        cp = QDesktopWidget().availableGeometry().center()
-        qr.moveCenter(cp)
-        self.move(qr.topLeft())
-
-    def dialog_subject_dir(self):
-        QMessageBox.information(self, '', f'Using local cache dir:\n{self.subject_dir}')
 
     def dialog_inputedfdata(self):
         picked_filename, b = QFileDialog.getOpenFileName(self, 'open edf file', './', '(*.edf)')
@@ -147,14 +151,13 @@ class InterModule(QWidget, Interictal_gui):
             return
         self.edf_artifact_id = artifact['id']
 
-        self.patient_name = self.lineedit_patient_name.text()
+        self.patient_name = self.subject['name']
         self.edf_data = mne.io.read_raw_edf(self.mat_filename, preload=True, stim_channel=None)
         self.preprocess_xw()
         self.band_low = 1.0
         self.band_high = self.fs / 2 - 1
         self.edf_time_max = self.modified_edf_data.shape[1] / self.fs
 
-        QMessageBox.information(self, '', 'data loaded')
         self.init_display_params()
         self.disp_refresh()
 
@@ -172,6 +175,7 @@ class InterModule(QWidget, Interictal_gui):
         self.dis_left.setEnabled(True)
         self.dis_right.setEnabled(True)
         self.HI_button.setEnabled(True)
+        self._edf_loaded = True
 
     def preprocess_xw(self):
         self.fs = self.edf_data.info['sfreq']
@@ -300,6 +304,11 @@ class InterModule(QWidget, Interictal_gui):
         self.disp_refresh()
 
     def disp_scroll_mouse(self, e):
+        # matplotlib's scroll_event isn't gated by Qt's widget-enabled state, so this
+        # can fire from a scroll over the canvas before any edf has loaded -- see the
+        # same fix in client_ictal.py's disp_scroll_mouse
+        if not self._edf_loaded:
+            return
         if e.button == 'up':
             self.disp_win_left_func()
         elif e.button == 'down':

@@ -86,12 +86,6 @@ class PatientsPanel(QtWidgets.QDockWidget):
         self.filter_edit.textChanged.connect(self._apply_filter)
         layout.addWidget(self.filter_edit)
 
-        self.error_banner = QtWidgets.QLabel(self)
-        self.error_banner.setStyleSheet('color: white; background-color: #b00020; padding: 4px; border-radius: 3px;')
-        self.error_banner.setWordWrap(True)
-        self.error_banner.hide()
-        layout.addWidget(self.error_banner)
-
         self.subject_list = QtWidgets.QListWidget(self)
         self.subject_list.currentRowChanged.connect(self._on_row_selected)
         layout.addWidget(self.subject_list, stretch=1)
@@ -112,7 +106,6 @@ class PatientsPanel(QtWidgets.QDockWidget):
         self.setWidget(container)
 
     def _on_subjects_updated(self, subjects):
-        self.error_banner.hide()
         self._subjects_by_row = subjects
         current_subject = self.app_state.subject
         self._apply_filter()
@@ -141,8 +134,10 @@ class PatientsPanel(QtWidgets.QDockWidget):
         self.subject_list.blockSignals(False)
 
     def _on_refresh_failed(self, msg):
-        self.error_banner.setText(f"Can't refresh patients -- server unreachable:\n{msg}")
-        self.error_banner.show()
+        # The main window's status bar already shows a prominent connection
+        # indicator (connection_monitor.py) -- a second red banner here per panel
+        # was too much visual noise for the same underlying fact, per user feedback.
+        logger.warning(f"Could not refresh patients -- server unreachable: {msg}")
 
     def _on_row_selected(self, row):
         if row < 0:

@@ -160,7 +160,12 @@ def test_full_e2e_flow(mock_run):
     assert subject_data["name"] == "TestPatient"
     subject_id = subject_data["id"]
 
-    assert os.path.exists(os.path.join(settings.SUBJECTS_DIR, "TestPatient"))
+    # SUBJECTS_DIR/<name> must NOT exist yet -- recon-all/fast-surfer/infant_recon_all
+    # treat that directory merely existing (regardless of contents) as "this subject
+    # already has a prior run" when given -i, and refuse. The recon job itself
+    # creates it (see services/recon.py's run_recon_job) immediately before invoking
+    # the recon tool, not subject creation.
+    assert not os.path.exists(os.path.join(settings.SUBJECTS_DIR, "TestPatient"))
     assert os.path.exists(
         os.path.join(settings.DATA_ROOT, "recv", "TestPatient"))
 

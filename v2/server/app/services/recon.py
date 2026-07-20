@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 import subprocess
 from datetime import datetime, timezone
@@ -71,15 +72,24 @@ def run_recon_job(db: Session, job: Job, log_file):
     if not os.path.exists(t1_path):
         raise FileNotFoundError(f"T1 input file not found at {t1_path}. Please upload a T1 scan first.")
         
-    # Prepare subjects directories
-    os.makedirs(os.path.join(settings.SUBJECTS_DIR, name), exist_ok=True)
-    os.makedirs(os.path.join(settings.SUBJECTS_DIR, name, "fslresults"), exist_ok=True)
-    
+    # recon-all/fast-surfer/infant_recon_all all treat $SUBJECTS_DIR/<name> merely
+    # *existing* (regardless of contents) as "this subject already has a prior run"
+    # when given -i, and refuse with "You are trying to re-run an existing subject
+    # with (possibly) new input data" -- FreeSurfer's own suggested fix is exactly
+    # "delete the subject folder and re-run". Wipe any stale/partial directory (e.g.
+    # from a previous failed attempt being retried) so every invocation gets the
+    # clean slate these tools expect; do NOT recreate it here -- the recon tool
+    # creates it itself for a fresh run, and pre-creating it (even empty) is what
+    # caused this to fail on a genuinely first-ever run.
+    subject_recon_dir = os.path.join(settings.SUBJECTS_DIR, name)
+    if os.path.exists(subject_recon_dir):
+        shutil.rmtree(subject_recon_dir)
+
     # 2. Run FreeSurfer/FastSurfer/InfantSurfer
     job.progress_pct = 10.0
     job.progress_message = f"Running {recon_type} (this can take a long time)"
     db.commit()
-    
+
     if recon_type == "recon-all":
         cmd = f"recon-all -i {t1_path} -s {name} -all -parallel -openmp 8"
         _run_subprocess_cmd(cmd, job, "recon-all", db, log_file, use_freesurfer_env=True)
@@ -92,7 +102,11 @@ def run_recon_job(db: Session, job: Job, log_file):
     elif recon_type == "infant-surfer":
         cmd = f"infant_recon_all --s {name}"
         _run_subprocess_cmd(cmd, job, "infant-surfer", db, log_file, use_freesurfer_env=True)
-    
+
+    # fslresults is only needed later, by CT registration -- created now that the
+    # recon tool owns having created SUBJECTS_DIR/<name> itself above
+    os.makedirs(os.path.join(settings.SUBJECTS_DIR, name, "fslresults"), exist_ok=True)
+
     # 3. Post-recon steps
     job.progress_pct = 80.0
     job.progress_message = "Converting orig.mgz -> orig.nii.gz"
