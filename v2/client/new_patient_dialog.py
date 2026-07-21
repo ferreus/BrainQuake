@@ -21,6 +21,7 @@ QMessageBox to once this dialog has closed.
 """
 import os
 import threading
+import time
 import logging
 
 from PyQt5 import QtWidgets
@@ -116,6 +117,14 @@ class UploadThread(QThread):
     failed = pyqtSignal(str)
     cancelled = pyqtSignal()
 
+    # Minimum time between progress signal emissions -- requests-toolbelt's
+    # MultipartEncoderMonitor callback fires on every chunk read (can be tens to
+    # hundreds of times per second for a fast local upload), and each one used to
+    # trigger a Jobs panel row update; throttling here cuts that emission rate
+    # dramatically at the source, on top of jobs_panel.py's in-place progress-bar
+    # update (the other half of the flicker fix).
+    _EMIT_INTERVAL = 0.1
+
     def __init__(self, api, mri_path, ct_path, recon_type, parent=None):
         super().__init__(parent)
         self.api = api
@@ -123,6 +132,14 @@ class UploadThread(QThread):
         self.ct_path = ct_path
         self.recon_type = recon_type
         self.cancel_event = threading.Event()
+        self._last_emit_t = 0.0
+
+    def _emit_throttled(self, pct, msg, is_last=False):
+        now = time.monotonic()
+        if not is_last and (now - self._last_emit_t) < self._EMIT_INTERVAL:
+            return
+        self._last_emit_t = now
+        self.progress.emit(pct, msg)
 
     def run(self):
         try:
@@ -137,7 +154,8 @@ class UploadThread(QThread):
 
             def mri_progress(sent, total):
                 pct = (sent / total) * mri_upper
-                self.progress.emit(pct, f'Uploading MRI... {sent // 1024}KB / {total // 1024}KB')
+                self._emit_throttled(pct, f'Uploading MRI... {sent // 1024}KB / {total // 1024}KB',
+                                      is_last=(sent == total))
 
             self.api.upload_file_with_progress(
                 subject_id, 't1', self.mri_path,
@@ -146,7 +164,8 @@ class UploadThread(QThread):
             if self.ct_path:
                 def ct_progress(sent, total):
                     pct = 55.0 + (sent / total) * 35.0
-                    self.progress.emit(pct, f'Uploading CT... {sent // 1024}KB / {total // 1024}KB')
+                    self._emit_throttled(pct, f'Uploading CT... {sent // 1024}KB / {total // 1024}KB',
+                                          is_last=(sent == total))
 
                 self.api.upload_file_with_progress(
                     subject_id, 'ct', self.ct_path,

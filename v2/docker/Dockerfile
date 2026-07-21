@@ -21,7 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # build-essential/libeigen3-dev/git: build hough-3d-lines from source
 # python3/venv/pip: run the FastAPI app + worker
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates wget curl tar unzip \
+        ca-certificates wget curl tar zip unzip \
         bc tcsh perl libgomp1 \
         libgl1 libxext6 libsm6 libxrender1 libxmu6 \
         build-essential libeigen3-dev git \

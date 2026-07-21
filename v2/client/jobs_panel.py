@@ -244,13 +244,36 @@ class JobsPanel(QtWidgets.QDockWidget):
         pending = self._pending.get(pending_id)
         if pending is None:
             return
+        state_changed = state is not None and state != pending.state
         if progress_pct is not None:
             pending.progress_pct = progress_pct
         if message is not None:
             pending.message = message
         if state is not None:
             pending.state = state
+
+        # An upload's progress callback can fire many times per second -- tearing
+        # down and recreating every row's widgets (_rebuild_table) on each tick is
+        # what caused the visible flicker the user reported. When only the progress
+        # value changed (not state, which can add/remove Cancel/Dismiss buttons),
+        # just nudge the existing QProgressBar instead.
+        if not state_changed and self._try_update_progress_in_place(pending):
+            return
         self._rebuild_table()
+
+    def _try_update_progress_in_place(self, pending):
+        try:
+            row = self._row_items.index(pending)
+        except (ValueError, AttributeError):
+            return False
+        widget = self.table.cellWidget(row, 4)
+        if not isinstance(widget, QtWidgets.QProgressBar):
+            return False
+        widget.setValue(int(pending.progress_pct))
+        state_item = self.table.item(row, 3)
+        if state_item is not None and pending.message:
+            state_item.setToolTip(pending.message)
+        return True
 
     def remove_pending(self, pending_id):
         if self._pending.pop(pending_id, None) is not None:
