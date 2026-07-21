@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Job, Subject, Artifact
 from app.services.recon import register_artifact
+from app.services.job_control import check_cancelled
 
 # Ported from BrainQuake/soz_result.py's pure fusion/ranking logic (the mayavi
 # plot_3d call stays client-side per PLAN.md 2.7 -- this module only produces the
@@ -129,6 +130,7 @@ def run_soz_fuse_job(db: Session, job: Job, log_file):
     ei_by_chan = load_ei_result(os.path.join(settings.DATA_ROOT, ei_artifact.rel_path))
     hi_by_chan = load_hi_result(os.path.join(settings.DATA_ROOT, hi_artifact.rel_path))
 
+    check_cancelled(db, job)
     job.progress_pct = 70.0
     job.progress_message = "Ranking contacts"
     db.commit()

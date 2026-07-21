@@ -87,6 +87,15 @@ def detect_electrodes(subject_id: int, request: DetectRequest, db: Session = Dep
     return job
 
 
+@router.get("/{subject_id}/electrodes/labels-summary")
+def get_labels_summary(subject_id: int, db: Session = Depends(get_db)):
+    subject = _get_subject_or_404(subject_id, db)
+    try:
+        return electrodes_service.summarize_labels(subject)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 class LabelsUpdateRequest(BaseModel):
     exclude_labels: Optional[List[int]] = None  # cluster values (1..K) to drop as noise
 

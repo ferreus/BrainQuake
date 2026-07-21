@@ -1,5 +1,9 @@
 import os
 import shutil
+import struct
+import subprocess
+import numpy as np
+import mne
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -64,22 +68,36 @@ def setup_and_teardown_db():
 
 
 # ---------------------------------------------------------------------------
-# Mock subprocess.run so tests don't need FreeSurfer/FSL installed
+# Mock subprocess.Popen (services/job_control.run_and_track_subprocess uses
+# Popen, not subprocess.run, so it can record the real child pid for job
+# cancellation) so tests don't need FreeSurfer/FSL installed.
 # ---------------------------------------------------------------------------
 
-def mock_subprocess_run(cmd, *args, **kwargs):
+def _apply_command_side_effects(cmd, stdout_file):
     """Create the expected output files for various commands."""
-    stdout_file = kwargs.get("stdout")
-
     if "recon-all" in cmd:
+        import nibabel.freesurfer as fsio
+
         parts = cmd.split()
         subject_name = parts[parts.index("-s") + 1]
-        mri_dir = os.path.join(settings.SUBJECTS_DIR, subject_name, "mri")
+        subject_dir = os.path.join(settings.SUBJECTS_DIR, subject_name)
+        mri_dir = os.path.join(subject_dir, "mri")
+        surf_dir = os.path.join(subject_dir, "surf")
         os.makedirs(mri_dir, exist_ok=True)
+        os.makedirs(surf_dir, exist_ok=True)
         with open(os.path.join(mri_dir, "orig.mgz"), "w") as f:
             f.write("mock orig mgz")
         with open(os.path.join(mri_dir, "brainmask.mgz"), "w") as f:
             f.write("mock brainmask mgz")
+
+        # Minimal valid FreeSurfer surface files (a single triangle each) so
+        # the post-recon mesh-export step (services/surface.py) has something
+        # real to read via nibabel.freesurfer.read_geometry.
+        tri_vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        tri_faces = np.array([[0, 1, 2]], dtype=np.int32)
+        fsio.write_geometry(os.path.join(surf_dir, "lh.pial"), tri_vertices, tri_faces)
+        fsio.write_geometry(os.path.join(surf_dir, "rh.pial"), tri_vertices, tri_faces)
+
         if stdout_file:
             stdout_file.write("[Mock] recon-all finished successfully\n")
 
@@ -94,7 +112,6 @@ def mock_subprocess_run(cmd, *args, **kwargs):
 
     elif "mri_binarize" in cmd:
         import nibabel as nib
-        import numpy as np
 
         parts = cmd.split()
         o_idx = parts.index("--o")
@@ -122,7 +139,6 @@ def mock_subprocess_run(cmd, *args, **kwargs):
 
     elif "flirt" in cmd:
         import nibabel as nib
-        import numpy as np
 
         parts = cmd.split()
         omat_idx = parts.index("-omat")
@@ -139,16 +155,40 @@ def mock_subprocess_run(cmd, *args, **kwargs):
         if stdout_file:
             stdout_file.write("[Mock] flirt finished successfully\n")
 
-    mock_res = MagicMock()
-    mock_res.returncode = 0
-    return mock_res
+
+class MockPopen:
+    """Stand-in for subprocess.Popen: applies the same command side-effects as
+    the real subprocess would produce (writing output files), then exposes the
+    minimal Popen interface run_and_track_subprocess() relies on -- .pid,
+    .communicate(), .returncode."""
+
+    def __init__(self, cmd, *args, **kwargs):
+        self.pid = 999999
+        self.returncode = 0
+
+        stdout_kw = kwargs.get("stdout")
+        stderr_kw = kwargs.get("stderr")
+        text_mode = kwargs.get("text", False)
+
+        # Only apply side-effects against a real file-like stdout (as recon.py/
+        # ct_register.py pass), not when the caller asked to capture via PIPE
+        # (as electrodes.py's hough3dlines call does).
+        stdout_file = stdout_kw if stdout_kw is not None and stdout_kw is not subprocess.PIPE else None
+        _apply_command_side_effects(cmd, stdout_file)
+
+        empty = "" if text_mode else b""
+        self._stdout_data = empty if stdout_kw is subprocess.PIPE else None
+        self._stderr_data = empty if stderr_kw is subprocess.PIPE else None
+
+    def communicate(self):
+        return self._stdout_data, self._stderr_data
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
-@patch("subprocess.run", side_effect=mock_subprocess_run)
+@patch("subprocess.Popen", side_effect=MockPopen)
 def test_full_e2e_flow(mock_run):
     # 1. Create a subject
     response = client.post(
@@ -271,7 +311,7 @@ def test_full_e2e_flow(mock_run):
     db.close()
 
 
-@patch("subprocess.run", side_effect=mock_subprocess_run)
+@patch("subprocess.Popen", side_effect=MockPopen)
 def test_subject_crud(mock_run):
     # Create
     r = client.post("/subjects",
@@ -301,7 +341,7 @@ def test_subject_crud(mock_run):
     assert len(r.json()) == 0
 
 
-@patch("subprocess.run", side_effect=mock_subprocess_run)
+@patch("subprocess.Popen", side_effect=MockPopen)
 def test_job_cancel(mock_run):
     r = client.post("/subjects",
                     json={"name": "Cancel"})
@@ -317,7 +357,69 @@ def test_job_cancel(mock_run):
     assert r.json()["state"] == "cancelled"
 
 
-@patch("subprocess.run", side_effect=mock_subprocess_run)
+@patch("subprocess.Popen", side_effect=MockPopen)
+def test_recon_job_tracks_subprocess_pid_not_worker_pid(mock_run):
+    # Regression test: jobs_worker.run_job() used to set job.pid = os.getpid()
+    # (the worker process's own pid), so POST /jobs/{id}/cancel's SIGTERM would
+    # kill the entire worker -- every other queued/running job with it -- not
+    # just the targeted job's subprocess. services/job_control.py now tracks the
+    # real child pid per subprocess step instead; assert that's what actually
+    # gets recorded, and that no pid lingers once the job finishes.
+    from app.services import job_control
+
+    r = client.post("/subjects", json={"name": "PidTrack"})
+    sid = r.json()["id"]
+    client.post(
+        f"/subjects/{sid}/upload?file_type=t1",
+        files={"file": ("t1.nii.gz", b"fake T1", "application/octet-stream")},
+    )
+    r = client.post(f"/subjects/{sid}/recon", json={"recon_type": "recon-all"})
+    jid = r.json()["id"]
+
+    seen_pids = []
+    original_set_pid = job_control.set_running_pid
+
+    def spy_set_running_pid(db, job, pid):
+        seen_pids.append(pid)
+        return original_set_pid(db, job, pid)
+
+    with patch("app.services.job_control.set_running_pid", side_effect=spy_set_running_pid):
+        run_job(jid)
+
+    assert seen_pids, "expected at least one subprocess step to track a pid"
+    assert os.getpid() not in seen_pids
+    assert all(pid == 999999 for pid in seen_pids)  # MockPopen's fixed fake pid
+
+    r = client.get(f"/jobs/{jid}")
+    assert r.json()["state"] == "finished"
+    assert r.json()["pid"] is None
+
+
+def test_job_cancelled_error_ends_in_cancelled_not_failed():
+    # Regression test for the other half of the cancel-bug fix: an in-process
+    # job step (no subprocess to SIGTERM -- e.g. elec_segment/ei_compute/
+    # hfo_compute/soz_fuse) calls services/job_control.check_cancelled() at its
+    # existing progress checkpoints, which raises JobCancelledError once
+    # POST /jobs/{id}/cancel has flipped the job's state out-of-band.
+    # jobs_worker.run_job() must catch that distinctly and leave state as
+    # "cancelled", not clobber it with "failed" via the generic except Exception
+    # branch.
+    from app.services.job_control import JobCancelledError
+
+    r = client.post("/subjects", json={"name": "CooperativeCancel"})
+    sid = r.json()["id"]
+    r = client.post(f"/subjects/{sid}/recon", json={"recon_type": "recon-all"})
+    jid = r.json()["id"]
+
+    with patch("app.workers.jobs_worker.run_recon_job", side_effect=JobCancelledError("cancelled mid-run")):
+        run_job(jid)
+
+    r = client.get(f"/jobs/{jid}")
+    assert r.json()["state"] == "cancelled"
+    assert r.json()["progress_message"] == "Job cancelled by user"
+
+
+@patch("subprocess.Popen", side_effect=MockPopen)
 def test_artifacts_and_recon_result(mock_run):
     # Setup: create subject, upload T1, run recon job
     r = client.post("/subjects", json={"name": "ArtTest"})
@@ -358,7 +460,7 @@ def test_artifacts_and_recon_result(mock_run):
     assert r.status_code == 404
 
 
-@patch("subprocess.run", side_effect=mock_subprocess_run)
+@patch("subprocess.Popen", side_effect=MockPopen)
 def test_artifact_download_and_subject_zip(mock_run):
     # Setup: create subject, upload T1, run recon job
     r = client.post("/subjects", json={"name": "DlTest"})
@@ -391,4 +493,240 @@ def test_artifact_download_and_subject_zip(mock_run):
     r2 = client.post("/subjects", json={"name": "NoRecon"})
     sid2 = r2.json()["id"]
     r = client.get(f"/subjects/{sid2}/download.zip")
+    assert r.status_code == 404
+
+
+@patch("subprocess.Popen", side_effect=MockPopen)
+def test_surface_mesh_export_and_download(mock_run):
+    # recon.py's run_recon_job now caches lh/rh.pial as binary mesh artifacts
+    # right after the FreeSurfer steps -- the mock recon-all command above
+    # writes a real (single-triangle) FreeSurfer surface file, so this
+    # exercises the actual nibabel read + binary encode, not just plumbing.
+    from app.services.surface import MAGIC
+
+    r = client.post("/subjects", json={"name": "MeshTest"})
+    sid = r.json()["id"]
+    client.post(
+        f"/subjects/{sid}/upload?file_type=t1",
+        files={"file": ("t1.nii.gz", b"fake T1", "application/octet-stream")},
+    )
+    r = client.post(f"/subjects/{sid}/recon", json={"recon_type": "recon-all"})
+    run_job(r.json()["id"])
+
+    r = client.get(f"/subjects/{sid}/artifacts")
+    kinds = {a["kind"] for a in r.json()}
+    assert "lh_mesh_bin" in kinds
+    assert "rh_mesh_bin" in kinds
+
+    for hemi in ("lh", "rh"):
+        r = client.get(f"/subjects/{sid}/surface/{hemi}")
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/octet-stream"
+        body = r.content
+        assert body[:8] == MAGIC
+        vertex_count, face_count = struct.unpack("<II", body[8:16])
+        assert vertex_count == 3  # the mock writes one triangle
+        assert face_count == 1
+        expected_len = 16 + vertex_count * 3 * 4 + face_count * 3 * 4
+        assert len(body) == expected_len
+
+    # invalid hemi
+    r = client.get(f"/subjects/{sid}/surface/mid")
+    assert r.status_code == 400
+
+    # a subject that never reconned has no cached mesh yet
+    r2 = client.post("/subjects", json={"name": "NoMesh"})
+    sid2 = r2.json()["id"]
+    r = client.get(f"/subjects/{sid2}/surface/lh")
+    assert r.status_code == 404
+
+
+@patch("subprocess.Popen", side_effect=MockPopen)
+def test_surface_rebuild_job(mock_run):
+    r = client.post("/subjects", json={"name": "RebuildTest"})
+    sid = r.json()["id"]
+    client.post(
+        f"/subjects/{sid}/upload?file_type=t1",
+        files={"file": ("t1.nii.gz", b"fake T1", "application/octet-stream")},
+    )
+    r = client.post(f"/subjects/{sid}/recon", json={"recon_type": "recon-all"})
+    run_job(r.json()["id"])
+
+    r = client.post(f"/subjects/{sid}/surface/rebuild")
+    assert r.status_code == 200
+    job = r.json()
+    assert job["job_type"] == "surface_export"
+    run_job(job["id"])
+
+    r = client.get(f"/jobs/{job['id']}")
+    assert r.json()["state"] == "finished"
+
+    r = client.get(f"/subjects/{sid}/surface/lh")
+    assert r.status_code == 200
+
+
+def test_labels_summary():
+    # detect()'s real pipeline (hough3dlines + GMM) is heavy to mock
+    # realistically -- write a small synthetic labels volume directly at the
+    # path detect() would have produced, and hit the summary endpoint against
+    # that, which is all summarize_labels() actually reads.
+    r = client.post("/subjects", json={"name": "LabelsTest"})
+    sid = r.json()["id"]
+
+    ct_dir = os.path.join(settings.SUBJECTS_DIR, "LabelsTest", "fslresults")
+    os.makedirs(ct_dir, exist_ok=True)
+    labels = np.zeros((4, 4, 4))
+    labels[0, 0, 0] = 1
+    labels[0, 0, 1] = 1
+    labels[3, 3, 3] = 2
+    np.save(os.path.join(ct_dir, "LabelsTest_labels.npy"), labels)
+
+    r = client.get(f"/subjects/{sid}/electrodes/labels-summary")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["K"] == 2
+    by_label = {c["label"]: c for c in data["clusters"]}
+    assert by_label[1]["voxel_count"] == 2
+    assert by_label[1]["centroid"] == [0.0, 0.0, 0.5]
+    assert by_label[2]["voxel_count"] == 1
+    assert by_label[2]["centroid"] == [3.0, 3.0, 3.0]
+
+    # 404 before detect() has ever run
+    r2 = client.post("/subjects", json={"name": "NoLabels"})
+    sid2 = r2.json()["id"]
+    r = client.get(f"/subjects/{sid2}/electrodes/labels-summary")
+    assert r.status_code == 404
+
+
+def _make_synthetic_edf(path, n_channels=4, sfreq=1000.0, duration_sec=10.0):
+    """Writes a real, re-readable EDF file (via mne + edfio) with a
+    deterministic per-channel sine wave (distinct frequency per channel), so
+    tests can assert on actual sample values, not just response shapes.
+    sfreq=1000Hz (a realistic iEEG rate) so the 50/100/150Hz display notch
+    filter's highest frequency stays safely below Nyquist -- unlike real
+    recordings, an unrealistically low test sample rate (e.g. 200Hz) would
+    put 150Hz above Nyquist and make iirnotch reject it."""
+    n_samples = int(sfreq * duration_sec)
+    t = np.arange(n_samples) / sfreq
+    ch_names = [f"CH{i + 1}" for i in range(n_channels)]
+    data = np.stack([50e-6 * np.sin(2 * np.pi * (2 + i) * t) for i in range(n_channels)])
+    info = mne.create_info(ch_names, sfreq=sfreq, ch_types="eeg")
+    raw = mne.io.RawArray(data, info, verbose=False)
+    raw.export(path, fmt="edf", overwrite=True, verbose=False)
+    return ch_names, sfreq
+
+
+def _create_subject_with_edf(name):
+    r = client.post("/subjects", json={"name": name})
+    sid = r.json()["id"]
+    edf_path = f"/tmp/{name}_synth.edf"
+    ch_names, sfreq = _make_synthetic_edf(edf_path)
+    with open(edf_path, "rb") as f:
+        r = client.post(
+            f"/subjects/{sid}/upload?file_type=edf",
+            files={"file": (f"{name}.edf", f.read(), "application/octet-stream")},
+        )
+    os.remove(edf_path)
+    artifact_id = r.json()["id"]
+    return sid, artifact_id, ch_names, sfreq
+
+
+def test_edf_meta():
+    sid, artifact_id, ch_names, sfreq = _create_subject_with_edf("EdfMetaTest")
+
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/meta")
+    assert r.status_code == 200
+    meta = r.json()
+    assert meta["fs"] == sfreq
+    assert meta["channels"] == ch_names
+    assert meta["n_samples"] == int(sfreq * 10.0)
+    assert meta["duration_sec"] == pytest.approx(10.0, abs=0.01)
+    assert meta["amplitude_range"]["min"] < 0 < meta["amplitude_range"]["max"]
+
+    # cached into Artifact.meta_json on first call -- second call should
+    # return identical values, not recompute or error.
+    r2 = client.get(f"/subjects/{sid}/edf/{artifact_id}/meta")
+    assert r2.json() == meta
+
+    r = client.get(f"/subjects/{sid}/edf/999999/meta")
+    assert r.status_code == 404
+
+
+def test_edf_window_unfiltered_matches_raw_samples():
+    sid, artifact_id, ch_names, sfreq = _create_subject_with_edf("EdfWindowTest")
+
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=1.0&end=2.0")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["channels"] == ch_names
+    assert body["filtered"] is False
+    assert body["fs"] == sfreq
+    data = np.array(body["data"])
+    assert data.shape == (len(ch_names), int(round((2.0 - 1.0) * sfreq)))
+
+    # Cross-check against directly re-reading the same resolved file -- proves
+    # the endpoint is really slicing that window, not returning arbitrary data.
+    edf_dir = os.path.join(settings.SUBJECTS_DIR, "EdfWindowTest", "edf")
+    resolved_path = os.path.join(edf_dir, os.listdir(edf_dir)[0])
+    raw = mne.io.read_raw_edf(resolved_path, preload=True, stim_channel=None)
+    i0, i1 = raw.time_as_index([1.0, 2.0])
+    expected = raw.get_data()[:, i0:i1]
+    np.testing.assert_allclose(data, expected, atol=1e-6)
+
+
+def test_edf_window_filtered_matches_filter_for_display():
+    from app.services.signal_filters import filter_for_display
+
+    sid, artifact_id, ch_names, sfreq = _create_subject_with_edf("EdfFilterTest")
+
+    band_low, band_high = 1.0, 40.0
+    r = client.get(
+        f"/subjects/{sid}/edf/{artifact_id}/window"
+        f"?start=3.0&end=5.0&band_low={band_low}&band_high={band_high}"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["filtered"] is True
+    assert body["band_low"] == band_low
+    assert body["band_high"] == band_high
+    data = np.array(body["data"])
+
+    # Reproduce the pad-then-filter-then-trim behavior directly against the
+    # same resolved file and confirm the endpoint matches exactly -- the
+    # regression test for "filtering must happen on a padded range" (unpadded
+    # filtering would show edge artifacts at every window boundary).
+    edf_dir = os.path.join(settings.SUBJECTS_DIR, "EdfFilterTest", "edf")
+    resolved_path = os.path.join(edf_dir, os.listdir(edf_dir)[0])
+    raw = mne.io.read_raw_edf(resolved_path, preload=True, stim_channel=None)
+    pad = 2.0
+    duration = raw.times[-1]
+    pad_start = max(0.0, 3.0 - pad)
+    pad_end = min(duration, 5.0 + pad)
+    i0, i1 = raw.time_as_index([pad_start, pad_end])
+    padded = raw.get_data()[:, i0:i1]
+    filtered = filter_for_display(padded, sfreq, band_low, band_high)
+    trim0 = int(round((3.0 - pad_start) * sfreq))
+    trim1 = trim0 + int(round((5.0 - 3.0) * sfreq))
+    expected = filtered[:, trim0:trim1]
+
+    np.testing.assert_allclose(data, expected, atol=1e-8)
+
+
+def test_edf_window_channel_filter_and_limits():
+    sid, artifact_id, ch_names, sfreq = _create_subject_with_edf("EdfLimitsTest")
+
+    # channel subsetting preserves file order regardless of request order
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=1&channels=CH3,CH1")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["channels"] == ["CH1", "CH3"]
+    assert len(body["data"]) == 2
+
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=100")
+    assert r.status_code == 400
+
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=5&end=5")
+    assert r.status_code == 400
+
+    r = client.get(f"/subjects/{sid}/edf/999999/window?start=0&end=1")
     assert r.status_code == 404

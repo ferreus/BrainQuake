@@ -1,16 +1,17 @@
 import os
-import shutil
 import logging
 import numpy as np
 import mne
-from scipy.signal import spectrogram, butter, filtfilt, iirnotch, convolve2d
+from scipy.signal import spectrogram, convolve2d
 from scipy.ndimage import gaussian_filter
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from sqlalchemy.orm import Session
-from app.config import settings
 from app.models import Job, Subject, Artifact
 from app.services.recon import register_artifact
+from app.services.job_control import check_cancelled
+from app.services.edf_common import resolve_edf_path
+from app.services.signal_filters import filter_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -188,33 +189,6 @@ def compute_full_band(raw_data, sfreq, ei):
     return spec_pca, pre_labels, chosen_cluster_ind
 
 
-def _ensure_edf_copy(subject: Subject, artifact: Artifact):
-    """Mirrors client_ictal.py's dialog_inputedfdata(): copy the uploaded edf into
-    <subject_dir>/edf/ so results land next to it under edf/EIdets/, matching the
-    convention soz.py's fusion step expects."""
-    src_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
-    edf_dir = os.path.join(settings.SUBJECTS_DIR, subject.name, "edf")
-    os.makedirs(edf_dir, exist_ok=True)
-    dest_path = os.path.join(edf_dir, os.path.basename(src_path))
-    if not os.path.exists(dest_path):
-        shutil.copy2(src_path, dest_path)
-    return dest_path
-
-
-def _filter_signal(data, fs, band_low, band_high):
-    """Port of IctalModule.filter_data(): common-average reference, then a
-    50/100/150Hz notch, then a user-specified bandpass, all zero-phase."""
-    data = data - np.mean(data, axis=0)
-    notch_freqs = np.arange(50, 151, 50)
-    for nf in notch_freqs:
-        tb, ta = iirnotch(nf / (fs / 2), 30)
-        data = filtfilt(tb, ta, data, axis=-1)
-    nyq = fs / 2
-    b, a = butter(5, np.array([band_low / nyq, band_high / nyq]), btype='bandpass')
-    data = filtfilt(b, a, data)
-    return data
-
-
 def run_ei_compute_job(db: Session, job: Job, log_file):
     subject = db.query(Subject).filter(Subject.id == job.subject_id).first()
     if not subject:
@@ -238,13 +212,13 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
     job.progress_message = "Loading edf and applying notch + bandpass filter"
     db.commit()
 
-    edf_path = _ensure_edf_copy(subject, artifact)
+    edf_path = resolve_edf_path(subject, artifact)
     edf_data = mne.io.read_raw_edf(edf_path, preload=True, stim_channel=None)
     fs = edf_data.info['sfreq']
     chn_names = edf_data.ch_names
     raw_data, _ = edf_data[:]
 
-    filtered = _filter_signal(raw_data, fs, band_low, band_high)
+    filtered = filter_for_display(raw_data, fs, band_low, band_high)
 
     base_start_i = int(baseline_start * fs)
     base_end_i = int(baseline_end * fs)
@@ -254,6 +228,8 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
     job.progress_pct = 60.0
     job.progress_message = "Computing HFER + EI index"
     db.commit()
+
+    check_cancelled(db, job)
 
     baseline_data = filtered[:, base_start_i:base_end_i]
     target_data = filtered[:, target_start_i:target_end_i]

@@ -1,11 +1,11 @@
 import os
 import shutil
 import time
-import subprocess
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Job, Subject, Artifact
+from app.services.job_control import run_and_track_subprocess
 
 def _run_subprocess_cmd(cmd, job, step_name, db, log_file, use_freesurfer_env=False):
     prefix = ""
@@ -15,15 +15,15 @@ def _run_subprocess_cmd(cmd, job, step_name, db, log_file, use_freesurfer_env=Fa
             prefix = f"export FREESURFER_HOME={settings.FREESURFER_HOME} && source {setup_script} && "
         else:
             prefix = f"export FREESURFER_HOME={settings.FREESURFER_HOME} && "
-            
+
     full_cmd = f"{prefix}{cmd}"
     log_file.write(f"\n[{datetime.now(timezone.utc)}] Starting step '{step_name}': {full_cmd}\n")
     log_file.flush()
-    
+
     t0 = time.time()
-    res = subprocess.run(full_cmd, shell=True, executable='/bin/bash', stdout=log_file, stderr=log_file)
+    res = run_and_track_subprocess(full_cmd, job, db, stdout=log_file, stderr=log_file, executable='/bin/bash')
     elapsed = time.time() - t0
-    
+
     if res.returncode != 0:
         log_file.write(f"[{datetime.now(timezone.utc)}] Step '{step_name}' failed with status {res.returncode} after {elapsed:.1f}s\n")
         log_file.flush()
@@ -145,7 +145,18 @@ def run_recon_job(db: Session, job: Job, log_file):
     
     cmd_label_convert_lh = f"mri_annotation2label --subject {name} --hemi lh --outdir {settings.SUBJECTS_DIR}/{name}/label"
     _run_subprocess_cmd(cmd_label_convert_lh, job, "annotation2label lh", db, log_file, use_freesurfer_env=True)
-    
+
+    # 3b. Cache lh/rh.pial as browser-consumable binary mesh artifacts, so the
+    # web client's 3D view never needs to parse FreeSurfer's binary surface
+    # format itself. Deferred import to avoid a module import cycle (surface.py
+    # imports register_artifact from this module).
+    job.progress_pct = 93.0
+    job.progress_message = "Exporting lh/rh pial surfaces to binary mesh cache"
+    db.commit()
+
+    from app.services.surface import export_and_cache_surfaces
+    export_and_cache_surfaces(db, subject, job)
+
     # 4. Zipping results
     job.progress_pct = 95.0
     job.progress_message = "Zipping reconstruction results"

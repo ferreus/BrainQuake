@@ -15,6 +15,8 @@ from app.services.electrodes import run_elec_detect_job, run_elec_segment_job
 from app.services.ictal import run_ei_compute_job
 from app.services.interictal import run_hfo_compute_job
 from app.services.soz import run_soz_fuse_job
+from app.services.surface import run_surface_export_job
+from app.services.job_control import JobCancelledError
 
 # Set up logging for the worker itself
 logging.basicConfig(
@@ -54,10 +56,14 @@ def run_job(job_id: int):
     os.makedirs(logs_dir, exist_ok=True)
     log_path = os.path.join(logs_dir, f"job_{job.id}.log")
     
-    # Update job state to running
+    # Update job state to running. pid is left unset here -- it's populated
+    # only while a tracked subprocess step is actually running (see
+    # services/job_control.run_and_track_subprocess), never the worker's own
+    # pid: SIGTERM'ing the worker itself on cancel would kill every other
+    # queued/running job with it.
     job.state = "running"
     job.started_at = datetime.now(timezone.utc)
-    job.pid = os.getpid()
+    job.pid = None
     job.host = socket.gethostname()
     job.log_path = log_path
     job.progress_pct = 0.0
@@ -88,6 +94,8 @@ def run_job(job_id: int):
                 run_hfo_compute_job(db, job, log_file)
             elif job.job_type == "soz_fuse":
                 run_soz_fuse_job(db, job, log_file)
+            elif job.job_type == "surface_export":
+                run_surface_export_job(db, job, log_file)
             else:
                 raise ValueError(f"Unknown job type: {job.job_type}")
 
@@ -96,7 +104,23 @@ def run_job(job_id: int):
             job.progress_message = "Job completed successfully"
             job.finished_at = datetime.now(timezone.utc)
             log_file.write(f"\n--- Job {job.id} Completed successfully at {job.finished_at} ---\n")
-            
+
+    except JobCancelledError as e:
+        logger.info(f"Job {job.id} cancelled: {e}")
+
+        # Reload job in case session was closed/messed up
+        db.rollback()
+        job = db.query(Job).filter(Job.id == job_id).first()
+        job.state = "cancelled"
+        job.progress_message = "Job cancelled by user"
+        job.finished_at = datetime.now(timezone.utc)
+
+        try:
+            with open(log_path, "a") as log_file:
+                log_file.write(f"\n--- Job {job.id} Cancelled at {job.finished_at} ---\n")
+        except Exception:
+            pass
+
     except Exception as e:
         logger.error(f"Job {job.id} failed with error: {e}")
         logger.error(traceback.format_exc())

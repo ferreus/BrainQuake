@@ -25,6 +25,7 @@ dependencies = [
 test = [
     "pytest>=7.0",
     "httpx2>=2.0",
+    "edfio>=0.4",  # writes synthetic EDF fixtures for edf.py/ictal.py/interictal.py tests
 ]
 
 [tool.pytest.ini_options]

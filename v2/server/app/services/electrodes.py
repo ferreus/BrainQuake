@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Job, Subject, Artifact
 from app.services.recon import register_artifact
+from app.services.job_control import check_cancelled, run_and_track_subprocess
 
 # Ported from BrainQuake/utils/elec_utils.py. Split into two job types per PLAN.md
 # 2.7: detect() (Preprocess_thread + GenerateLabel_thread -- hough3dlines + GMM
@@ -32,9 +33,13 @@ def _patient_dirs(subject: Subject):
     return surf_dir, ct_dir, mri_dir
 
 
-def _run_hough3dlines(cmd, log_file=None):
+def _run_hough3dlines(cmd, log_file=None, job=None, db=None):
     t0 = time.time()
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if job is not None and db is not None:
+        result = run_and_track_subprocess(cmd, job, db, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    else:
+        # No job context (e.g. a standalone/offline script) -- nothing to track a pid onto.
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     elapsed = time.time() - t0
     if log_file:
         log_file.write(f"Running: {cmd}\n")
@@ -57,7 +62,7 @@ def dataExtraction(intraFile, thre=0.2):
     return xs, ys, zs
 
 
-def trackRecognition(patient, cmd_hough3d, CTresult_dir, intraFile, log_file, thre=0.2):
+def trackRecognition(patient, cmd_hough3d, CTresult_dir, intraFile, log_file, thre=0.2, job=None, db=None):
     xs, ys, zs = dataExtraction(intraFile, thre)
 
     X = np.transpose(np.array((xs, ys, zs)))
@@ -66,7 +71,7 @@ def trackRecognition(patient, cmd_hough3d, CTresult_dir, intraFile, log_file, th
 
     outfile = os.path.join(CTresult_dir, f"{patient}.txt")
     cmd_hough = f"{cmd_hough3d} -o {outfile} -minvotes 5 {fname}"
-    _run_hough3dlines(cmd_hough, log_file)
+    _run_hough3dlines(cmd_hough, log_file, job=job, db=db)
     return xs, ys, zs, fname, outfile
 
 
@@ -103,14 +108,14 @@ def preprocess_ct(patient, ct_dir, mri_dir, K, thre_pct, ero_itr):
     return intra_file1, intra_file
 
 
-def generate_labels(patient, ct_dir, intra_file, K, log_file):
+def generate_labels(patient, ct_dir, intra_file, K, log_file, job=None, db=None):
     """Port of GenerateLabel_thread.run(): hough3dlines line detection -> keep the K
     best-supported tracks as GMM centroids -> per-voxel cluster labels -> Labels.npy.
     Raises RuntimeError if fewer than K tracks were detected (mirrors the legacy
     thread's finished.emit(1) failure path, which produced no labels.npy)."""
     xs, ys, zs, cloud_file, hough_file = trackRecognition(
         patient=patient, cmd_hough3d=settings.HOUGH3DLINES_BIN, CTresult_dir=ct_dir,
-        intraFile=intra_file, log_file=log_file, thre=0)
+        intraFile=intra_file, log_file=log_file, thre=0, job=job, db=db)
 
     elec_track = []
     with open(hough_file, 'r') as f:
@@ -165,15 +170,42 @@ def run_elec_detect_job(db: Session, job: Job, log_file):
     register_artifact(db, subject.id, job.id, "ct_intra_nii", intra_file1)
     register_artifact(db, subject.id, job.id, "ct_intracranial_nii", intra_file)
 
+    check_cancelled(db, job)
     job.progress_pct = 50.0
     job.progress_message = "Running hough3dlines + GMM clustering"
     db.commit()
-    labels_path, K_check = generate_labels(subject.name, ct_dir, intra_file, K, log_file)
+    labels_path, K_check = generate_labels(subject.name, ct_dir, intra_file, K, log_file, job=job, db=db)
     register_artifact(db, subject.id, job.id, "labels_npy", labels_path)
 
     job.progress_pct = 95.0
     job.progress_message = f"Detected {K_check} tracks, clustered into {K} electrodes"
     db.commit()
+
+
+def summarize_labels(subject: Subject):
+    """GET .../electrodes/labels-summary: cheap per-cluster stats (voxel count
+    + centroid) computed server-side from the labels volume, so a label-review/
+    exclude UI can be built without ever shipping the full 256^3 label volume
+    (Labels.npy, ~128MB as float64) to the browser -- only chn-xyz/contacts
+    (final segmented contact coordinates) were JSON-ready before this; nothing
+    exposed the intermediate GMM clusters the legacy app's cluster-preview
+    matplotlib scatter showed."""
+    _, ct_dir, _ = _patient_dirs(subject)
+    labels_path = os.path.join(ct_dir, f"{subject.name}_labels.npy")
+    if not os.path.exists(labels_path):
+        raise FileNotFoundError(f"{labels_path} not found. Run detect() first.")
+
+    Labels = np.load(labels_path)
+    values = sorted(v for v in np.unique(Labels) if v != 0)
+    clusters = []
+    for v in values:
+        idx = np.where(Labels == v)
+        clusters.append({
+            "label": int(v),
+            "voxel_count": int(len(idx[0])),
+            "centroid": [float(np.mean(idx[0])), float(np.mean(idx[1])), float(np.mean(idx[2]))],
+        })
+    return {"K": len(values), "clusters": clusters}
 
 
 def commit_labels(subject: Subject, exclude_labels):
@@ -474,6 +506,7 @@ def run_elec_segment_job(db: Session, job: Job, log_file):
         raise RuntimeError("No electrode labels found -- did detect()/labels review leave any clusters?")
 
     for i in range(K):
+        check_cancelled(db, job)
         iLabel = i + 1
         seg = ElectrodeSeg(ct_dir=ct_dir, patient=subject.name, iLabel=iLabel,
                             numMax=numMax, diameterSize=diameterSize, spacing=spacing, gap=gap)

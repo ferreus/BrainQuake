@@ -8,9 +8,10 @@ import mne
 from scipy.signal import butter, filtfilt, iirnotch, hilbert
 from scipy import fftpack
 from sqlalchemy.orm import Session
-from app.config import settings
 from app.models import Job, Subject, Artifact
 from app.services.recon import register_artifact
+from app.services.job_control import check_cancelled
+from app.services.edf_common import resolve_edf_path
 
 logger = logging.getLogger(__name__)
 
@@ -197,18 +198,6 @@ def HI_count_highEvents_chns(filename, rel_thresh, abs_thresh, min_gap, min_last
     return out_path, [file_highEnve_chnsCount, file_chnsNames, file_highEnve_times]
 
 
-def _ensure_edf_copy(subject: Subject, artifact: Artifact):
-    """Mirrors client_inter.py's edf-import: copy the uploaded edf into
-    <subject_dir>/edf/ so HFOdets/ lands next to it, matching soz.py's expectations."""
-    src_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
-    edf_dir = os.path.join(settings.SUBJECTS_DIR, subject.name, "edf")
-    os.makedirs(edf_dir, exist_ok=True)
-    dest_path = os.path.join(edf_dir, os.path.basename(src_path))
-    if not os.path.exists(dest_path):
-        shutil.copy2(src_path, dest_path)
-    return dest_path
-
-
 def run_hfo_compute_job(db: Session, job: Job, log_file):
     subject = db.query(Subject).filter(Subject.id == job.subject_id).first()
     if not subject:
@@ -232,7 +221,7 @@ def run_hfo_compute_job(db: Session, job: Job, log_file):
     job.progress_message = "Loading edf"
     db.commit()
 
-    edf_path = _ensure_edf_copy(subject, artifact)
+    edf_path = resolve_edf_path(subject, artifact)
     remain_chns = params.get("remain_chns")
     if not remain_chns:
         header = mne.io.read_raw_edf(edf_path, preload=False, stim_channel=None)
@@ -240,12 +229,16 @@ def run_hfo_compute_job(db: Session, job: Job, log_file):
 
     def progress_cb(pct):
         # HI_preprocess_file drives 0-90%, event detection below finishes the rest.
+        # This is also the only per-iteration checkpoint inside that time-segment
+        # loop, so it doubles as the cooperative-cancellation check for this job.
+        check_cancelled(db, job)
         job.progress_pct = min(90.0, float(pct))
         job.progress_message = f"Computing envelope ({job.progress_pct:.0f}%)"
         db.commit()
 
     HI_preprocess_file(edf_path, remain_chns, [band_low, band_high], progress_cb)
 
+    check_cancelled(db, job)
     job.progress_pct = 92.0
     job.progress_message = "Detecting high-envelope events"
     db.commit()
