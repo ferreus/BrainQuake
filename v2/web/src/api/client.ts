@@ -3,7 +3,7 @@ import type { UploadFileType } from "./types";
 // Same-origin, nginx-proxied path -- see v2/docker/nginx.conf. Works
 // regardless of which host/IP the browser used to reach the web UI, unlike
 // a baked-in or user-configurable absolute server URL.
-const API_BASE = "/api";
+export const API_BASE = "/api";
 
 export class ApiError extends Error {
   status: number;

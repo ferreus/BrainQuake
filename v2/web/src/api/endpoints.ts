@@ -1,8 +1,7 @@
 // Thin REST resource functions, one per v2/server endpoint used so far --
 // mirrors v2/client/api_client.py's method surface so the two clients stay
 // easy to cross-reference.
-import { apiDelete, apiGet, apiGetBinary, apiGetText, apiPost, apiPut, uploadFileWithProgress } from "./client";
-import { getBaseUrl } from "./serverConfig";
+import { API_BASE, apiDelete, apiGet, apiGetBinary, apiGetText, apiPost, apiPut, uploadFileWithProgress } from "./client";
 import { parseEdfWindowBinary } from "../lib/parseEdfWindowBinary";
 import type { Artifact, Job, ReconType, Subject } from "./types";
 
@@ -41,7 +40,7 @@ export function exportPatient(subjectId: number): Promise<Job> {
 /** Absolute URL of the latest completed export archive -- point an <a> at it
  * (or window.location) to let the browser handle the file download. */
 export function patientExportDownloadUrl(subjectId: number): string {
-  return `${getBaseUrl()}/subjects/${subjectId}/export/download`;
+  return `${API_BASE}/subjects/${subjectId}/export/download`;
 }
 
 export interface ImportResult {
