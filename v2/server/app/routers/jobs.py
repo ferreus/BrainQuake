@@ -38,6 +38,25 @@ def get_job_log(job_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Log file not found or not yet created")
     return FileResponse(job.log_path, media_type="text/plain")
 
+@router.delete("/{job_id}")
+def delete_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.state not in ["finished", "failed", "cancelled"]:
+        raise HTTPException(status_code=409, detail="Cannot delete a queued or running job; cancel it first")
+
+    if job.log_path and os.path.exists(job.log_path):
+        try:
+            os.remove(job.log_path)
+        except OSError:
+            pass  # orphaned log file is not worth failing the delete
+
+    db.delete(job)
+    db.commit()
+    return {"message": "Job deleted"}
+
 @router.post("/{job_id}/cancel")
 def cancel_job(job_id: int, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()

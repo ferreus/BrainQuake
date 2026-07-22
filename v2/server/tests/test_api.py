@@ -363,6 +363,30 @@ def test_job_cancel(mock_run):
 
 
 @patch("subprocess.Popen", side_effect=MockPopen)
+def test_job_delete(mock_run):
+    r = client.post("/subjects",
+                    json={"name": "Delete"})
+    sid = r.json()["id"]
+    r = client.post(f"/subjects/{sid}/recon",
+                    json={"recon_type": "recon-all"})
+    jid = r.json()["id"]
+
+    # Still queued -- delete must be refused so a live job can't vanish
+    r = client.delete(f"/jobs/{jid}")
+    assert r.status_code == 409
+
+    client.post(f"/jobs/{jid}/cancel")
+    r = client.delete(f"/jobs/{jid}")
+    assert r.status_code == 200
+
+    r = client.get(f"/jobs/{jid}")
+    assert r.status_code == 404
+
+    r = client.delete(f"/jobs/{jid}")
+    assert r.status_code == 404
+
+
+@patch("subprocess.Popen", side_effect=MockPopen)
 def test_recon_job_tracks_subprocess_pid_not_worker_pid(mock_run):
     # Regression test: jobs_worker.run_job() used to set job.pid = os.getpid()
     # (the worker process's own pid), so POST /jobs/{id}/cancel's SIGTERM would

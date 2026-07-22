@@ -1,22 +1,26 @@
 # Usage:
 #   1. Get a FreeSurfer license.txt (free, https://surfer.nmr.mgh.harvard.edu/registration.html)
 #   2. Copy v2/docker/.env.example to v2/docker/.env and point FS_LICENSE_HOST at it
-#   3. docker compose -f v2/docker/docker-compose.yml up --build
+#   3. Build the (rarely-changing) base image once: v2/docker/build-base.sh
+#   4. docker compose -f v2/docker/docker-compose.yml up --build
 #
 # api and worker share the same image, the same SUBJECTS_DIR/DATA_ROOT volume, and
 # the same SQLite DB file (WAL mode) -- mirrors the single-process legacy layout,
-# just split across two containers per PLAN.md 2.3.
+# just split across two containers per PLAN.md 2.3. Both FROM brainquake-base
+# (see base.Dockerfile) -- that image holds FreeSurfer/FSL/hough-3d-lines and is
+# built separately via build-base.sh, not by this compose file, so `docker compose
+# build` never re-downloads/re-extracts them.
+#
+# web is a separate static SPA container (v2/web) talking to api over the
+# published host port -- see v2/web/Dockerfile.
 
 services:
   api:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-      # DEV: local FreeSurfer tarball cache dir, read via a buildx bind mount in
-      # the Dockerfile's FreeSurfer step -- drop this once that step goes back to
-      # wget-downloading the official tarball.
-      additional_contexts:
-        fsdist: /media/data/opt/freesurfer
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-brainquake-base:latest}
     image: brainquake-server:latest
     ports:
       - "8000:8000"
@@ -45,6 +49,19 @@ services:
     # serves -- the worker runs no HTTP server, so that check would never pass here.
     healthcheck:
       disable: true
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${WEB_API_BASE_URL:-http://localhost:8000}
+    image: brainquake-web:latest
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
     restart: unless-stopped
 
 volumes:

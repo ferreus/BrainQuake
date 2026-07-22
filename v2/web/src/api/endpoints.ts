@@ -50,6 +50,10 @@ export function cancelJob(id: number): Promise<{ message: string; job: Job }> {
   return apiPost(`/jobs/${id}/cancel`);
 }
 
+export function deleteJob(id: number): Promise<{ message: string }> {
+  return apiDelete(`/jobs/${id}`);
+}
+
 export function runRecon(subjectId: number, reconType: ReconType): Promise<Job> {
   return apiPost<Job>(`/subjects/${subjectId}/recon`, { recon_type: reconType });
 }
@@ -184,6 +188,37 @@ export interface EiComputeParams {
 
 export function computeEi(subjectId: number, edfArtifactId: number, params: EiComputeParams): Promise<Job> {
   return apiPost<Job>(`/subjects/${subjectId}/ictal/${edfArtifactId}/ei`, params);
+}
+
+// Mirrors v2/client/api_client.py's _RETRY_DISPATCH: every job type's
+// params_json already carries everything its original POST body needed, so
+// retrying is just re-issuing the same call with those same params. The
+// hfo/soz entries POST to the server routes directly because the web client
+// has no dedicated wrappers for them yet (Phase 4/5 features).
+type RetryFn = (subjectId: number, p: Record<string, unknown>) => Promise<Job>;
+
+const RETRY_DISPATCH: Record<string, RetryFn> = {
+  recon: (subjectId, p) => runRecon(subjectId, (p.recon_type as ReconType) ?? "recon-all"),
+  ct_register: (subjectId) => registerCt(subjectId),
+  elec_detect: (subjectId, p) => detectElectrodes(subjectId, p as unknown as DetectParams),
+  elec_segment: (subjectId, p) => segmentElectrodes(subjectId, p as SegmentParams),
+  ei_compute: (subjectId, p) => {
+    const { edf_artifact_id, ...params } = p;
+    return computeEi(subjectId, edf_artifact_id as number, params as unknown as EiComputeParams);
+  },
+  hfo_compute: (subjectId, p) => {
+    const { edf_artifact_id, ...params } = p;
+    return apiPost<Job>(`/subjects/${subjectId}/interictal/${edf_artifact_id}/hfo`, params);
+  },
+  soz_fuse: (subjectId, p) => apiPost<Job>(`/subjects/${subjectId}/soz/fuse`, p),
+};
+
+export function retryJob(job: Job): Promise<Job> {
+  const dispatch = RETRY_DISPATCH[job.job_type];
+  if (!dispatch) {
+    return Promise.reject(new Error(`Don't know how to retry job type '${job.job_type}'`));
+  }
+  return dispatch(job.subject_id, job.params_json ?? {});
 }
 
 export interface EiResult {
