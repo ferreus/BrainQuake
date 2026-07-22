@@ -1,8 +1,10 @@
+import io
 import json
 import os
 import shutil
 import struct
 import subprocess
+import zipfile
 import numpy as np
 import mne
 import pytest
@@ -814,3 +816,95 @@ def test_edf_window_channel_filter_and_limits():
 
     r = client.get(f"/subjects/{sid}/edf/999999/window?start=0&end=1")
     assert r.status_code == 404
+
+
+@patch("subprocess.Popen", side_effect=MockPopen)
+def test_export_import_patient_roundtrip(mock_run):
+    # Build a subject with a real on-disk footprint: recon (writes the
+    # SUBJECTS_DIR/<name> tree + recon artifacts) plus an EDF upload under
+    # recv/<name>.
+    name = "ExportImport"
+    r = client.post("/subjects", json={"name": name})
+    sid = r.json()["id"]
+
+    client.post(
+        f"/subjects/{sid}/upload?file_type=t1",
+        files={"file": ("t1.nii.gz", b"fake T1", "application/octet-stream")},
+    )
+    edf_path = f"/tmp/{name}_synth.edf"
+    _make_synthetic_edf(edf_path)
+    with open(edf_path, "rb") as f:
+        client.post(
+            f"/subjects/{sid}/upload?file_type=edf",
+            files={"file": (f"{name}.edf", f.read(), "application/octet-stream")},
+        )
+    os.remove(edf_path)
+
+    r = client.post(f"/subjects/{sid}/recon", json={"recon_type": "recon-all"})
+    run_job(r.json()["id"])
+
+    artifacts_before = client.get(f"/subjects/{sid}/artifacts").json()
+    kinds_before = sorted(a["kind"] for a in artifacts_before)
+
+    # Export -> job produces a patient_export artifact, download streams a zip.
+    r = client.post(f"/subjects/{sid}/export")
+    assert r.status_code == 200
+    export_job_id = r.json()["id"]
+    run_job(export_job_id)
+
+    r = client.get(f"/subjects/{sid}/artifacts?kind=patient_export")
+    assert len(r.json()) == 1
+
+    r = client.get(f"/subjects/{sid}/export/download")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/zip")
+    zip_bytes = r.content
+    assert zipfile.is_zipfile(io.BytesIO(zip_bytes))
+
+    # Wipe the patient entirely, as the user would before moving servers.
+    r = client.delete(f"/subjects/{sid}")
+    assert r.status_code == 200
+    assert not os.path.isdir(os.path.join(settings.SUBJECTS_DIR, name))
+
+    # Import the same archive back.
+    r = client.post(
+        "/subjects/import",
+        files={"file": (f"{name}.zip", zip_bytes, "application/zip")},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    new_sid = body["subject"]["id"]
+    assert body["subject"]["name"] == name
+    assert body["subject"]["recon_type"] == "recon-all"
+    run_job(body["job"]["id"])
+
+    # Subject is fully restored: files back on disk, subject_dir set, and every
+    # exportable artifact re-registered (patient_export itself lives under
+    # DATA_ROOT/exports, not the captured trees, so it is not re-registered).
+    r = client.get(f"/subjects/{new_sid}")
+    assert r.json()["subject_dir"] == os.path.join(settings.SUBJECTS_DIR, name)
+    assert os.path.isdir(os.path.join(settings.SUBJECTS_DIR, name))
+
+    artifacts_after = client.get(f"/subjects/{new_sid}/artifacts").json()
+    kinds_after = sorted(a["kind"] for a in artifacts_after)
+    # recon_zip lives at SUBJECTS_DIR/<name>.zip (a sibling, not inside the
+    # captured tree) so it is intentionally dropped; everything else returns.
+    expected = sorted(k for k in kinds_before if k != "recon_zip")
+    assert kinds_after == expected
+
+    # A re-import while the name is still taken is rejected.
+    r = client.post(
+        "/subjects/import",
+        files={"file": (f"{name}.zip", zip_bytes, "application/zip")},
+    )
+    assert r.status_code == 409
+
+    # A non-export zip is rejected with a helpful 400.
+    bogus = io.BytesIO()
+    with zipfile.ZipFile(bogus, "w") as zf:
+        zf.writestr("hello.txt", "not a patient")
+    r = client.post(
+        "/subjects/import",
+        files={"file": ("bogus.zip", bogus.getvalue(), "application/zip")},
+    )
+    assert r.status_code == 400

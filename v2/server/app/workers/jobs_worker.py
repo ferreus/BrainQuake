@@ -16,6 +16,7 @@ from app.services.ictal import run_ei_compute_job
 from app.services.interictal import run_hfo_compute_job
 from app.services.soz import run_soz_fuse_job
 from app.services.surface import run_surface_export_job
+from app.services.patient_io import run_export_patient_job, run_import_patient_job
 from app.services.job_control import JobCancelledError
 
 # Set up logging for the worker itself
@@ -96,6 +97,10 @@ def run_job(job_id: int):
                 run_soz_fuse_job(db, job, log_file)
             elif job.job_type == "surface_export":
                 run_surface_export_job(db, job, log_file)
+            elif job.job_type == "export_patient":
+                run_export_patient_job(db, job, log_file)
+            elif job.job_type == "import_patient":
+                run_import_patient_job(db, job, log_file)
             else:
                 raise ValueError(f"Unknown job type: {job.job_type}")
 

@@ -65,6 +65,19 @@ def delete_subject(subject_id: int, db: Session = Depends(get_db)):
     if subject.subject_dir and os.path.exists(subject.subject_dir):
         shutil.rmtree(subject.subject_dir)
 
+    # Patient-export archives live outside the two dirs above (under
+    # DATA_ROOT/exports); remove their files so they don't orphan on disk after
+    # the Artifact rows cascade-delete with the subject.
+    for artifact in db.query(Artifact).filter(
+        Artifact.subject_id == subject.id, Artifact.kind == "patient_export"
+    ).all():
+        export_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
+        if os.path.exists(export_path):
+            try:
+                os.remove(export_path)
+            except OSError:
+                pass
+
     db.delete(subject)
     db.commit()
     return {"message": "Subject deleted successfully"}

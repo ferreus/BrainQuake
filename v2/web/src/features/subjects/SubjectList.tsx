@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ActionIcon, Button, Group, NavLink, ScrollArea, Stack, Text } from "@mantine/core";
 import { useDeleteSubject, useSubjects } from "../../api/queries/useSubjects";
 import { NewPatientDialog } from "./NewPatientDialog";
+import { ImportPatientDialog } from "./ImportPatientDialog";
 
 export function SubjectList() {
   const { data: subjects, isLoading } = useSubjects();
@@ -10,16 +11,22 @@ export function SubjectList() {
   const navigate = useNavigate();
   const { subjectId } = useParams();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   return (
     <Stack h="100%" gap="sm">
-      <Group justify="space-between" px="sm" pt="sm">
+      <Group justify="space-between" px="sm" pt="sm" wrap="nowrap">
         <Text fw={700} size="sm">
           Patients
         </Text>
-        <Button size="xs" onClick={() => setDialogOpen(true)}>
-          New Patient
-        </Button>
+        <Group gap="xs" wrap="nowrap">
+          <Button size="xs" variant="default" onClick={() => setImportOpen(true)}>
+            Import
+          </Button>
+          <Button size="xs" onClick={() => setDialogOpen(true)}>
+            New Patient
+          </Button>
+        </Group>
       </Group>
 
       <ScrollArea style={{ flex: 1 }} px={4}>
@@ -68,6 +75,12 @@ export function SubjectList() {
         opened={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onCreated={(id) => navigate(`/subjects/${id}`)}
+      />
+
+      <ImportPatientDialog
+        opened={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={(id) => navigate(`/subjects/${id}`)}
       />
     </Stack>
   );

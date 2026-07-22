@@ -91,7 +91,7 @@ export async function apiGetBinary(path: string): Promise<ArrayBuffer> {
 export function uploadFileWithProgress<T>(
   path: string,
   file: File,
-  fileType: UploadFileType,
+  fileType: UploadFileType | null,
   onProgress?: (fraction: number) => void,
 ): { promise: Promise<T>; cancel: () => void } {
   const xhr = new XMLHttpRequest();
@@ -99,7 +99,8 @@ export function uploadFileWithProgress<T>(
     const form = new FormData();
     form.append("file", file);
 
-    xhr.open("POST", `${getBaseUrl()}${path}?file_type=${fileType}`);
+    const query = fileType ? `?file_type=${fileType}` : "";
+    xhr.open("POST", `${getBaseUrl()}${path}${query}`);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
         onProgress(e.loaded / e.total);

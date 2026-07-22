@@ -18,7 +18,9 @@ export type JobType =
   | "elec_segment"
   | "ei_compute"
   | "hfo_compute"
-  | "soz_fuse";
+  | "soz_fuse"
+  | "export_patient"
+  | "import_patient";
 
 export type ReconType = "recon-all" | "fast-surfer" | "infant-surfer";
 

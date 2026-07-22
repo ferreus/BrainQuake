@@ -1,7 +1,8 @@
 // Thin REST resource functions, one per v2/server endpoint used so far --
 // mirrors v2/client/api_client.py's method surface so the two clients stay
 // easy to cross-reference.
-import { apiDelete, apiGet, apiGetBinary, apiGetText, apiPost, apiPut } from "./client";
+import { apiDelete, apiGet, apiGetBinary, apiGetText, apiPost, apiPut, uploadFileWithProgress } from "./client";
+import { getBaseUrl } from "./serverConfig";
 import { parseEdfWindowBinary } from "../lib/parseEdfWindowBinary";
 import type { Artifact, Job, ReconType, Subject } from "./types";
 
@@ -28,6 +29,34 @@ export function listArtifacts(subjectId: number, kind?: string): Promise<Artifac
 
 export function deleteArtifact(artifactId: number): Promise<{ message: string }> {
   return apiDelete(`/artifacts/${artifactId}`);
+}
+
+// --- Whole-patient export / import ---------------------------------------
+
+/** Queue a job that zips the subject's entire on-disk footprint. */
+export function exportPatient(subjectId: number): Promise<Job> {
+  return apiPost<Job>(`/subjects/${subjectId}/export`);
+}
+
+/** Absolute URL of the latest completed export archive -- point an <a> at it
+ * (or window.location) to let the browser handle the file download. */
+export function patientExportDownloadUrl(subjectId: number): string {
+  return `${getBaseUrl()}/subjects/${subjectId}/export/download`;
+}
+
+export interface ImportResult {
+  subject: Subject;
+  job: Job;
+}
+
+/** Multipart-upload a previously exported patient zip. The server reads the
+ * subject name from the archive manifest, creates the subject, and queues an
+ * import job; returns both. Progress is byte-level upload progress. */
+export function importPatient(
+  file: File,
+  onProgress?: (fraction: number) => void,
+): { promise: Promise<ImportResult>; cancel: () => void } {
+  return uploadFileWithProgress<ImportResult>(`/subjects/import`, file, null, onProgress);
 }
 
 export function listJobs(params?: { subjectId?: number; state?: string }): Promise<Job[]> {

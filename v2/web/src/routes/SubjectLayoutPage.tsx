@@ -1,9 +1,10 @@
 import { useParams } from "react-router-dom";
-import { Alert, Loader, Stack, Tabs, Text, Title } from "@mantine/core";
+import { Alert, Group, Loader, Stack, Tabs, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { getSubject } from "../api/endpoints";
 import { ElectrodesPage } from "../features/electrodes/ElectrodesPage";
 import { IctalPage } from "../features/ictal/IctalPage";
+import { ExportPatientButton } from "../features/subjects/ExportPatientButton";
 
 /** Placeholder for a not-yet-built stage tab -- each becomes a real feature
  * in its own phase (Phase 2: Electrodes, Phase 3: Ictal, Phase 4: Interictal,
@@ -44,11 +45,16 @@ export function SubjectLayoutPage() {
 
   return (
     <Stack h="100%" p="md" gap="sm">
-      <Title order={3}>{subject.name}</Title>
-      <Text size="sm" c="dimmed">
-        Reconstruction type: {subject.recon_type ?? "not set"}
-        {subject.subject_dir ? ` — ${subject.subject_dir}` : " — reconstruction not yet run"}
-      </Text>
+      <Group justify="space-between" align="flex-start" wrap="nowrap">
+        <Stack gap={2}>
+          <Title order={3}>{subject.name}</Title>
+          <Text size="sm" c="dimmed">
+            Reconstruction type: {subject.recon_type ?? "not set"}
+            {subject.subject_dir ? ` — ${subject.subject_dir}` : " — reconstruction not yet run"}
+          </Text>
+        </Stack>
+        <ExportPatientButton subjectId={id} subjectName={subject.name} />
+      </Group>
 
       <Tabs defaultValue="electrodes" style={{ flex: 1 }}>
         <Tabs.List>
