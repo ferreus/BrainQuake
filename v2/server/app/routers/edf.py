@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Subject
@@ -38,7 +38,7 @@ def get_edf_window(
     subject = _get_subject_or_404(subject_id, db)
     channel_list = [c for c in channels.split(",") if c] if channels else None
     try:
-        return edf_service.get_edf_window(
+        result = edf_service.get_edf_window(
             db,
             subject,
             edf_artifact_id,
@@ -52,3 +52,4 @@ def get_edf_window(
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    return Response(content=edf_service.pack_edf_window(result), media_type="application/octet-stream")

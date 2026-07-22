@@ -1,7 +1,8 @@
 // Thin REST resource functions, one per v2/server endpoint used so far --
 // mirrors v2/client/api_client.py's method surface so the two clients stay
 // easy to cross-reference.
-import { apiDelete, apiGet, apiGetText, apiPost, apiPut } from "./client";
+import { apiDelete, apiGet, apiGetBinary, apiGetText, apiPost, apiPut } from "./client";
+import { parseEdfWindowBinary } from "../lib/parseEdfWindowBinary";
 import type { Artifact, Job, ReconType, Subject } from "./types";
 
 export function listSubjects(): Promise<Subject[]> {
@@ -23,6 +24,10 @@ export function deleteSubject(id: number): Promise<{ message: string }> {
 export function listArtifacts(subjectId: number, kind?: string): Promise<Artifact[]> {
   const qs = kind ? `?kind=${encodeURIComponent(kind)}` : "";
   return apiGet<Artifact[]>(`/subjects/${subjectId}/artifacts${qs}`);
+}
+
+export function deleteArtifact(artifactId: number): Promise<{ message: string }> {
+  return apiDelete(`/artifacts/${artifactId}`);
 }
 
 export function listJobs(params?: { subjectId?: number; state?: string }): Promise<Job[]> {
@@ -132,21 +137,40 @@ export interface EdfWindow {
   start: number;
   end: number;
   channels: string[];
-  units: string;
   filtered: boolean;
   band_low: number | null;
   band_high: number | null;
-  data: number[][];
+  /** data[channelIndex] is that channel's samples for the window. */
+  data: Float32Array[];
 }
 
-export function getEdfWindow(subjectId: number, edfArtifactId: number, params: EdfWindowParams): Promise<EdfWindow> {
+// Binary (not JSON) response -- see app/services/edf.py's pack_edf_window
+// and v2/web/src/lib/parseEdfWindowBinary.ts. This endpoint is on the hot
+// path for every pan/zoom/filter-toggle of the EEG canvas, and JSON floats
+// were a measurable chunk of that round trip.
+export async function getEdfWindow(
+  subjectId: number,
+  edfArtifactId: number,
+  params: EdfWindowParams,
+): Promise<EdfWindow> {
   const qs = new URLSearchParams();
   qs.set("start", String(params.start));
   qs.set("end", String(params.end));
   if (params.channels?.length) qs.set("channels", params.channels.join(","));
   if (params.bandLow != null) qs.set("band_low", String(params.bandLow));
   if (params.bandHigh != null) qs.set("band_high", String(params.bandHigh));
-  return apiGet<EdfWindow>(`/subjects/${subjectId}/edf/${edfArtifactId}/window?${qs.toString()}`);
+  const buf = await apiGetBinary(`/subjects/${subjectId}/edf/${edfArtifactId}/window?${qs.toString()}`);
+  const parsed = parseEdfWindowBinary(buf);
+  return {
+    fs: parsed.fs,
+    start: parsed.start,
+    end: parsed.end,
+    channels: parsed.channels,
+    filtered: parsed.filtered,
+    band_low: parsed.bandLow,
+    band_high: parsed.bandHigh,
+    data: parsed.data,
+  };
 }
 
 export interface EiComputeParams {

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { Dispatch } from "react";
 import { Group, Loader, Stack, Text } from "@mantine/core";
+import { ApiError } from "../../api/client";
 import { useEdfMeta, useEdfWindow } from "../../api/queries/useEdf";
-import { EegChannelList } from "./EegChannelList";
-import { EegToolbar } from "./EegToolbar";
+import { EdfLoadErrorPanel } from "./EdfLoadErrorPanel";
 import type { EegViewerAction, EegViewerState } from "./useEegViewerState";
 
 export interface EegMarker {
@@ -34,7 +34,7 @@ const CANVAS_WIDTH = 900;
  * Phase 4) drawn on the same canvas in a fixed order.
  */
 export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers = [], onCanvasClick }: EegCanvasProps) {
-  const { data: meta } = useEdfMeta(subjectId, edfArtifactId);
+  const { data: meta, isError: metaIsError, error: metaError, refetch: refetchMeta } = useEdfMeta(subjectId, edfArtifactId);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const allChannels = useMemo(() => meta?.channels ?? [], [meta]);
@@ -47,7 +47,11 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
     [remainingChannels, state.dispChansStart, state.dispChansNum],
   );
 
-  const { data: windowData } = useEdfWindow(
+  const {
+    data: windowData,
+    isError: windowIsError,
+    error: windowError,
+  } = useEdfWindow(
     subjectId,
     edfArtifactId,
     {
@@ -131,6 +135,10 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
     onCanvasClick(state.dispTimeStart + fraction * state.dispTimeWin);
   }
 
+  if (metaIsError) {
+    return <EdfLoadErrorPanel title="Failed to load EDF recording" error={metaError} onRetry={() => refetchMeta()} />;
+  }
+
   if (!meta) {
     return (
       <Group justify="center" p="xl">
@@ -140,33 +148,29 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
   }
 
   return (
-    <Group align="flex-start" gap="md" wrap="nowrap">
-      <Stack gap={4} style={{ flex: 1, minWidth: 0 }}>
-        <canvas
-          ref={canvasRef}
-          width={CANVAS_WIDTH}
-          height={CANVAS_HEIGHT}
-          style={{
-            width: "100%",
-            height: CANVAS_HEIGHT,
-            background: "#fafafa",
-            cursor: onCanvasClick ? "crosshair" : "default",
-          }}
-          onWheel={handleWheel}
-          onClick={handleClick}
-        />
+    <Stack gap={4} style={{ flex: 1, minWidth: 0 }}>
+      <canvas
+        ref={canvasRef}
+        width={CANVAS_WIDTH}
+        height={CANVAS_HEIGHT}
+        style={{
+          width: "100%",
+          height: CANVAS_HEIGHT,
+          background: "#fafafa",
+          cursor: onCanvasClick ? "crosshair" : "default",
+        }}
+        onWheel={handleWheel}
+        onClick={handleClick}
+      />
+      {windowIsError ? (
+        <Text size="xs" c="red">
+          Failed to load this window: {windowError instanceof ApiError ? windowError.message : String(windowError)}
+        </Text>
+      ) : (
         <Text size="xs" c="dimmed">
           {state.dispTimeStart.toFixed(1)}s &ndash; {(state.dispTimeStart + state.dispTimeWin).toFixed(1)}s (scroll to pan)
         </Text>
-      </Stack>
-      <Stack w={220} gap="sm">
-        <EegToolbar state={state} dispatch={dispatch} />
-        <EegChannelList
-          channels={allChannels}
-          excludedChannels={state.excludedChannels}
-          onDelete={(chs) => dispatch({ type: "DELETE_CHANNELS", channels: chs })}
-        />
-      </Stack>
-    </Group>
+      )}
+    </Stack>
   );
 }

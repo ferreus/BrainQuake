@@ -1,3 +1,5 @@
+import json
+import struct
 import mne
 import numpy as np
 from sqlalchemy.orm import Session
@@ -10,6 +12,15 @@ from app.services.signal_filters import filter_for_display
 # artifact download) and ei-result/hfo-result only expose per-channel scalar
 # summaries, never time-resolved samples.
 MAX_WINDOW_SECONDS = 60.0
+
+# GET .../window is on the hot path for every pan/zoom/filter-toggle of the
+# EEG canvas, and JSON floats (both Python's json.dumps and JS's JSON.parse)
+# were a measurable chunk of that round trip -- this is a minimal binary
+# format instead, same idea as surface.py's mesh cache: 8-byte magic, a fixed
+# scalar header, a UTF-8 JSON block for the one variable-length piece
+# (channel names), then a raw channel-major float32 sample buffer. See
+# v2/web/src/lib/parseEdfWindowBinary.ts for the matching reader.
+WINDOW_MAGIC = b"BQEDFW01"
 
 
 def _get_artifact(db: Session, subject: Subject, edf_artifact_id: int) -> Artifact:
@@ -102,9 +113,26 @@ def get_edf_window(
         "start": start,
         "end": end,
         "channels": [raw.ch_names[i] for i in picks],
-        "units": "uV",
         "filtered": filtering,
         "band_low": band_low,
         "band_high": band_high,
-        "data": data.tolist(),
+        "data": data,
     }
+
+
+def pack_edf_window(result: dict) -> bytes:
+    channels_json = json.dumps(result["channels"]).encode("utf-8")
+    data = np.ascontiguousarray(result["data"], dtype="<f4")
+    header = WINDOW_MAGIC + struct.pack(
+        "<dddBffIII",
+        result["fs"],
+        result["start"],
+        result["end"],
+        1 if result["filtered"] else 0,
+        result["band_low"] if result["band_low"] is not None else 0.0,
+        result["band_high"] if result["band_high"] is not None else 0.0,
+        data.shape[0],
+        data.shape[1],
+        len(channels_json),
+    )
+    return header + channels_json + data.tobytes()

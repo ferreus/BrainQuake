@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import struct
@@ -8,9 +9,13 @@ import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
-# Setup test DB URL before importing app modules
+# Setup test DB URL before importing app modules. DATA_ROOT must be isolated
+# too, not just SUBJECTS_DIR -- the autouse fixture below rmtree's
+# {DATA_ROOT}/recv and {DATA_ROOT}/logs before/after every test, and without
+# this override that resolves to the real dev server's upload storage.
 os.environ["DB_URL"] = "sqlite:///./data/test_brainquake.db"
 os.environ["SUBJECTS_DIR"] = "./data/test_subjects"
+os.environ["DATA_ROOT"] = "./data/test_data_root"
 
 from app.main import app
 from app.db import Base, engine, SessionLocal, get_db
@@ -496,6 +501,34 @@ def test_artifact_download_and_subject_zip(mock_run):
     assert r.status_code == 404
 
 
+def test_delete_artifact():
+    sid, artifact_id, _, _ = _create_subject_with_edf("DeleteArtifactTest")
+
+    # sanity: the backing file exists and the artifact is listed
+    r = client.get(f"/subjects/{sid}/artifacts")
+    assert any(a["id"] == artifact_id for a in r.json())
+
+    r = client.delete(f"/artifacts/{artifact_id}")
+    assert r.status_code == 200
+
+    r = client.get(f"/subjects/{sid}/artifacts")
+    assert not any(a["id"] == artifact_id for a in r.json())
+
+    # deleting again (or an id that never existed) 404s rather than erroring
+    r = client.delete(f"/artifacts/{artifact_id}")
+    assert r.status_code == 404
+
+    # a DB row whose backing file is already gone from disk (the actual bug
+    # this exists for) deletes cleanly too, instead of erroring on os.remove
+    sid2, artifact_id2, _, _ = _create_subject_with_edf("DeleteMissingFileTest")
+    r = client.get(f"/subjects/{sid2}/artifacts")
+    rel_path = next(a["rel_path"] for a in r.json() if a["id"] == artifact_id2)
+    os.remove(os.path.join(settings.DATA_ROOT, rel_path))
+
+    r = client.delete(f"/artifacts/{artifact_id2}")
+    assert r.status_code == 200
+
+
 @patch("subprocess.Popen", side_effect=MockPopen)
 def test_surface_mesh_export_and_download(mock_run):
     # recon.py's run_recon_job now caches lh/rh.pial as binary mesh artifacts
@@ -652,16 +685,43 @@ def test_edf_meta():
     assert r.status_code == 404
 
 
+def _parse_edf_window_binary(content: bytes) -> dict:
+    """Independent decode of GET .../window's binary body (see
+    app/services/edf.py's pack_edf_window / WINDOW_MAGIC and
+    v2/web/src/lib/parseEdfWindowBinary.ts for the format), so these tests
+    verify the actual wire contract rather than just round-tripping through
+    the same packer they're testing."""
+    assert content[:8] == b"BQEDFW01"
+    fs, start, end, filtered, band_low, band_high, n_channels, n_samples, channels_len = struct.unpack_from(
+        "<dddBffIII", content, 8
+    )
+    offset = 8 + struct.calcsize("<dddBffIII")
+    channels = json.loads(content[offset : offset + channels_len].decode("utf-8"))
+    offset += channels_len
+    flat = np.frombuffer(content, dtype="<f4", count=n_channels * n_samples, offset=offset)
+    data = flat.reshape(n_channels, n_samples)
+    return {
+        "fs": fs,
+        "start": start,
+        "end": end,
+        "filtered": bool(filtered),
+        "band_low": band_low if filtered else None,
+        "band_high": band_high if filtered else None,
+        "channels": channels,
+        "data": data,
+    }
+
+
 def test_edf_window_unfiltered_matches_raw_samples():
     sid, artifact_id, ch_names, sfreq = _create_subject_with_edf("EdfWindowTest")
 
     r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=1.0&end=2.0")
     assert r.status_code == 200
-    body = r.json()
+    body = _parse_edf_window_binary(r.content)
     assert body["channels"] == ch_names
     assert body["filtered"] is False
     assert body["fs"] == sfreq
-    data = np.array(body["data"])
+    data = body["data"]
     assert data.shape == (len(ch_names), int(round((2.0 - 1.0) * sfreq)))
 
     # Cross-check against directly re-reading the same resolved file -- proves
@@ -685,11 +745,11 @@ def test_edf_window_filtered_matches_filter_for_display():
         f"?start=3.0&end=5.0&band_low={band_low}&band_high={band_high}"
     )
     assert r.status_code == 200
-    body = r.json()
+    body = _parse_edf_window_binary(r.content)
     assert body["filtered"] is True
     assert body["band_low"] == band_low
     assert body["band_high"] == band_high
-    data = np.array(body["data"])
+    data = body["data"]
 
     # Reproduce the pad-then-filter-then-trim behavior directly against the
     # same resolved file and confirm the endpoint matches exactly -- the
@@ -718,7 +778,7 @@ def test_edf_window_channel_filter_and_limits():
     # channel subsetting preserves file order regardless of request order
     r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=1&channels=CH3,CH1")
     assert r.status_code == 200
-    body = r.json()
+    body = _parse_edf_window_binary(r.content)
     assert body["channels"] == ["CH1", "CH3"]
     assert len(body["data"]) == 2
 

@@ -1,5 +1,5 @@
 import type { Dispatch } from "react";
-import { Button, Group, Stack, Switch, Text } from "@mantine/core";
+import { Button, Divider, Group, Switch, Text } from "@mantine/core";
 import type { EegViewerAction, EegViewerState } from "./useEegViewerState";
 
 interface EegToolbarProps {
@@ -9,12 +9,14 @@ interface EegToolbarProps {
 
 /** Pan/zoom/gain/channel-window controls, reproducing the legacy "Adjust
  * signal" groupbox: win up/down (page channels), chans+/-, wave+/-,
- * left/right (pan time), shrink/expand (time window). */
+ * left/right (pan time), shrink/expand (time window). Single horizontal row
+ * (wraps on narrow viewports) so it can sit inline with the EDF picker
+ * instead of eating a whole sidebar column. */
 export function EegToolbar({ state, dispatch }: EegToolbarProps) {
   return (
-    <Stack gap={6}>
+    <Group gap="md" wrap="wrap" align="center">
       <Group gap={4}>
-        <Text size="xs" w={70}>
+        <Text size="xs" c="dimmed">
           Channels
         </Text>
         <Button size="xs" variant="default" onClick={() => dispatch({ type: "PAGE_CHANNELS", direction: -1 })}>
@@ -34,8 +36,9 @@ export function EegToolbar({ state, dispatch }: EegToolbarProps) {
           Chans-
         </Button>
       </Group>
+      <Divider orientation="vertical" />
       <Group gap={4}>
-        <Text size="xs" w={70}>
+        <Text size="xs" c="dimmed">
           Gain
         </Text>
         <Button size="xs" variant="default" onClick={() => dispatch({ type: "SET_GAIN", multiplier: 1.5 })}>
@@ -45,8 +48,9 @@ export function EegToolbar({ state, dispatch }: EegToolbarProps) {
           Wave-
         </Button>
       </Group>
+      <Divider orientation="vertical" />
       <Group gap={4}>
-        <Text size="xs" w={70}>
+        <Text size="xs" c="dimmed">
           Time
         </Text>
         <Button size="xs" variant="default" onClick={() => dispatch({ type: "PAN_TIME", direction: -1 })}>
@@ -62,12 +66,13 @@ export function EegToolbar({ state, dispatch }: EegToolbarProps) {
           Expand
         </Button>
       </Group>
+      <Divider orientation="vertical" />
       <Switch
         size="xs"
         checked={state.filterEnabled}
         onChange={() => dispatch({ type: "TOGGLE_FILTER" })}
         label={`Filter ${state.filterBandLow}-${state.filterBandHigh}Hz`}
       />
-    </Stack>
+    </Group>
   );
 }

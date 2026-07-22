@@ -14,6 +14,10 @@ import brainquakeIcon from "./assets/round_icon_min.png";
 
 const queryClient = new QueryClient();
 
+// ~4 job rows before scrolling (was 260, sized for ~6 -- the panel was
+// crowding out the main content for a feature people check occasionally).
+const JOBS_FOOTER_HEIGHT = 180;
+
 function ServerSettingsModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const [url, setUrl] = useState(getBaseUrl());
 
@@ -46,9 +50,15 @@ function ServerSettingsModal({ opened, onClose }: { opened: boolean; onClose: ()
 
 function Layout() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [jobsCollapsed, setJobsCollapsed] = useState(false);
 
   return (
-    <AppShell header={{ height: 56 }} navbar={{ width: 260, breakpoint: "sm" }} footer={{ height: 260 }} padding={0}>
+    <AppShell
+      header={{ height: 56 }}
+      navbar={{ width: 260, breakpoint: "sm" }}
+      footer={{ height: JOBS_FOOTER_HEIGHT, collapsed: jobsCollapsed }}
+      padding={0}
+    >
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Group gap="xs">
@@ -60,6 +70,9 @@ function Layout() {
           </Group>
           <Group>
             <ConnectionIndicator />
+            <Button variant="subtle" size="xs" onClick={() => setJobsCollapsed((c) => !c)}>
+              {jobsCollapsed ? "Show jobs ▲" : "Hide jobs ▼"}
+            </Button>
             <Button variant="subtle" size="xs" onClick={() => setSettingsOpen(true)}>
               Server Settings
             </Button>

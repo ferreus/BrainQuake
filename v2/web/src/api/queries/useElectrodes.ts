@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  deleteArtifact,
   detectElectrodes,
   getLabelsSummary,
   listArtifacts,
@@ -14,6 +15,14 @@ export function useArtifacts(subjectId: number | undefined) {
     queryKey: ["artifacts", subjectId],
     queryFn: () => listArtifacts(subjectId!),
     enabled: subjectId != null,
+  });
+}
+
+export function useDeleteArtifact(subjectId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (artifactId: number) => deleteArtifact(artifactId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] }),
   });
 }
 
