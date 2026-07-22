@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Button, Checkbox, Group, Paper, Table, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { ApiError } from "../../api/client";
@@ -6,6 +5,8 @@ import { useLabelsSummary, useUpdateLabels } from "../../api/queries/useElectrod
 
 interface LabelReviewPanelProps {
   subjectId: number;
+  excluded: Set<number>;
+  onExcludedChange: (excluded: Set<number>) => void;
 }
 
 /**
@@ -15,26 +16,25 @@ interface LabelReviewPanelProps {
  * its own UI never surfaced a way to pick which clusters to exclude -- this
  * is the first client to build that. Reads a cheap server-computed summary
  * (voxel count + centroid per cluster) rather than shipping the full 256^3
- * label volume to the browser.
+ * label volume to the browser. `excluded` is lifted up to ElectrodesPage so
+ * the ClusterCentroids 3D preview can dim the same clusters this table has
+ * unchecked.
  */
-export function LabelReviewPanel({ subjectId }: LabelReviewPanelProps) {
+export function LabelReviewPanel({ subjectId, excluded, onExcludedChange }: LabelReviewPanelProps) {
   const { data, isLoading } = useLabelsSummary(subjectId, true);
-  const [excluded, setExcluded] = useState<Set<number>>(new Set());
   const updateLabels = useUpdateLabels(subjectId);
 
   function toggle(label: number) {
-    setExcluded((prev) => {
-      const next = new Set(prev);
-      if (next.has(label)) next.delete(label);
-      else next.add(label);
-      return next;
-    });
+    const next = new Set(excluded);
+    if (next.has(label)) next.delete(label);
+    else next.add(label);
+    onExcludedChange(next);
   }
 
   async function handleCommit() {
     try {
       await updateLabels.mutateAsync(Array.from(excluded));
-      setExcluded(new Set());
+      onExcludedChange(new Set());
       notifications.show({
         color: "green",
         title: "Labels updated",

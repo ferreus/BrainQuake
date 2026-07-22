@@ -189,7 +189,14 @@ def summarize_labels(subject: Subject):
     (Labels.npy, ~128MB as float64) to the browser -- only chn-xyz/contacts
     (final segmented contact coordinates) were JSON-ready before this; nothing
     exposed the intermediate GMM clusters the legacy app's cluster-preview
-    matplotlib scatter showed."""
+    matplotlib scatter showed.
+
+    The centroid is voxel-index space (mean of np.where(Labels == v)), which
+    is NOT the space chn-xyz/contacts are in -- ElectrodeSeg.resulting() maps
+    voxel (vx, vy, vz) -> (128-vx, vz-128, 128-vy) before ever writing a
+    result .txt. Apply the same map here so a client can plot cluster
+    centroids directly alongside the brain surface and segmented contacts
+    without knowing about voxel space at all."""
     _, ct_dir, _ = _patient_dirs(subject)
     labels_path = os.path.join(ct_dir, f"{subject.name}_labels.npy")
     if not os.path.exists(labels_path):
@@ -200,10 +207,11 @@ def summarize_labels(subject: Subject):
     clusters = []
     for v in values:
         idx = np.where(Labels == v)
+        vx, vy, vz = float(np.mean(idx[0])), float(np.mean(idx[1])), float(np.mean(idx[2]))
         clusters.append({
             "label": int(v),
             "voxel_count": int(len(idx[0])),
-            "centroid": [float(np.mean(idx[0])), float(np.mean(idx[1])), float(np.mean(idx[2]))],
+            "centroid": [128.0 - vx, vz - 128.0, 128.0 - vy],
         })
     return {"K": len(values), "clusters": clusters}
 

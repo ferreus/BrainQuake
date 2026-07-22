@@ -1,5 +1,9 @@
-import { getBaseUrl } from "./serverConfig";
 import type { UploadFileType } from "./types";
+
+// Same-origin, nginx-proxied path -- see v2/docker/nginx.conf. Works
+// regardless of which host/IP the browser used to reach the web UI, unlike
+// a baked-in or user-configurable absolute server URL.
+const API_BASE = "/api";
 
 export class ApiError extends Error {
   status: number;
@@ -27,7 +31,7 @@ async function parseErrorBody(res: Response): Promise<unknown> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${getBaseUrl()}${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       ...(init?.body ? { "Content-Type": "application/json" } : {}),
@@ -67,7 +71,7 @@ export function apiDelete<T>(path: string): Promise<T> {
 
 /** Plain-text GET, e.g. job logs (GET /jobs/{id}/log). */
 export async function apiGetText(path: string): Promise<string> {
-  const res = await fetch(`${getBaseUrl()}${path}`);
+  const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
     throw new ApiError(res.status, await parseErrorBody(res));
   }
@@ -76,7 +80,7 @@ export async function apiGetText(path: string): Promise<string> {
 
 /** Raw binary GET, e.g. surface mesh buffers (Phase 2+). */
 export async function apiGetBinary(path: string): Promise<ArrayBuffer> {
-  const res = await fetch(`${getBaseUrl()}${path}`);
+  const res = await fetch(`${API_BASE}${path}`);
   if (!res.ok) {
     throw new ApiError(res.status, await parseErrorBody(res));
   }
@@ -100,7 +104,7 @@ export function uploadFileWithProgress<T>(
     form.append("file", file);
 
     const query = fileType ? `?file_type=${fileType}` : "";
-    xhr.open("POST", `${getBaseUrl()}${path}${query}`);
+    xhr.open("POST", `${API_BASE}${path}${query}`);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
         onProgress(e.loaded / e.total);

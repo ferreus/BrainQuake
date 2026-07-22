@@ -1,10 +1,8 @@
 import { useState } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { AppShell, Badge, Button, Group, MantineProvider, Modal, Stack, TextInput, Title } from "@mantine/core";
-import { Notifications, notifications } from "@mantine/notifications";
-import { getBaseUrl, setBaseUrl } from "./api/serverConfig";
-import { ConnectionIndicator } from "./features/jobs/ConnectionIndicator";
+import { AppShell, Badge, Button, Group, MantineProvider, Title } from "@mantine/core";
+import { Notifications } from "@mantine/notifications";
 import { JobsDrawer } from "./features/jobs/JobsDrawer";
 import { SubjectList } from "./features/subjects/SubjectList";
 import { SubjectsListPage } from "./routes/SubjectsListPage";
@@ -18,38 +16,7 @@ const queryClient = new QueryClient();
 // crowding out the main content for a feature people check occasionally).
 const JOBS_FOOTER_HEIGHT = 180;
 
-function ServerSettingsModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
-  const [url, setUrl] = useState(getBaseUrl());
-
-  function handleSave() {
-    setBaseUrl(url);
-    queryClient.clear();
-    notifications.show({ color: "green", title: "Server updated", message: url });
-    onClose();
-  }
-
-  return (
-    <Modal opened={opened} onClose={onClose} title="Server Settings">
-      <Stack>
-        <TextInput
-          label="Server base URL"
-          placeholder="http://127.0.0.1:8000"
-          value={url}
-          onChange={(e) => setUrl(e.currentTarget.value)}
-        />
-        <Group justify="flex-end">
-          <Button variant="subtle" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave}>Save</Button>
-        </Group>
-      </Stack>
-    </Modal>
-  );
-}
-
 function Layout() {
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [jobsCollapsed, setJobsCollapsed] = useState(false);
 
   return (
@@ -69,12 +36,8 @@ function Layout() {
             </Badge>
           </Group>
           <Group>
-            <ConnectionIndicator />
             <Button variant="subtle" size="xs" onClick={() => setJobsCollapsed((c) => !c)}>
               {jobsCollapsed ? "Show jobs ▲" : "Hide jobs ▼"}
-            </Button>
-            <Button variant="subtle" size="xs" onClick={() => setSettingsOpen(true)}>
-              Server Settings
             </Button>
             <ColorSchemeToggle />
           </Group>
@@ -92,8 +55,6 @@ function Layout() {
       <AppShell.Footer>
         <JobsDrawer />
       </AppShell.Footer>
-
-      <ServerSettingsModal opened={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </AppShell>
   );
 }

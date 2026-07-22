@@ -3,6 +3,12 @@
 #   2. Copy v2/docker/.env.example to v2/docker/.env and point FS_LICENSE_HOST at it
 #   3. Build the (rarely-changing) base image once: v2/docker/build-base.sh
 #   4. docker compose -f v2/docker/docker-compose.yml up --build
+#   5. Open http://<this-machine's-address>:${WEB_PORT:-80}/ -- the web container
+#      (nginx) serves the frontend and reverse-proxies /api/ to the api service,
+#      so this is the ONLY port that needs publishing/opening in a firewall.
+#      The frontend never hardcodes a server address (see v2/web/src/api/client.ts),
+#      so this works the same whether you're on the docker host or a different
+#      machine on the network.
 #
 # api and worker share the same image, the same SUBJECTS_DIR/DATA_ROOT volume, and
 # the same SQLite DB file (WAL mode) -- mirrors the single-process legacy layout,
@@ -22,8 +28,9 @@ services:
       args:
         BASE_IMAGE: ${BASE_IMAGE:-brainquake-base:latest}
     image: brainquake-server:latest
-    ports:
-      - "8000:8000"
+    # No host port published: only the web (nginx) container needs to reach
+    # this, over the internal docker-compose network as "api:8000". Keeps
+    # exactly one port (web's) exposed to the outside world.
     environment:
       FS_LICENSE: /usr/local/freesurfer/license.txt
     volumes:
@@ -53,15 +60,14 @@ services:
 
   web:
     build:
-      context: ../web
-      dockerfile: Dockerfile
-      args:
-        VITE_API_BASE_URL: ${WEB_API_BASE_URL:-http://localhost:8000}
+      context: ..
+      dockerfile: docker/Dockerfile.web
     image: brainquake-web:latest
     ports:
-      - "5173:80"
+      - "${WEB_PORT:-80}:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

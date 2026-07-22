@@ -646,9 +646,11 @@ def test_labels_summary():
     assert data["K"] == 2
     by_label = {c["label"]: c for c in data["clusters"]}
     assert by_label[1]["voxel_count"] == 2
-    assert by_label[1]["centroid"] == [0.0, 0.0, 0.5]
+    # voxel centroid (0, 0, 0.5) -> display space (128-vx, vz-128, 128-vy),
+    # matching ElectrodeSeg.resulting()'s transform for final contacts.
+    assert by_label[1]["centroid"] == [128.0, -127.5, 128.0]
     assert by_label[2]["voxel_count"] == 1
-    assert by_label[2]["centroid"] == [3.0, 3.0, 3.0]
+    assert by_label[2]["centroid"] == [125.0, -125.0, 125.0]
 
     # 404 before detect() has ever run
     r2 = client.post("/subjects", json={"name": "NoLabels"})
