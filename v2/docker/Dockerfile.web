@@ -1,7 +1,10 @@
 # BrainQuake v2 web frontend image: builds the Vite/React app and serves it
 # through nginx, which also reverse-proxies /api/ to the api service (see
 # nginx.conf) -- so docker-compose only needs to publish this one port.
-FROM node:22-alpine AS build
+# node:22-slim (Debian/glibc), not -alpine: the committed package-lock.json
+# records glibc-platform optional deps (e.g. @emnapi/*), which `npm ci` on
+# musl/Alpine rejects as an out-of-sync lockfile.
+FROM node:22-slim AS build
 WORKDIR /app
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
