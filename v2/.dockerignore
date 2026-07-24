@@ -4,5 +4,4 @@
 server/.venv
 server/data
 client
-docker
 .git
