@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { cancelJob, deleteJob, getJobLog, listJobs, retryJob } from "../endpoints";
 import type { Job } from "../types";
@@ -11,6 +12,18 @@ export function useJobs(params?: { subjectId?: number }) {
     queryFn: () => listJobs(params?.subjectId != null ? { subjectId: params.subjectId } : undefined),
     refetchInterval: 3000,
   });
+}
+
+/** Most recent job of `jobType` for a subject, for prefilling a form with
+ * whatever params were last submitted -- e.g. detect/segment settings, which
+ * otherwise reset to hardcoded defaults on every page reload since they're
+ * only ever held in local component state. */
+export function useLastJob(subjectId: number | undefined, jobType: string): Job | undefined {
+  const { data: jobs } = useJobs({ subjectId });
+  return useMemo(() => {
+    const matches = (jobs ?? []).filter((j) => j.job_type === jobType);
+    return matches.reduce<Job | undefined>((latest, j) => (!latest || j.id > latest.id ? j : latest), undefined);
+  }, [jobs, jobType]);
 }
 
 export function useJobLog(jobId: number | undefined, enabled: boolean) {

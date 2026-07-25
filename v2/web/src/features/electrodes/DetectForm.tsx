@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Group, NumberInput, Paper, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
 import { useDetectElectrodes } from "../../api/queries/useElectrodes";
 import { useJobPolling } from "../../api/queries/useJobPolling";
+import { useLastJob } from "../../api/queries/useJobs";
 import { TERMINAL_JOB_STATES } from "../../api/types";
 
 interface DetectFormProps {
@@ -14,13 +15,28 @@ interface DetectFormProps {
 }
 
 export function DetectForm({ subjectId, disabled, detected }: DetectFormProps) {
-  const [K, setK] = useState(8);
-  const [thresholdPct, setThresholdPct] = useState(70);
-  const [erosionIterations, setErosionIterations] = useState(2);
+  const [K, setK] = useState(10);
+  const [thresholdPct, setThresholdPct] = useState(8);
+  const [erosionIterations, setErosionIterations] = useState(13);
   const [jobId, setJobId] = useState<number | undefined>();
 
   const detectMutation = useDetectElectrodes(subjectId);
   const queryClient = useQueryClient();
+
+  // Prefill from the last elec_detect job's params -- otherwise a reload
+  // silently resets K/threshold/erosion to the hardcoded defaults above even
+  // though the values the user last ran with are already sitting in that
+  // job's params_json.
+  const lastJob = useLastJob(subjectId, "elec_detect");
+  const prefilled = useRef(false);
+  useEffect(() => {
+    if (prefilled.current || !lastJob?.params_json) return;
+    const p = lastJob.params_json as { K?: number; threshold_pct?: number; erosion_iterations?: number };
+    if (p.K != null) setK(p.K);
+    if (p.threshold_pct != null) setThresholdPct(p.threshold_pct);
+    if (p.erosion_iterations != null) setErosionIterations(p.erosion_iterations);
+    prefilled.current = true;
+  }, [lastJob]);
 
   const { data: job } = useJobPolling(jobId, (finishedJob) => {
     queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });

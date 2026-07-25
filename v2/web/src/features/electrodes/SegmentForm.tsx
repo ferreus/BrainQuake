@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Group, NumberInput, Paper, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
 import { useSegmentElectrodes } from "../../api/queries/useElectrodes";
 import { useJobPolling } from "../../api/queries/useJobPolling";
+import { useLastJob } from "../../api/queries/useJobs";
 import { TERMINAL_JOB_STATES } from "../../api/types";
 
 interface SegmentFormProps {
@@ -21,6 +22,19 @@ export function SegmentForm({ subjectId, disabled, segmented }: SegmentFormProps
 
   const segmentMutation = useSegmentElectrodes(subjectId);
   const queryClient = useQueryClient();
+
+  // Prefill from the last elec_segment job's params -- see DetectForm's
+  // matching comment.
+  const lastJob = useLastJob(subjectId, "elec_segment");
+  const prefilled = useRef(false);
+  useEffect(() => {
+    if (prefilled.current || !lastJob?.params_json) return;
+    const p = lastJob.params_json as { numMax?: number; diameterSize?: number; spacing?: number };
+    if (p.numMax != null) setNumMax(p.numMax);
+    if (p.diameterSize != null) setDiameterSize(p.diameterSize);
+    if (p.spacing != null) setSpacing(p.spacing);
+    prefilled.current = true;
+  }, [lastJob]);
 
   const { data: job } = useJobPolling(jobId, (finishedJob) => {
     queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
