@@ -16,10 +16,13 @@ const STATE_COLORS: Record<JobState, string> = {
 
 interface JobRowProps {
   job: Job;
+  /** Undefined when the subject list hasn't loaded yet, or the patient was
+   * deleted while its jobs stayed in the table -- fall back to the raw id. */
+  subjectName?: string;
   onViewLog: (jobId: number) => void;
 }
 
-export function JobRow({ job, onViewLog }: JobRowProps) {
+export function JobRow({ job, subjectName, onViewLog }: JobRowProps) {
   const cancelJob = useCancelJob();
   const retryJob = useRetryJob();
   const deleteJob = useDeleteJob();
@@ -51,6 +54,11 @@ export function JobRow({ job, onViewLog }: JobRowProps) {
   return (
     <Table.Tr>
       <Table.Td>{job.id}</Table.Td>
+      <Table.Td>
+        <Text size="sm" lineClamp={1}>
+          {subjectName ?? `#${job.subject_id}`}
+        </Text>
+      </Table.Td>
       <Table.Td>{job.job_type}</Table.Td>
       <Table.Td>
         <Badge color={STATE_COLORS[job.state]} variant="light">
