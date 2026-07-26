@@ -18,6 +18,10 @@ interface EegCanvasProps {
   state: EegViewerState;
   dispatch: Dispatch<EegViewerAction>;
   markers?: EegMarker[];
+  /** Per-channel detected-event time ranges (seconds), keyed by channel name.
+   * Drawn as horizontal segments on each channel's row -- the interictal HFO
+   * detection overlay (client_inter.py's _draw_hfo_overlay). */
+  eventOverlays?: Record<string, [number, number][]>;
   onCanvasClick?: (time: number) => void;
 }
 
@@ -33,7 +37,7 @@ const CANVAS_WIDTH = 900;
  * range), with vertical marker lines (baseline/target, or HFO events in
  * Phase 4) drawn on the same canvas in a fixed order.
  */
-export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers = [], onCanvasClick }: EegCanvasProps) {
+export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers = [], eventOverlays, onCanvasClick }: EegCanvasProps) {
   const { data: meta, isError: metaIsError, error: metaError, refetch: refetchMeta } = useEdfMeta(subjectId, edfArtifactId);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -111,6 +115,26 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
 
     const winStart = state.dispTimeStart;
     const winEnd = state.dispTimeStart + state.dispTimeWin;
+
+    if (eventOverlays) {
+      ctx.strokeStyle = "#d03b3b";
+      ctx.lineWidth = 2.5;
+      windowData.channels.forEach((name, rowIndex) => {
+        const events = eventOverlays[name];
+        if (!events) return;
+        const rowCenter = rowIndex * rowHeight + rowHeight / 2;
+        events.forEach(([s, e]) => {
+          if (e < winStart || s > winEnd) return;
+          const x0 = ((Math.max(s, winStart) - winStart) / (winEnd - winStart)) * width;
+          const x1 = ((Math.min(e, winEnd) - winStart) / (winEnd - winStart)) * width;
+          ctx.beginPath();
+          ctx.moveTo(x0, rowCenter);
+          ctx.lineTo(x1, rowCenter);
+          ctx.stroke();
+        });
+      });
+    }
+
     markers.forEach((m) => {
       if (m.time < winStart || m.time > winEnd) return;
       const x = ((m.time - winStart) / (winEnd - winStart)) * width;
@@ -121,7 +145,7 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
       ctx.lineTo(x, height);
       ctx.stroke();
     });
-  }, [windowData, state.dispChansNum, state.dispWaveMul, state.dispTimeStart, state.dispTimeWin, dr, markers]);
+  }, [windowData, state.dispChansNum, state.dispWaveMul, state.dispTimeStart, state.dispTimeWin, dr, markers, eventOverlays]);
 
   function handleWheel(e: React.WheelEvent<HTMLCanvasElement>) {
     e.preventDefault();

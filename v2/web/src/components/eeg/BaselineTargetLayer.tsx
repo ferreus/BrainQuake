@@ -6,6 +6,9 @@ export interface BaselineTargetSelection {
   baselineRange: [number, number] | null;
   targetRange: [number, number] | null;
   awaitingClick: ClickStage;
+  /** The first click's time while awaiting the second -- lets the UI draw the
+   * start line immediately instead of only after the range is complete. */
+  pendingStart: number | null;
   startBaselineSelect: () => void;
   startTargetSelect: () => void;
   handleClick: (time: number) => void;
@@ -62,5 +65,5 @@ export function useBaselineTargetSelection(): BaselineTargetSelection {
     setPendingStart(null);
   }, []);
 
-  return { baselineRange, targetRange, awaitingClick, startBaselineSelect, startTargetSelect, handleClick, reset };
+  return { baselineRange, targetRange, awaitingClick, pendingStart, startBaselineSelect, startTargetSelect, handleClick, reset };
 }

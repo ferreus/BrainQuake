@@ -1,5 +1,6 @@
 import os
 import csv
+import math
 import numpy as np
 from sqlalchemy.orm import Session
 from app.config import settings
@@ -153,7 +154,12 @@ def load_result_rows(csv_path):
     for row in rows:
         for k in ('x', 'y', 'z', 'ei', 'hi', 'ei_percentile', 'hi_percentile', 'combined_score'):
             if row.get(k) not in (None, ''):
-                row[k] = float(row[k])
+                val = float(row[k])
+                # A contact present in the electrode map but missing from the EI
+                # or HI results ranks as NaN (build_result_table). NaN is not
+                # JSON-compliant (Starlette renders with allow_nan=False), so
+                # emit null instead and let the client show it as "missing".
+                row[k] = None if math.isnan(val) else val
         for k in ('suspect_ei', 'suspect_hi'):
             row[k] = row.get(k) == 'True'
     return rows

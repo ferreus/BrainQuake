@@ -238,7 +238,7 @@ const RETRY_DISPATCH: Record<string, RetryFn> = {
     const { edf_artifact_id, ...params } = p;
     return apiPost<Job>(`/subjects/${subjectId}/interictal/${edf_artifact_id}/hfo`, params);
   },
-  soz_fuse: (subjectId, p) => apiPost<Job>(`/subjects/${subjectId}/soz/fuse`, p),
+  soz_fuse: (subjectId, p) => fuseSoz(subjectId, p as SozFuseParams),
 };
 
 export function retryJob(job: Job): Promise<Job> {
@@ -258,4 +258,58 @@ export interface EiResult {
 
 export function getEiResult(subjectId: number, edfArtifactId: number): Promise<EiResult> {
   return apiGet<EiResult>(`/subjects/${subjectId}/ictal/${edfArtifactId}/ei-result`);
+}
+
+export interface HfoComputeParams {
+  band_low?: number;
+  band_high?: number;
+  rel_thresh?: number;
+  abs_thresh?: number;
+  min_gap?: number;
+  min_last?: number;
+  remain_chns?: string[];
+}
+
+export function computeHfo(subjectId: number, edfArtifactId: number, params: HfoComputeParams): Promise<Job> {
+  return apiPost<Job>(`/subjects/${subjectId}/interictal/${edfArtifactId}/hfo`, params);
+}
+
+export interface HfoResult {
+  chn_names: string[];
+  event_counts: number[];
+  /** event_times[i] is channel chn_names[i]'s list of [startSec, endSec] events. */
+  event_times: [number, number][][];
+}
+
+export function getHfoResult(subjectId: number, edfArtifactId: number): Promise<HfoResult> {
+  return apiGet<HfoResult>(`/subjects/${subjectId}/interictal/${edfArtifactId}/hfo-result`);
+}
+
+export interface SozFuseParams {
+  ei_artifact_id?: number;
+  hi_artifact_id?: number;
+}
+
+export function fuseSoz(subjectId: number, params: SozFuseParams = {}): Promise<Job> {
+  return apiPost<Job>(`/subjects/${subjectId}/soz/fuse`, params);
+}
+
+export interface SozResultRow {
+  contact: string;
+  x: number;
+  y: number;
+  z: number;
+  /** null when this contact is absent from the EI/HI results (see server's
+   * load_result_rows NaN->null sanitization). */
+  ei: number | null;
+  hi: number | null;
+  ei_percentile: number | null;
+  hi_percentile: number | null;
+  combined_score: number;
+  suspect_ei: boolean;
+  suspect_hi: boolean;
+}
+
+export function getSozResult(subjectId: number): Promise<SozResultRow[]> {
+  return apiGet<SozResultRow[]>(`/subjects/${subjectId}/soz/result`);
 }

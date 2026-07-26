@@ -4,18 +4,9 @@ import { useQuery } from "@tanstack/react-query";
 import { getSubject } from "../api/endpoints";
 import { ElectrodesPage } from "../features/electrodes/ElectrodesPage";
 import { IctalPage } from "../features/ictal/IctalPage";
+import { InterictalPage } from "../features/interictal/InterictalPage";
+import { SozPage } from "../features/soz/SozPage";
 import { ExportPatientButton } from "../features/subjects/ExportPatientButton";
-
-/** Placeholder for a not-yet-built stage tab -- each becomes a real feature
- * in its own phase (Phase 2: Electrodes, Phase 3: Ictal, Phase 4: Interictal,
- * Phase 5: SOZ), per the phased plan. */
-function ComingSoon({ phase }: { phase: string }) {
-  return (
-    <Alert color="gray" variant="light" mt="md">
-      Not built yet -- planned for {phase}.
-    </Alert>
-  );
-}
 
 export function SubjectLayoutPage() {
   const { subjectId } = useParams();
@@ -76,11 +67,11 @@ export function SubjectLayoutPage() {
         <Tabs.Panel value="ictal" style={{ height: "calc(100% - 40px)" }}>
           <IctalPage subjectId={id} />
         </Tabs.Panel>
-        <Tabs.Panel value="interictal">
-          <ComingSoon phase="Phase 4 (Interictal HFO)" />
+        <Tabs.Panel value="interictal" style={{ height: "calc(100% - 40px)" }}>
+          <InterictalPage subjectId={id} />
         </Tabs.Panel>
-        <Tabs.Panel value="soz">
-          <ComingSoon phase="Phase 5 (SOZ fusion + 3D overlay)" />
+        <Tabs.Panel value="soz" style={{ height: "calc(100% - 40px)" }}>
+          <SozPage subjectId={id} />
         </Tabs.Panel>
       </Tabs>
     </Stack>

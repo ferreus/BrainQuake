@@ -1,28 +1,29 @@
-import { useState } from "react";
-import { Button, FileButton, Group, Loader, NativeSelect, Progress, Stack, Text } from "@mantine/core";
+import { useMemo, useState } from "react";
+import { Button, FileButton, Group, Loader, NativeSelect, Progress, Stack, Switch, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError, uploadFileWithProgress } from "../../api/client";
 import { useArtifacts, useDeleteArtifact } from "../../api/queries/useElectrodes";
 import { useEdfMeta } from "../../api/queries/useEdf";
+import { useHfoResult } from "../../api/queries/useInterictal";
 import { EdfLoadErrorPanel } from "../../components/eeg/EdfLoadErrorPanel";
 import { EegCanvas } from "../../components/eeg/EegCanvas";
 import { EegChannelList } from "../../components/eeg/EegChannelList";
 import { EegToolbar } from "../../components/eeg/EegToolbar";
 import { useEegViewerState } from "../../components/eeg/useEegViewerState";
-import { useBaselineTargetSelection } from "../../components/eeg/BaselineTargetLayer";
-import { EiComputeForm } from "./EiComputeForm";
-import { EiResultPanel } from "./EiResultPanel";
+import { HfoComputeForm } from "./HfoComputeForm";
+import { HiResultPanel } from "./HiResultPanel";
 
-interface IctalPageProps {
+interface InterictalPageProps {
   subjectId: number;
 }
 
-export function IctalPage({ subjectId }: IctalPageProps) {
+export function InterictalPage({ subjectId }: InterictalPageProps) {
   const { data: artifacts } = useArtifacts(subjectId);
   const edfArtifacts = (artifacts ?? []).filter((a) => a.kind === "raw_edf");
   const [selectedEdfId, setSelectedEdfId] = useState<number | undefined>();
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [showOverlay, setShowOverlay] = useState(false);
   const queryClient = useQueryClient();
 
   const effectiveEdfId = selectedEdfId ?? edfArtifacts[0]?.id;
@@ -34,9 +35,25 @@ export function IctalPage({ subjectId }: IctalPageProps) {
     error: metaError,
     refetch: refetchMeta,
   } = useEdfMeta(subjectId, effectiveEdfId);
-  const { state, dispatch } = useEegViewerState("ictal");
-  const selection = useBaselineTargetSelection();
+  const { state, dispatch } = useEegViewerState("interictal");
   const deleteArtifact = useDeleteArtifact(subjectId);
+
+  const { data: hfoResult } = useHfoResult(subjectId, effectiveEdfId, true);
+
+  const remainChannels = useMemo(
+    () => (meta?.channels ?? []).filter((c) => !state.excludedChannels.has(c)),
+    [meta, state.excludedChannels],
+  );
+
+  // channel name -> detected [start,end] events, consumed by EegCanvas' overlay.
+  const eventOverlays = useMemo(() => {
+    if (!showOverlay || !hfoResult) return undefined;
+    const map: Record<string, [number, number][]> = {};
+    hfoResult.chn_names.forEach((name, i) => {
+      map[name] = hfoResult.event_times[i] ?? [];
+    });
+    return map;
+  }, [showOverlay, hfoResult]);
 
   function handleRemoveBadEdf() {
     if (!effectiveEdfId) return;
@@ -64,7 +81,6 @@ export function IctalPage({ subjectId }: IctalPageProps) {
       ).promise;
       queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
       setSelectedEdfId(artifact.id);
-      selection.reset();
     } catch (err) {
       notifications.show({
         color: "red",
@@ -75,25 +91,6 @@ export function IctalPage({ subjectId }: IctalPageProps) {
       setUploadProgress(null);
     }
   }
-
-  const markers = [
-    ...(selection.baselineRange
-      ? [
-          { time: selection.baselineRange[0], color: "#1baf7a" },
-          { time: selection.baselineRange[1], color: "#1baf7a" },
-        ]
-      : []),
-    ...(selection.targetRange
-      ? [
-          { time: selection.targetRange[0], color: "#eb6834" },
-          { time: selection.targetRange[1], color: "#eb6834" },
-        ]
-      : []),
-    // Draw the first click's line right away, before the closing click lands.
-    ...(selection.pendingStart != null
-      ? [{ time: selection.pendingStart, color: selection.awaitingClick?.startsWith("baseline") ? "#1baf7a" : "#eb6834" }]
-      : []),
-  ];
 
   return (
     <Stack h="100%" gap="sm" mt="md">
@@ -116,10 +113,18 @@ export function IctalPage({ subjectId }: IctalPageProps) {
           )}
         </FileButton>
         {effectiveEdfId && meta && <EegToolbar state={state} dispatch={dispatch} />}
+        {effectiveEdfId && meta && hfoResult && (
+          <Switch
+            label="Show HFO detections"
+            size="sm"
+            checked={showOverlay}
+            onChange={(e) => setShowOverlay(e.currentTarget.checked)}
+          />
+        )}
       </Group>
       {uploadProgress != null && <Progress value={uploadProgress * 100} size="sm" animated />}
 
-      {!effectiveEdfId && <Text c="dimmed">Import an ictal EDF recording to get started.</Text>}
+      {!effectiveEdfId && <Text c="dimmed">Import an interictal EDF recording to get started.</Text>}
 
       {effectiveEdfId && metaLoading && (
         <Group justify="center" p="xl">
@@ -145,8 +150,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
               edfArtifactId={effectiveEdfId}
               state={state}
               dispatch={dispatch}
-              markers={markers}
-              onCanvasClick={selection.awaitingClick ? selection.handleClick : undefined}
+              eventOverlays={eventOverlays}
             />
             <Stack w={300} gap="sm">
               <EegChannelList
@@ -154,16 +158,16 @@ export function IctalPage({ subjectId }: IctalPageProps) {
                 excludedChannels={state.excludedChannels}
                 onDelete={(chs) => dispatch({ type: "DELETE_CHANNELS", channels: chs })}
               />
-              <EiComputeForm subjectId={subjectId} edfArtifactId={effectiveEdfId} selection={selection} />
+              <HfoComputeForm
+                subjectId={subjectId}
+                edfArtifactId={effectiveEdfId}
+                bandLow={state.filterBandLow}
+                bandHigh={state.filterBandHigh}
+                remainChannels={remainChannels}
+              />
             </Stack>
           </Group>
-          <EiResultPanel
-            subjectId={subjectId}
-            edfArtifactId={effectiveEdfId}
-            targetRange={selection.targetRange}
-            bandLow={state.filterBandLow}
-            bandHigh={state.filterBandHigh}
-          />
+          <HiResultPanel subjectId={subjectId} edfArtifactId={effectiveEdfId} />
         </>
       )}
     </Stack>
