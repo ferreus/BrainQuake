@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Group, Loader, Paper, Stack, Text, Title } from "@mantine/core";
+import { Button, FileButton, Group, Loader, Paper, Progress, Stack, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "../../api/client";
+import { ApiError, uploadFileWithProgress } from "../../api/client";
 import { useArtifacts, useRegisterCt } from "../../api/queries/useElectrodes";
 import { useJobPolling } from "../../api/queries/useJobPolling";
 import { useLastJob } from "../../api/queries/useJobs";
@@ -51,6 +51,7 @@ function RegisterCtStep({
   lastRegisterJob,
 }: RegisterCtStepProps) {
   const [jobId, setJobId] = useState<number | undefined>();
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const registerCt = useRegisterCt(subjectId);
   const queryClient = useQueryClient();
 
@@ -75,6 +76,27 @@ function RegisterCtStep({
         title: "Failed to start CT registration",
         message: err instanceof ApiError ? err.message : String(err),
       });
+    }
+  }
+
+  // Every upload inserts a fresh raw_ct artifact row (see routers/subjects.py),
+  // which is what ctStale below compares against the last registration's
+  // timestamp -- this is the only way to get a newer CT onto the server once a
+  // subject already exists, since NewPatientDialog only uploads one at creation.
+  async function handleUploadCt(file: File | null) {
+    if (!file) return;
+    setUploadProgress(0);
+    try {
+      await uploadFileWithProgress(`/subjects/${subjectId}/upload`, file, "ct", setUploadProgress).promise;
+      queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
+    } catch (err) {
+      notifications.show({
+        color: "red",
+        title: "Failed to upload CT",
+        message: err instanceof ApiError ? err.message : String(err),
+      });
+    } finally {
+      setUploadProgress(null);
     }
   }
 
@@ -125,6 +147,16 @@ function RegisterCtStep({
           {currentJob.progress_message}
         </Text>
       )}
+      <Group justify="flex-end" mt="xs">
+        <FileButton onChange={handleUploadCt} accept=".nii.gz,.nii,application/gzip">
+          {(props) => (
+            <Button size="xs" variant="default" loading={uploadProgress != null} {...props}>
+              {hasRawCt ? "Replace CT" : "Upload CT"}
+            </Button>
+          )}
+        </FileButton>
+      </Group>
+      {uploadProgress != null && <Progress value={uploadProgress * 100} size="xs" mt={4} animated />}
     </Paper>
   );
 }
