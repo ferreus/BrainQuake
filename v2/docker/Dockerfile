@@ -34,6 +34,23 @@ ENV SUBJECTS_DIR=/data/subjects \
     DATA_ROOT=/data \
     DB_URL=sqlite:////data/brainquake.db
 
+# Non-root runtime user. /data (the subjects_data volume's mount point) and
+# /app/server are chowned here, before USER switches away from root, so
+# Docker seeds a *fresh* subjects_data volume with this ownership the first
+# time it's populated (a newly-created named volume's initial content --
+# including ownership -- is copied from whatever already exists at that path
+# in the image). An *already-used* volume needs a one-time manual
+# `chown -R app:app /data` migration instead (see docker-compose.yml's
+# comments), since Docker only auto-seeds ownership on a volume's first-ever
+# population.
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN groupadd -g ${APP_GID} app \
+    && useradd -u ${APP_UID} -g app -M -s /usr/sbin/nologin app \
+    && mkdir -p /data \
+    && chown app:app /data /app/server
+USER app
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

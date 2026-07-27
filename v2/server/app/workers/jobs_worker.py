@@ -3,8 +3,11 @@ import sys
 import time
 import socket
 import logging
+import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.config import settings
@@ -18,6 +21,8 @@ from app.services.soz import run_soz_fuse_job
 from app.services.surface import run_surface_export_job
 from app.services.patient_io import run_export_patient_job, run_import_patient_job
 from app.services.job_control import JobCancelledError
+
+POLL_INTERVAL_SECONDS = 2
 
 # Set up logging for the worker itself
 logging.basicConfig(
@@ -46,30 +51,57 @@ def cleanup_stale_jobs():
         db.close()
 
 def run_job(job_id: int):
+    """Atomically claims job_id (no-op if it's not 'queued' anymore -- e.g.
+    already claimed by a concurrent call, or cancelled before being picked
+    up -- or if another job for the same subject is currently running), then
+    executes it synchronously end to end. Safe to call directly (existing
+    tests do this) or have it submitted by either dispatch loop's thread
+    pool -- both paths go through the same atomic claim below, so a job can
+    never be double-executed and two jobs for one subject can never run
+    concurrently, no matter which loop (or how many) submitted it."""
     db = SessionLocal()
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
+    job_row = db.query(Job).filter(Job.id == job_id).first()
+    if not job_row:
         db.close()
         return
 
-    # Create logs directory if it doesn't exist
     logs_dir = os.path.join(settings.DATA_ROOT, "logs")
     os.makedirs(logs_dir, exist_ok=True)
-    log_path = os.path.join(logs_dir, f"job_{job.id}.log")
-    
-    # Update job state to running. pid is left unset here -- it's populated
-    # only while a tracked subprocess step is actually running (see
+    log_path = os.path.join(logs_dir, f"job_{job_id}.log")
+
+    # pid is left unset here -- it's populated only while a tracked
+    # subprocess step is actually running (see
     # services/job_control.run_and_track_subprocess), never the worker's own
     # pid: SIGTERM'ing the worker itself on cancel would kill every other
     # queued/running job with it.
-    job.state = "running"
-    job.started_at = datetime.now(timezone.utc)
-    job.pid = None
-    job.host = socket.gethostname()
-    job.log_path = log_path
-    job.progress_pct = 0.0
-    job.progress_message = "Starting execution"
+    other_running_for_subject = (
+        db.query(Job.id)
+        .filter(Job.subject_id == job_row.subject_id, Job.state == "running", Job.id != job_id)
+        .exists()
+    )
+    claim = db.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.state == "queued", ~other_running_for_subject)
+        .values(
+            state="running",
+            started_at=datetime.now(timezone.utc),
+            pid=None,
+            host=socket.gethostname(),
+            log_path=log_path,
+            progress_pct=0.0,
+            progress_message="Starting execution",
+        )
+    )
     db.commit()
+
+    if claim.rowcount != 1:
+        # Lost the race to another claim, was cancelled while queued, or a
+        # job for the same subject is currently running -- either way,
+        # nothing for this call to do.
+        db.close()
+        return
+
+    job = db.query(Job).filter(Job.id == job_id).first()
 
     logger.info(f"Executing job {job.id} of type '{job.job_type}' for subject ID {job.subject_id}")
     
@@ -149,27 +181,88 @@ def run_job(job_id: int):
         db.commit()
         db.close()
 
-def worker_loop():
-    logger.info("Starting jobs worker loop")
-    cleanup_stale_jobs()
-    
+def _is_fastsurfer_job(job: Job) -> bool:
+    return job.job_type == "recon" and (job.params_json or {}).get("recon_type") == "fast-surfer"
+
+
+def _dispatch_loop(loop_name: str, job_predicate, pool_size: int):
+    """Generic poll-claim-submit loop. job_predicate(job) -> bool selects
+    which queued jobs this loop is responsible for. Two independent
+    instances of this loop run concurrently in the same process (see
+    worker_loop): one for every job type except fast-surfer recon jobs, one
+    exclusively for fast-surfer recon jobs -- so a multi-hour FastSurfer run
+    never occupies a slot in the general pool, and the general dispatcher
+    never claims a fast-surfer job at all. Per-subject mutual exclusion is
+    enforced entirely by run_job's own atomic claim, not by anything here,
+    so it's safe for the two loops to be completely unaware of each other.
+    """
+    executor = ThreadPoolExecutor(max_workers=pool_size, thread_name_prefix=loop_name)
+    in_flight: set[int] = set()
+    lock = threading.Lock()
+
+    def _on_done(job_id: int, fut):
+        with lock:
+            in_flight.discard(job_id)
+        exc = fut.exception()
+        if exc is not None:
+            logger.error(f"[{loop_name}] job {job_id} thread raised unhandled exception: {exc}")
+
     while True:
-        db = SessionLocal()
-        try:
-            # Poll for the oldest queued job
-            job = db.query(Job).filter(Job.state == "queued").order_by(Job.created_at.asc()).first()
-            if job:
-                # Claim job and run it
-                job_id = job.id
-                db.close()  # Close session while running job to avoid keeping connection open
-                run_job(job_id)
-            else:
+        with lock:
+            capacity = pool_size - len(in_flight)
+            already_submitted = set(in_flight)
+
+        if capacity > 0:
+            db = SessionLocal()
+            try:
+                # already_submitted jobs still show up here (they're 'running'
+                # by now, or momentarily still 'queued' until their thread
+                # gets to run_job's atomic claim) -- filtered out below rather
+                # than in SQL, since it's small in-memory state, not a DB column.
+                candidates = (
+                    db.query(Job)
+                    .filter(Job.state == "queued")
+                    .order_by(Job.created_at.asc())
+                    .limit(max(50, pool_size * 10))
+                    .all()
+                )
+            except Exception as e:
+                logger.error(f"[{loop_name}] error polling for queued jobs: {e}")
+                candidates = []
+            finally:
                 db.close()
-                time.sleep(2)
-        except Exception as e:
-            logger.error(f"Error in worker loop: {e}")
-            db.close()
-            time.sleep(5)
+
+            for job in candidates:
+                if capacity <= 0:
+                    break
+                if job.id in already_submitted or not job_predicate(job):
+                    continue
+                with lock:
+                    in_flight.add(job.id)
+                fut = executor.submit(run_job, job.id)
+                fut.add_done_callback(lambda f, jid=job.id: _on_done(jid, f))
+                already_submitted.add(job.id)
+                capacity -= 1
+
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+def worker_loop():
+    logger.info(
+        f"Starting jobs worker loop (MAX_CONCURRENT_JOBS={settings.MAX_CONCURRENT_JOBS}, "
+        f"FASTSURFER_MAX_CONCURRENT={settings.FASTSURFER_MAX_CONCURRENT})"
+    )
+    cleanup_stale_jobs()
+
+    fastsurfer_thread = threading.Thread(
+        target=_dispatch_loop,
+        args=("fastsurfer-dispatcher", _is_fastsurfer_job, settings.FASTSURFER_MAX_CONCURRENT),
+        daemon=True,
+    )
+    fastsurfer_thread.start()
+
+    # General dispatcher runs on the main thread; never claims fast-surfer jobs.
+    _dispatch_loop("general-dispatcher", lambda job: not _is_fastsurfer_job(job), settings.MAX_CONCURRENT_JOBS)
 
 if __name__ == "__main__":
     # Add project root to sys.path so we can import app.*

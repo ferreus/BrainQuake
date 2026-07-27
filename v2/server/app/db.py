@@ -15,6 +15,10 @@ if settings.DB_URL.startswith("sqlite"):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
+        # Absorbs WAL's single-writer-at-a-time serialization now that
+        # multiple job threads can commit concurrently, instead of raising
+        # "database is locked" immediately.
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

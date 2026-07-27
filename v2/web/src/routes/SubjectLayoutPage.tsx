@@ -44,9 +44,15 @@ export function SubjectLayoutPage() {
             {subject.subject_dir ? ` — ${subject.subject_dir}` : " — reconstruction not yet run"}
           </Text>
         </Stack>
-        <ExportPatientButton subjectId={id} subjectName={subject.name} />
+        <ExportPatientButton key={id} subjectId={id} subjectName={subject.name} />
       </Group>
 
+      {/* key={id} on every per-subject child: switching patients in the sidebar
+          re-renders this route with a new :subjectId but does NOT remount it,
+          so without a key the pages keep the previous patient's local state --
+          most visibly the job ids the step forms poll on, which made e.g. the
+          Register CT button sit in its loading state on a patient with no
+          ct_register job of its own. */}
       <Tabs defaultValue="electrodes" style={{ flex: 1 }}>
         <Tabs.List>
           <Tabs.Tab value="electrodes">Electrodes</Tabs.Tab>
@@ -57,7 +63,7 @@ export function SubjectLayoutPage() {
 
         <Tabs.Panel value="electrodes" style={{ height: "calc(100% - 40px)" }}>
           {subject.subject_dir ? (
-            <ElectrodesPage subjectId={id} />
+            <ElectrodesPage key={id} subjectId={id} />
           ) : (
             <Alert color="gray" variant="light" mt="md">
               Run reconstruction first (see the patient's upload step) before working on electrodes.
@@ -65,13 +71,13 @@ export function SubjectLayoutPage() {
           )}
         </Tabs.Panel>
         <Tabs.Panel value="ictal" style={{ height: "calc(100% - 40px)" }}>
-          <IctalPage subjectId={id} />
+          <IctalPage key={id} subjectId={id} />
         </Tabs.Panel>
         <Tabs.Panel value="interictal" style={{ height: "calc(100% - 40px)" }}>
-          <InterictalPage subjectId={id} />
+          <InterictalPage key={id} subjectId={id} />
         </Tabs.Panel>
         <Tabs.Panel value="soz" style={{ height: "calc(100% - 40px)" }}>
-          <SozPage subjectId={id} />
+          <SozPage key={id} subjectId={id} />
         </Tabs.Panel>
       </Tabs>
     </Stack>

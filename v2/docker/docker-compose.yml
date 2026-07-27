@@ -27,6 +27,11 @@ services:
       dockerfile: docker/Dockerfile
       args:
         BASE_IMAGE: ${BASE_IMAGE:-brainquake-base:latest}
+        # Non-root runtime user baked into the image -- see Dockerfile. Build
+        # args, not env vars: changing these requires a rebuild, they aren't
+        # read at container start.
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     image: brainquake-server:latest
     # No host port published: only the web (nginx) container needs to reach
     # this, over the internal docker-compose network as "api:8000". Keeps
@@ -48,6 +53,15 @@ services:
         condition: service_healthy
     environment:
       FS_LICENSE: /usr/local/freesurfer/license.txt
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
+      # FastSurfer sidecar (see the fastsurfer-worker service below) -- all
+      # off/no-op by default until FASTSURFER_ENABLED is set to true.
+      FASTSURFER_ENABLED: ${FASTSURFER_ENABLED:-false}
+      FASTSURFER_WORKER_URL: ${FASTSURFER_WORKER_URL:-http://fastsurfer-worker:8000}
+      FASTSURFER_MAX_CONCURRENT: ${FASTSURFER_MAX_CONCURRENT:-1}
+      FASTSURFER_POLL_INTERVAL_SECONDS: ${FASTSURFER_POLL_INTERVAL_SECONDS:-10}
+      FASTSURFER_THREADS: ${FASTSURFER_THREADS:-8}
+      FASTSURFER_DEVICE: ${FASTSURFER_DEVICE:-cpu}
     volumes:
       - subjects_data:/data
       - ${FS_LICENSE_HOST:-./license.txt}:/usr/local/freesurfer/license.txt:ro
@@ -64,10 +78,77 @@ services:
       dockerfile: docker/Dockerfile.web
     image: brainquake-web:latest
     ports:
-      - "${WEB_PORT:-80}:80"
+      # Host side stays 80 by default; only the container-internal port
+      # moved (see Dockerfile.web -- nginx-unprivileged listens on 8080,
+      # since binding 80 directly needs root inside the container).
+      - "${WEB_PORT:-80}:8080"
     depends_on:
       api:
         condition: service_healthy
+    restart: unless-stopped
+
+  # Optional -- runs FastSurfer via a small HTTP wrapper around the official
+  # deepmi/fastsurfer image (see fastsurfer-worker.Dockerfile and
+  # v2/fastsurfer-worker/app). Off by default; bring it up explicitly with:
+  #   docker compose -f docker-compose.yml --profile fastsurfer up --build
+  # (CPU) or
+  #   docker compose -f docker-compose.yml -f docker-compose.fastsurfer-gpu.yml \
+  #     --profile fastsurfer up --build
+  # (GPU -- see docker-compose.fastsurfer-gpu.yml; requires the NVIDIA
+  # Container Toolkit on the host, and FASTSURFER_VARIANT/FASTSURFER_DEVICE
+  # set to cuda in .env). Also set FASTSURFER_ENABLED=true on api/worker so
+  # recon requests with recon_type=fast-surfer are actually accepted.
+  # `worker` deliberately has no depends_on this service -- it must keep
+  # running every other job type whether or not this profile is active; a
+  # fast-surfer job's own error handling
+  # (app/services/fastsurfer_client.py) accounts for this service being
+  # absent/unreachable.
+  fastsurfer-worker:
+    build:
+      context: ..
+      dockerfile: docker/fastsurfer-worker.Dockerfile
+      args:
+        # Must match FASTSURFER_DEVICE below -- FASTSURFER_VARIANT picks the
+        # deepmi/fastsurfer image (cpu | cuda | rocm | cu118 | cu126 | cu128 |
+        # rocm6.3 -- see https://hub.docker.com/r/deepmi/fastsurfer/tags),
+        # FASTSURFER_DEVICE picks the --device flag passed at runtime.
+        FASTSURFER_VARIANT: ${FASTSURFER_VARIANT:-cpu}
+        FASTSURFER_VERSION: ${FASTSURFER_VERSION:-v2.5.4}
+    image: brainquake-fastsurfer-worker:latest
+    profiles: ["fastsurfer"]
+    # Same UID/GID as api/worker (see Dockerfile's APP_UID/APP_GID) -- not
+    # root, even though the image itself still defaults to root if run
+    # outside this compose file. This is what makes the shared subjects_data
+    # volume actually writable from both sides: a fast-surfer job's output
+    # is written as this same user, so run_recon_job's post-processing
+    # (which runs in `worker` right after) can write into it too, instead of
+    # hitting EACCES against a root-owned tree. It also happens to be
+    # FastSurfer's own recommended pattern (`-u $(id -u):$(id -g)`) --
+    # runner.py's --allow_root flag stays only as a harmless fallback for
+    # anyone running this image with the default root user instead.
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    environment:
+      FASTSURFER_MAX_CONCURRENT: ${FASTSURFER_MAX_CONCURRENT:-1}
+    volumes:
+      # Same named volume, same mount point as api/worker -- so t1_path and
+      # SUBJECTS_DIR computed by the worker are valid unchanged in here; no
+      # path translation needed, since this is an ordinary Compose service
+      # sharing a declared volume, not a nested `docker run`.
+      - subjects_data:/data
+      - ${FS_LICENSE_HOST:-./license.txt}:/usr/local/freesurfer/license.txt:ro
+    # No GPU device reservation here on purpose -- Compose has no way to make
+    # a block conditional on an env var, so anything here would apply
+    # unconditionally regardless of FASTSURFER_DEVICE. GPU hosts add it via
+    # docker-compose.fastsurfer-gpu.yml instead (see that file and .env.example).
+    # Not wget/curl -- the deepmi/fastsurfer base image's runtime layer never
+    # installs either, so a wget-based check fails outright. This overrides
+    # (not just duplicates) the Dockerfile's own HEALTHCHECK, so it needs
+    # the same python3/urllib fix independently.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
     restart: unless-stopped
 
 volumes:

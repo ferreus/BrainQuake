@@ -36,7 +36,15 @@ def get_job_log(job_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Job not found")
     if not job.log_path or not os.path.exists(job.log_path):
         raise HTTPException(status_code=404, detail="Log file not found or not yet created")
-    return FileResponse(job.log_path, media_type="text/plain")
+    # FileResponse stats the file and sets Last-Modified/ETag, which is
+    # enough for the browser to heuristically cache and reuse a stale copy
+    # across the log viewer's poll interval while the worker keeps
+    # appending -- explicitly opt this endpoint out of that.
+    return FileResponse(
+        job.log_path,
+        media_type="text/plain",
+        headers={"Cache-Control": "no-store"},
+    )
 
 @router.delete("/{job_id}")
 def delete_job(job_id: int, db: Session = Depends(get_db)):

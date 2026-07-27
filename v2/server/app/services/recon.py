@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Job, Subject, Artifact
 from app.services.job_control import run_and_track_subprocess
+from app.services.fastsurfer_client import _run_fastsurfer_via_sidecar
 
 def _run_subprocess_cmd(cmd, job, step_name, db, log_file, use_freesurfer_env=False):
     prefix = ""
@@ -94,14 +95,15 @@ def run_recon_job(db: Session, job: Job, log_file):
         cmd = f"recon-all -i {t1_path} -s {name} -all -parallel -openmp 8"
         _run_subprocess_cmd(cmd, job, "recon-all", db, log_file, use_freesurfer_env=True)
     elif recon_type == "fast-surfer":
-        # FastSurfer-master path
-        fastpath = "/home/hello/Downloads/labServer/FastSurfer-master"
-        # Fallback to local script or mock if needed
-        cmd = f"cd {fastpath} && ./run_fastsurfer.sh --t1 {t1_path} --sid {name}fast --sd {settings.SUBJECTS_DIR} --parallel --threads 8 --py python3 --surfreg"
-        _run_subprocess_cmd(cmd, job, "fast-surfer", db, log_file, use_freesurfer_env=True)
+        # sid must match recon-all's -s/infant_recon_all's --s ({name}, not
+        # {name}fast) -- the post-processing below reads from
+        # $SUBJECTS_DIR/{name}/mri regardless of which recon flavor ran.
+        _run_fastsurfer_via_sidecar(t1_path, name, job, db, log_file)
     elif recon_type == "infant-surfer":
         cmd = f"infant_recon_all --s {name}"
         _run_subprocess_cmd(cmd, job, "infant-surfer", db, log_file, use_freesurfer_env=True)
+    else:
+        raise ValueError(f"Unknown recon_type: {recon_type}")
 
     # fslresults is only needed later, by CT registration -- created now that the
     # recon tool owns having created SUBJECTS_DIR/<name> itself above
@@ -139,11 +141,19 @@ def run_recon_job(db: Session, job: Job, log_file):
     job.progress_message = "Converting annotations to labels"
     db.commit()
     
-    # Annotation to labels
-    cmd_label_convert_rh = f"mri_annotation2label --subject {name} --hemi rh --outdir {settings.SUBJECTS_DIR}/{name}/label"
+    # Annotation to labels. FastSurfer's fast pipeline never leaves a
+    # persistent lh/rh.aparc.annot on disk -- it only writes
+    # lh/rh.aparc.DKTatlas.mapped.annot, and briefly symlinks that to
+    # aparc.annot for its own stats step before deleting the symlink again.
+    # recon-all/infant_recon_all, by contrast, build a real aparc.annot via
+    # mris_ca_label. Point mri_annotation2label at whichever one actually
+    # persists for this recon flavor.
+    annotation_name = "aparc.DKTatlas.mapped" if recon_type == "fast-surfer" else "aparc"
+
+    cmd_label_convert_rh = f"mri_annotation2label --subject {name} --hemi rh --annotation {annotation_name} --outdir {settings.SUBJECTS_DIR}/{name}/label"
     _run_subprocess_cmd(cmd_label_convert_rh, job, "annotation2label rh", db, log_file, use_freesurfer_env=True)
-    
-    cmd_label_convert_lh = f"mri_annotation2label --subject {name} --hemi lh --outdir {settings.SUBJECTS_DIR}/{name}/label"
+
+    cmd_label_convert_lh = f"mri_annotation2label --subject {name} --hemi lh --annotation {annotation_name} --outdir {settings.SUBJECTS_DIR}/{name}/label"
     _run_subprocess_cmd(cmd_label_convert_lh, job, "annotation2label lh", db, log_file, use_freesurfer_env=True)
 
     # 3b. Cache lh/rh.pial as browser-consumable binary mesh artifacts, so the

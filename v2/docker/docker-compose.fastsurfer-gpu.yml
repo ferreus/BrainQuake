@@ -1,0 +1,26 @@
+# GPU override for the fastsurfer-worker service -- merge in with -f when
+# the host actually has an NVIDIA GPU set up for Docker:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.fastsurfer-gpu.yml \
+#     --profile fastsurfer up --build
+#
+# Requires the NVIDIA Container Toolkit installed on the host (`nvidia-smi`
+# working is not enough by itself -- check `docker info` lists an `nvidia`
+# runtime; if not, see https://github.com/NVIDIA/nvidia-container-toolkit).
+# Also set FASTSURFER_VARIANT=cuda and FASTSURFER_DEVICE=cuda in .env --
+# this file only grants the container GPU access, it doesn't by itself
+# change which image gets built or which --device flag FastSurfer runs with.
+#
+# Kept out of the base docker-compose.yml because Compose has no way to make
+# a service block conditional on an env var -- a GPU device reservation
+# there would apply unconditionally and fail outright on any host without
+# the nvidia runtime registered, even with FASTSURFER_DEVICE=cpu set.
+services:
+  fastsurfer-worker:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
