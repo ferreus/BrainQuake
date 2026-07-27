@@ -1,12 +1,12 @@
 # BrainQuake v2 base image: OS deps + FreeSurfer + FSL + hough-3d-lines.
 #
-# This is the slow-changing layer (FreeSurfer 7.4.1 install alone is ~19GB,
-# see CLAUDE.md) -- build and tag it once, push it to a registry, and the app
-# image (../Dockerfile) just does `FROM brainquake-base:<tag>`. Adding a new
-# apt package or bumping a pip dep for the app never touches this file, so it
-# never re-downloads/re-extracts FreeSurfer or rebuilds FSL.
+# This is the slow-changing layer (the FreeSurfer install alone is several
+# GB) -- build and tag it once, push it to a registry, and the app image
+# (../Dockerfile) just does `FROM brainquake-base:<tag>`. Adding a new apt
+# package or bumping a pip dep for the app never touches this file, so it
+# never re-downloads/re-installs FreeSurfer or rebuilds FSL.
 #
-# Build with docker/build-base.sh (handles the FreeSurfer tarball context).
+# Build with docker/build-base.sh.
 #
 # FS_LICENSE must still be mounted at runtime by the app image/compose file
 # -- never baked in here.
@@ -14,7 +14,7 @@
 # --- hough-3d-lines, built from source in its own stage so the build
 # toolchain (build-essential/libeigen3-dev/git, several hundred MB) never
 # lands in the final image -- only the compiled binary gets copied out. ---
-FROM ubuntu:22.04 AS hough-builder
+FROM ubuntu:24.04 AS hough-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates git build-essential libeigen3-dev \
@@ -24,10 +24,14 @@ RUN git clone --depth 1 https://github.com/cdalitz/hough-3d-lines.git /opt/hough
     && make -C /opt/hough-3d-lines
 
 # --- base runtime image ---------------------------------------------------
-FROM ubuntu:22.04
+# ubuntu:24.04, not 22.04 -- FreeSurfer only publishes 8.x as a .deb built
+# against a specific Ubuntu release ("ubuntu24" in the filename below), and
+# installing a noble-targeted package's dependencies against a jammy apt
+# repo risks unresolvable/mismatched versions.
+FROM ubuntu:24.04
 
-ARG FS_VERSION=7.4.1
-ARG FS_TARBALL=freesurfer-linux-ubuntu22_amd64-${FS_VERSION}.tar.gz
+ARG FS_VERSION=8.2.0
+ARG FS_DEB=freesurfer_ubuntu24-${FS_VERSION}_amd64.deb
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
@@ -46,15 +50,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # --- FreeSurfer ----------------------------------------------------------
-# DEV: reading the tarball straight from a local cache dir on the host via a buildx
-# additional build-context named "fsdist" (see build-base.sh), to avoid
-# re-downloading ~9.5GB on every rebuild while iterating on this Dockerfile.
-# Switch back to the wget block below (and drop the --mount line) once validated.
-RUN --mount=type=bind,from=fsdist,target=/mnt/fsdist \
-    tar -C /usr/local -xzf /mnt/fsdist/${FS_TARBALL}
-# RUN wget -q "https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/${FS_VERSION}/${FS_TARBALL}" -O /tmp/freesurfer.tar.gz \
-#     && tar -C /usr/local -xzf /tmp/freesurfer.tar.gz \
-#     && rm /tmp/freesurfer.tar.gz
+# 8.2.0, not 7.4.1 (the version this image used previously): infant_recon_all
+# was merged into the distribution as of this release -- it was entirely
+# absent from the 7.4.1 tarball, which is why recon.py's infant-surfer step
+# failed with "command not found" rather than some data/atlas error.
+#
+# 8.x is only distributed as a .deb (no more standalone tarball), installed
+# via `apt-get install <local .deb>` so apt resolves its declared
+# dependencies from the repos above instead of us guessing them. The .deb
+# may install under a version-named prefix rather than the flat
+# /usr/local/freesurfer/ the old tarball produced directly -- every other
+# hardcoded path in this repo (recon.py, fastsurfer_client.py's
+# _SIDECAR_LICENSE_PATH, etc.) still expects /usr/local/freesurfer, so this
+# looks up wherever SetUpFreeSurfer.sh actually landed and symlinks it there
+# instead of touching every call site.
+RUN apt-get update \
+    && wget -q "https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/${FS_VERSION}/${FS_DEB}" -O /tmp/freesurfer.deb \
+    && apt-get install -y /tmp/freesurfer.deb \
+    && fs_pkg="$(dpkg-deb -f /tmp/freesurfer.deb Package)" \
+    && fs_real_home="$(dirname "$(dpkg -L "$fs_pkg" | grep -m1 '/SetUpFreeSurfer\.sh$')")" \
+    && if [ "$fs_real_home" != "/usr/local/freesurfer" ]; then ln -s "$fs_real_home" /usr/local/freesurfer; fi \
+    && rm -f /tmp/freesurfer.deb \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV FREESURFER_HOME=/usr/local/freesurfer \
     FS_LICENSE=/usr/local/freesurfer/license.txt \

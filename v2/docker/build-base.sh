@@ -4,21 +4,19 @@
 # bumps, or whenever base.Dockerfile itself changes -- NOT as part of the
 # normal app dev loop (docker compose build only rebuilds ../Dockerfile).
 #
-# Usage: ./build-base.sh [fsdist-dir]
-#   fsdist-dir defaults to $FSDIST_DIR or /media/data/opt/freesurfer, and
-#   must contain freesurfer-linux-ubuntu22_amd64-<FS_VERSION>.tar.gz -- see
-#   the DEV note in base.Dockerfile for why this is a local bind mount
-#   instead of a wget download.
+# base.Dockerfile wgets the FreeSurfer .deb straight from
+# surfer.nmr.mgh.harvard.edu during the build, so no local cache/build-context
+# setup is needed here.
+#
+# Usage: ./build-base.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
-FS_VERSION="${FS_VERSION:-7.4.1}"
-FSDIST_DIR="${1:-${FSDIST_DIR:-/media/data/opt/freesurfer}}"
+FS_VERSION="${FS_VERSION:-8.2.0}"
 TAG="${BASE_IMAGE_TAG:-brainquake-base:fs${FS_VERSION}-fsl-flirt}"
 
 docker build \
     -f base.Dockerfile \
-    --build-context fsdist="${FSDIST_DIR}" \
     --build-arg "FS_VERSION=${FS_VERSION}" \
     -t "${TAG}" \
     -t brainquake-base:latest \
