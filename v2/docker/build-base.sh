@@ -4,9 +4,10 @@
 # bumps, or whenever base.Dockerfile itself changes -- NOT as part of the
 # normal app dev loop (docker compose build only rebuilds ../Dockerfile).
 #
-# base.Dockerfile wgets the FreeSurfer .deb straight from
-# surfer.nmr.mgh.harvard.edu during the build, so no local cache/build-context
-# setup is needed here.
+# base.Dockerfile fetches the FreeSurfer .deb into a BuildKit cache mount, so
+# repeat builds (including --no-cache ones) reuse it instead of re-downloading
+# multiple GB -- no local cache/build-context setup needed here, just a
+# BuildKit-enabled `docker build` (the default since Docker 23+).
 #
 # Usage: ./build-base.sh
 set -euo pipefail

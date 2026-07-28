@@ -103,16 +103,16 @@ def run_recon_job(db: Session, job: Job, log_file):
         age_months = (job.params_json or {}).get("age_months")
         if age_months is None:
             raise ValueError("age_months is required for infant-surfer recon_type")
+        # infant_recon_all's --age is a strict int parser (rejects "53.0");
+        # round rather than truncate so e.g. 53.6 doesn't silently become 53.
+        age_months = round(float(age_months))
 
-        # Per https://surfer.nmr.mgh.harvard.edu/fswiki/infantFS, infant_recon_all
-        # does not take -i like recon-all -- it expects the input already placed
-        # as $SUBJECTS_DIR/<subjid>/mprage/001.mgz, converted ahead of time.
-        mprage_dir = os.path.join(settings.SUBJECTS_DIR, name, "mprage")
-        os.makedirs(mprage_dir, exist_ok=True)
-        cmd_convert = f"mri_convert {t1_path} {os.path.join(mprage_dir, '001.mgz')}"
-        _run_subprocess_cmd(cmd_convert, job, "mri_convert (infant-surfer input)", db, log_file, use_freesurfer_env=True)
-
-        cmd = f"infant_recon_all --s {name} --age {age_months}"
+        # FreeSurfer 8.2.0's infant_recon_all (python/scripts/infant_recon_all)
+        # dropped the old fswiki convention of a pre-converted
+        # $SUBJECTS_DIR/<subjid>/mprage/001.mgz -- it now wants either
+        # $SUBJECTS_DIR/<subjid>/mprage.nii.gz or an explicit -i/--inputfile,
+        # and does its own mri_convert internally, so pass t1_path straight in.
+        cmd = f"infant_recon_all --s {name} --age {age_months} -i {t1_path}"
         _run_subprocess_cmd(cmd, job, "infant-surfer", db, log_file, use_freesurfer_env=True)
     else:
         raise ValueError(f"Unknown recon_type: {recon_type}")

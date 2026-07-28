@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # BrainQuake v2 base image: OS deps + FreeSurfer + FSL + hough-3d-lines.
 #
 # This is the slow-changing layer (the FreeSurfer install alone is several
@@ -14,7 +15,7 @@
 # --- hough-3d-lines, built from source in its own stage so the build
 # toolchain (build-essential/libeigen3-dev/git, several hundred MB) never
 # lands in the final image -- only the compiled binary gets copied out. ---
-FROM ubuntu:24.04 AS hough-builder
+FROM ubuntu:22.04 AS hough-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates git build-essential libeigen3-dev \
@@ -24,14 +25,13 @@ RUN git clone --depth 1 https://github.com/cdalitz/hough-3d-lines.git /opt/hough
     && make -C /opt/hough-3d-lines
 
 # --- base runtime image ---------------------------------------------------
-# ubuntu:24.04, not 22.04 -- FreeSurfer only publishes 8.x as a .deb built
-# against a specific Ubuntu release ("ubuntu24" in the filename below), and
-# installing a noble-targeted package's dependencies against a jammy apt
-# repo risks unresolvable/mismatched versions.
-FROM ubuntu:24.04
+# ubuntu:22.04 -- matches the "ubuntu22" .deb build FreeSurfer publishes for
+# this version (see FS_DEB below), so apt resolves its declared deps against
+# a repo the package was actually built against.
+FROM ubuntu:22.04
 
 ARG FS_VERSION=8.2.0
-ARG FS_DEB=freesurfer_ubuntu24-${FS_VERSION}_amd64.deb
+ARG FS_DEB=freesurfer_ubuntu22-${FS_VERSION}_amd64.deb
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
@@ -59,7 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #
 # 8.x is only distributed as a .deb (no more standalone tarball), installed
 # via `apt-get install <local .deb>` so apt resolves its declared
-# dependencies from the repos above instead of us guessing them. The .deb
+# dependencies from the repos above instead of us guessing them (hence the
+# ubuntu22 build, matched to the ubuntu:22.04 base above). The .deb
 # installs under a version-named prefix (/usr/local/freesurfer/${FS_VERSION})
 # rather than the flat /usr/local/freesurfer/ the old tarball produced
 # directly -- every other hardcoded path in this repo (recon.py,
@@ -74,11 +75,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # nested under /usr/local/freesurfer, hoist it up a level instead of
 # symlinking; only symlink for the (non-nested) case where the deb installed
 # fully elsewhere.
-RUN apt-get update \
-    && aria2c -x 16 -s 16 -k 1M --file-allocation=none \
-        --summary-interval=5 --console-log-level=notice --show-console-readout=true \
-        -d /tmp -o freesurfer.deb \
-        "https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/${FS_VERSION}/${FS_DEB}" \
+# The .deb lands in a BuildKit cache mount (keyed on FS_DEB, so a version
+# bump downloads fresh) rather than a normal image layer -- cache mounts
+# persist across builds *including* `docker build --no-cache`, which a plain
+# `rm`'d /tmp file would not. aria2c's own -c/--continue resumes a partial
+# file left behind by an interrupted build; the `-f`/skip check below just
+# short-circuits entirely once it's fully downloaded, so re-running this
+# layer costs a stat instead of a multi-GB re-download.
+RUN --mount=type=cache,target=/fscache,sharing=locked \
+    apt-get update \
+    && if [ ! -f "/fscache/${FS_DEB}" ]; then \
+           aria2c -x 16 -s 16 -k 1M --file-allocation=none \
+               --summary-interval=5 --console-log-level=notice --show-console-readout=true \
+               -d /fscache -o "${FS_DEB}" \
+               "https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/${FS_VERSION}/${FS_DEB}"; \
+       else \
+           echo "Using cached ${FS_DEB}"; \
+       fi \
+    && cp "/fscache/${FS_DEB}" /tmp/freesurfer.deb \
     && apt-get install -y /tmp/freesurfer.deb \
     && if [ ! -e /usr/local/freesurfer/SetUpFreeSurfer.sh ]; then \
            fs_pkg="$(dpkg-deb -f /tmp/freesurfer.deb Package)"; \
@@ -100,20 +114,27 @@ ENV FREESURFER_HOME=/usr/local/freesurfer \
     FS_LICENSE=/usr/local/freesurfer/license.txt \
     PATH=/usr/local/freesurfer/bin:/usr/local/freesurfer/fsfast/bin:/usr/local/freesurfer/tktools:/usr/local/freesurfer/mni/bin:$PATH
 
-# --- FSL: flirt only -------------------------------------------------------
-# v2/server/app/services/ct_register.py -- the only FSL-dependent code in the
-# repo -- calls exactly one binary, `flirt`, for CT->MRI registration. FSL
-# publishes every tool as its own conda package on its own channel, so
-# installing just fsl-flirt (via micromamba, a ~10MB static conda-compatible
+# --- FSL: flirt + avwutils --------------------------------------------------
+# v2/server/app/services/ct_register.py calls `flirt` for CT->MRI
+# registration. fsl-avwutils is needed too: FreeSurfer 8.2.0's
+# infant_recon_all (new in this release) internally shells out to
+# `fslstats`/`fslmaths` (create_wm_surfaces_mprage_subject.csh) -- without it,
+# infant_recon_all fails partway through (no surf/*.white ever gets written)
+# but still exits 0, so the failure doesn't surface until a much later step
+# (mri_annotation2label) that can't find the surfaces, with a misleading
+# "could not read rh.white" error.
+#
+# FSL publishes every tool as its own conda package on its own channel, so
+# installing just these two (via micromamba, a ~10MB static conda-compatible
 # installer) avoids fslinstaller.py's full-distribution install, which pulls
-# down FEAT/MELODIC/atlases/etc. and costs ~10.5GB for a single binary we use.
-# Pin a version with `fsl-flirt=X.Y.Z` if reproducibility becomes a concern;
+# down FEAT/MELODIC/atlases/etc. and costs ~10.5GB for the few binaries we use.
+# Pin versions with `fsl-flirt=X.Y.Z` if reproducibility becomes a concern;
 # channel order (FSL channel before conda-forge) matters, per FSL's own docs.
 # Add more `fsl-<tool>` packages here if the app grows to need e.g. fnirt.
 RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /tmp bin/micromamba \
     && /tmp/bin/micromamba create -y -p /usr/local/fsl \
         -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/public/ -c conda-forge \
-        fsl-flirt \
+        fsl-flirt fsl-avwutils \
     && /tmp/bin/micromamba clean -a -y \
     && rm -rf /tmp/bin /root/.mamba /root/.conda
 

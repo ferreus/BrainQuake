@@ -56,12 +56,12 @@ RUN if getent group ${APP_GID} >/dev/null; then \
         groupadd -g ${APP_GID} app; \
     fi \
     && if getent passwd ${APP_UID} >/dev/null; then \
-        usermod -l app -g app -d /nonexistent -s /usr/sbin/nologin "$(getent passwd ${APP_UID} | cut -d: -f1)"; \
+        usermod -l app -g app -d /home/app -s /usr/sbin/nologin "$(getent passwd ${APP_UID} | cut -d: -f1)"; \
     else \
-        useradd -u ${APP_UID} -g app -M -s /usr/sbin/nologin app; \
+        useradd -u ${APP_UID} -g app -M -d /home/app -s /usr/sbin/nologin app; \
     fi \
-    && mkdir -p /data \
-    && chown app:app /data /app/server
+    && mkdir -p /data /home/app \
+    && chown app:app /data /app/server /home/app
 USER app
 
 EXPOSE 8000
