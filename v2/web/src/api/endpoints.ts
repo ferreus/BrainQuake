@@ -82,8 +82,8 @@ export function deleteJob(id: number): Promise<{ message: string }> {
   return apiDelete(`/jobs/${id}`);
 }
 
-export function runRecon(subjectId: number, reconType: ReconType): Promise<Job> {
-  return apiPost<Job>(`/subjects/${subjectId}/recon`, { recon_type: reconType });
+export function runRecon(subjectId: number, reconType: ReconType, ageMonths?: number | null): Promise<Job> {
+  return apiPost<Job>(`/subjects/${subjectId}/recon`, { recon_type: reconType, age_months: ageMonths });
 }
 
 export function rebuildSurface(subjectId: number): Promise<Job> {
@@ -226,7 +226,7 @@ export function computeEi(subjectId: number, edfArtifactId: number, params: EiCo
 type RetryFn = (subjectId: number, p: Record<string, unknown>) => Promise<Job>;
 
 const RETRY_DISPATCH: Record<string, RetryFn> = {
-  recon: (subjectId, p) => runRecon(subjectId, (p.recon_type as ReconType) ?? "recon-all"),
+  recon: (subjectId, p) => runRecon(subjectId, (p.recon_type as ReconType) ?? "recon-all", p.age_months as number | undefined),
   ct_register: (subjectId) => registerCt(subjectId),
   elec_detect: (subjectId, p) => detectElectrodes(subjectId, p as unknown as DetectParams),
   elec_segment: (subjectId, p) => segmentElectrodes(subjectId, p as SegmentParams),

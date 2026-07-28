@@ -43,8 +43,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # FS binaries (talairach_avi's mpr2mni305 step) -- libquadmath0 is not pulled
 # in transitively, gauss_4dfp links it directly
 # curl: used to fetch micromamba below
+# aria2: used to fetch the multi-GB FreeSurfer .deb via parallel connections
+# (single-stream curl was the slowest step in this build by a wide margin)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates wget curl tar bzip2 zip unzip \
+        ca-certificates curl aria2 tar bzip2 zip unzip \
         bc tcsh perl libgomp1 libgfortran5 libquadmath0 \
         libgl1 libxext6 libsm6 libxrender1 libxmu6 \
     && rm -rf /var/lib/apt/lists/*
@@ -58,18 +60,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 8.x is only distributed as a .deb (no more standalone tarball), installed
 # via `apt-get install <local .deb>` so apt resolves its declared
 # dependencies from the repos above instead of us guessing them. The .deb
-# may install under a version-named prefix rather than the flat
-# /usr/local/freesurfer/ the old tarball produced directly -- every other
-# hardcoded path in this repo (recon.py, fastsurfer_client.py's
-# _SIDECAR_LICENSE_PATH, etc.) still expects /usr/local/freesurfer, so this
-# looks up wherever SetUpFreeSurfer.sh actually landed and symlinks it there
-# instead of touching every call site.
+# installs under a version-named prefix (/usr/local/freesurfer/${FS_VERSION})
+# rather than the flat /usr/local/freesurfer/ the old tarball produced
+# directly -- every other hardcoded path in this repo (recon.py,
+# fastsurfer_client.py's _SIDECAR_LICENSE_PATH, etc.) still expects
+# /usr/local/freesurfer, so this looks up wherever SetUpFreeSurfer.sh
+# actually landed and arranges for /usr/local/freesurfer to resolve there.
+# Because the real install lives *inside* /usr/local/freesurfer (as the
+# .../8.2.0 subdir), /usr/local/freesurfer already exists as a real directory
+# by the time we get here -- `ln -s x /usr/local/freesurfer` would then treat
+# it as a directory target and drop the link inside as .../8.2.0, colliding
+# with the real subdirectory ("File exists"). So: if the versioned dir is
+# nested under /usr/local/freesurfer, hoist it up a level instead of
+# symlinking; only symlink for the (non-nested) case where the deb installed
+# fully elsewhere.
 RUN apt-get update \
-    && wget -q "https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/${FS_VERSION}/${FS_DEB}" -O /tmp/freesurfer.deb \
+    && aria2c -x 16 -s 16 -k 1M --file-allocation=none \
+        --summary-interval=5 --console-log-level=notice --show-console-readout=true \
+        -d /tmp -o freesurfer.deb \
+        "https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/${FS_VERSION}/${FS_DEB}" \
     && apt-get install -y /tmp/freesurfer.deb \
-    && fs_pkg="$(dpkg-deb -f /tmp/freesurfer.deb Package)" \
-    && fs_real_home="$(dirname "$(dpkg -L "$fs_pkg" | grep -m1 '/SetUpFreeSurfer\.sh$')")" \
-    && if [ "$fs_real_home" != "/usr/local/freesurfer" ]; then ln -s "$fs_real_home" /usr/local/freesurfer; fi \
+    && if [ ! -e /usr/local/freesurfer/SetUpFreeSurfer.sh ]; then \
+           fs_pkg="$(dpkg-deb -f /tmp/freesurfer.deb Package)"; \
+           fs_real_home="$(dirname "$(dpkg -L "$fs_pkg" | grep -m1 '/SetUpFreeSurfer\.sh$')")"; \
+           case "$fs_real_home" in \
+             /usr/local/freesurfer/*) \
+               mv "$fs_real_home" /usr/local/freesurfer.new \
+               && rm -rf /usr/local/freesurfer \
+               && mv /usr/local/freesurfer.new /usr/local/freesurfer ;; \
+             *) \
+               rm -rf /usr/local/freesurfer \
+               && ln -s "$fs_real_home" /usr/local/freesurfer ;; \
+           esac; \
+       fi \
     && rm -f /tmp/freesurfer.deb \
     && rm -rf /var/lib/apt/lists/*
 

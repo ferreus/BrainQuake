@@ -43,10 +43,23 @@ ENV SUBJECTS_DIR=/data/subjects \
 # `chown -R app:app /data` migration instead (see docker-compose.yml's
 # comments), since Docker only auto-seeds ownership on a volume's first-ever
 # population.
+#
+# ubuntu:24.04 (which brainquake-base is FROM) already ships a built-in
+# "ubuntu" user/group at uid/gid 1000, so a plain `groupadd -g 1000 app`
+# fails with "GID 1000 already exists". Reuse whatever already occupies
+# APP_UID/APP_GID -- renaming it to "app" -- instead of assuming a clean slate.
 ARG APP_UID=1000
 ARG APP_GID=1000
-RUN groupadd -g ${APP_GID} app \
-    && useradd -u ${APP_UID} -g app -M -s /usr/sbin/nologin app \
+RUN if getent group ${APP_GID} >/dev/null; then \
+        groupmod -n app "$(getent group ${APP_GID} | cut -d: -f1)"; \
+    else \
+        groupadd -g ${APP_GID} app; \
+    fi \
+    && if getent passwd ${APP_UID} >/dev/null; then \
+        usermod -l app -g app -d /nonexistent -s /usr/sbin/nologin "$(getent passwd ${APP_UID} | cut -d: -f1)"; \
+    else \
+        useradd -u ${APP_UID} -g app -M -s /usr/sbin/nologin app; \
+    fi \
     && mkdir -p /data \
     && chown app:app /data /app/server
 USER app
@@ -54,6 +67,6 @@ USER app
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-    CMD wget -q -O /dev/null http://localhost:8000/ || exit 1
+    CMD curl -sf -o /dev/null http://localhost:8000/ || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -100,7 +100,19 @@ def run_recon_job(db: Session, job: Job, log_file):
         # $SUBJECTS_DIR/{name}/mri regardless of which recon flavor ran.
         _run_fastsurfer_via_sidecar(t1_path, name, job, db, log_file)
     elif recon_type == "infant-surfer":
-        cmd = f"infant_recon_all --s {name}"
+        age_months = (job.params_json or {}).get("age_months")
+        if age_months is None:
+            raise ValueError("age_months is required for infant-surfer recon_type")
+
+        # Per https://surfer.nmr.mgh.harvard.edu/fswiki/infantFS, infant_recon_all
+        # does not take -i like recon-all -- it expects the input already placed
+        # as $SUBJECTS_DIR/<subjid>/mprage/001.mgz, converted ahead of time.
+        mprage_dir = os.path.join(settings.SUBJECTS_DIR, name, "mprage")
+        os.makedirs(mprage_dir, exist_ok=True)
+        cmd_convert = f"mri_convert {t1_path} {os.path.join(mprage_dir, '001.mgz')}"
+        _run_subprocess_cmd(cmd_convert, job, "mri_convert (infant-surfer input)", db, log_file, use_freesurfer_env=True)
+
+        cmd = f"infant_recon_all --s {name} --age {age_months}"
         _run_subprocess_cmd(cmd, job, "infant-surfer", db, log_file, use_freesurfer_env=True)
     else:
         raise ValueError(f"Unknown recon_type: {recon_type}")

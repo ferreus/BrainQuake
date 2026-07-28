@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Button, FileButton, Group, Modal, NativeSelect, Progress, Stack, Text, TextInput } from "@mantine/core";
+import { Button, FileButton, Group, Modal, NativeSelect, NumberInput, Progress, Stack, Text, TextInput } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useCreateSubject } from "../../api/queries/useSubjects";
 import { useRunRecon } from "../../api/queries/useRecon";
@@ -19,6 +19,7 @@ type Stage = "idle" | "creating" | "uploading-t1" | "uploading-ct" | "starting-r
 export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialogProps) {
   const [name, setName] = useState("");
   const [reconType, setReconType] = useState<ReconType>("recon-all");
+  const [ageMonths, setAgeMonths] = useState<number | "">("");
   const [t1File, setT1File] = useState<File | null>(null);
   const [ctFile, setCtFile] = useState<File | null>(null);
   const [stage, setStage] = useState<Stage>("idle");
@@ -32,6 +33,7 @@ export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialo
   function reset() {
     setName("");
     setReconType("recon-all");
+    setAgeMonths("");
     setT1File(null);
     setCtFile(null);
     setStage("idle");
@@ -44,6 +46,15 @@ export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialo
         color: "red",
         title: "Missing required fields",
         message: "A patient name and a T1 (MRI) file are both required.",
+      });
+      return;
+    }
+
+    if (reconType === "infant-surfer" && ageMonths === "") {
+      notifications.show({
+        color: "red",
+        title: "Missing required field",
+        message: "Age at scan (in months) is required for infant-surfer reconstruction.",
       });
       return;
     }
@@ -63,7 +74,11 @@ export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialo
       }
 
       setStage("starting-recon");
-      await runRecon.mutateAsync({ subjectId: subject.id, reconType });
+      await runRecon.mutateAsync({
+        subjectId: subject.id,
+        reconType,
+        ageMonths: reconType === "infant-surfer" ? (ageMonths as number) : undefined,
+      });
 
       notifications.show({
         color: "green",
@@ -117,6 +132,20 @@ export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialo
           onChange={(e) => setReconType(e.currentTarget.value as ReconType)}
           disabled={busy}
         />
+        {reconType === "infant-surfer" && (
+          <NumberInput
+            label="Age at scan (months)"
+            description="Used by infant_recon_all to pick its age-specific atlas"
+            placeholder="e.g. 8"
+            min={0}
+            max={60}
+            step={1}
+            value={ageMonths}
+            onChange={(v) => setAgeMonths(v === "" ? "" : Number(v))}
+            disabled={busy}
+            required
+          />
+        )}
         <div>
           <Text size="sm" fw={500} mb={4}>
             MRI (T1) <Text component="span" c="red">*</Text>

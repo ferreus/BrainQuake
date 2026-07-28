@@ -49,6 +49,7 @@ class NewPatientDialog(QtWidgets.QDialog):
         self.mri_path = None
         self.ct_path = None
         self.recon_type = RECON_TYPES[0]
+        self.age_months = None
         self.setWindowTitle('New Patient')
         self._init_ui()
 
@@ -58,7 +59,19 @@ class NewPatientDialog(QtWidgets.QDialog):
 
         self.recon_combo = QtWidgets.QComboBox(self)
         self.recon_combo.addItems(RECON_TYPES)
+        self.recon_combo.currentTextChanged.connect(self._on_recon_type_changed)
         layout.addRow('Reconstruction type:', self.recon_combo)
+
+        # Required by infant_recon_all to pick its age-specific atlas -- see
+        # https://surfer.nmr.mgh.harvard.edu/fswiki/infantFS. Only shown/used for
+        # the infant-surfer recon type.
+        self.age_spin = QtWidgets.QSpinBox(self)
+        self.age_spin.setRange(0, 60)
+        self.age_spin.setSuffix(' months')
+        self.age_spin.setValue(12)
+        self.age_row_label = QtWidgets.QLabel('Age at scan:')
+        layout.addRow(self.age_row_label, self.age_spin)
+        self._on_recon_type_changed(self.recon_combo.currentText())
 
         mri_row = QtWidgets.QHBoxLayout()
         self.mri_edit = QtWidgets.QLineEdit(self)
@@ -85,6 +98,11 @@ class NewPatientDialog(QtWidgets.QDialog):
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
 
+    def _on_recon_type_changed(self, recon_type):
+        is_infant = recon_type == 'infant-surfer'
+        self.age_row_label.setVisible(is_infant)
+        self.age_spin.setVisible(is_infant)
+
     def _browse_mri(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, 'Select MRI (T1) file', '', 'Nifti Files (*.nii.gz);;All Files (*)')
@@ -104,6 +122,7 @@ class NewPatientDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, '', 'Select an MRI (T1) file first.')
             return
         self.recon_type = self.recon_combo.currentText()
+        self.age_months = self.age_spin.value() if self.recon_type == 'infant-surfer' else None
         self.accept()
 
 
@@ -125,12 +144,13 @@ class UploadThread(QThread):
     # update (the other half of the flicker fix).
     _EMIT_INTERVAL = 0.1
 
-    def __init__(self, api, mri_path, ct_path, recon_type, parent=None):
+    def __init__(self, api, mri_path, ct_path, recon_type, age_months=None, parent=None):
         super().__init__(parent)
         self.api = api
         self.mri_path = mri_path
         self.ct_path = ct_path
         self.recon_type = recon_type
+        self.age_months = age_months
         self.cancel_event = threading.Event()
         self._last_emit_t = 0.0
 
@@ -175,7 +195,7 @@ class UploadThread(QThread):
                 raise UploadCancelled('upload cancelled')
 
             self.progress.emit(95.0, 'Starting reconstruction job...')
-            job = self.api.run_recon(subject_id, recon_type=self.recon_type)
+            job = self.api.run_recon(subject_id, recon_type=self.recon_type, age_months=self.age_months)
             self.handed_off.emit(job)
         except UploadCancelled:
             self.cancelled.emit()
@@ -191,7 +211,7 @@ def open_new_patient_dialog(api, jobs_panel, parent=None):
     if dlg.exec_() != QtWidgets.QDialog.Accepted:
         return
 
-    thread = UploadThread(api, dlg.mri_path, dlg.ct_path, dlg.recon_type, parent=jobs_panel)
+    thread = UploadThread(api, dlg.mri_path, dlg.ct_path, dlg.recon_type, age_months=dlg.age_months, parent=jobs_panel)
     pending_id = jobs_panel.add_pending(
         subject_id=None, subject_name=derive_patient_name(dlg.mri_path),
         label='upload', cancel_event=thread.cancel_event)

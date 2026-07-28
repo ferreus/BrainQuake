@@ -175,8 +175,8 @@ class ApiClient:
 
     # -- recon ------------------------------------------------------------
 
-    def run_recon(self, subject_id, recon_type="recon-all"):
-        return self._post(f"/subjects/{subject_id}/recon", json={"recon_type": recon_type})
+    def run_recon(self, subject_id, recon_type="recon-all", age_months=None):
+        return self._post(f"/subjects/{subject_id}/recon", json={"recon_type": recon_type, "age_months": age_months})
 
     def get_recon_result(self, subject_id):
         return self._get(f"/subjects/{subject_id}/recon/result")
@@ -246,7 +246,7 @@ class ApiClient:
     # recreating the subject (e.g. a transient recon-all failure).
     _RETRY_DISPATCH = {
         "recon": lambda self, subject_id, p: self.run_recon(
-            subject_id, recon_type=p.get("recon_type", "recon-all")),
+            subject_id, recon_type=p.get("recon_type", "recon-all"), age_months=p.get("age_months")),
         "ct_register": lambda self, subject_id, p: self.register_ct(subject_id),
         "elec_detect": lambda self, subject_id, p: self.detect_electrodes(
             subject_id, K=p["K"], threshold_pct=p["threshold_pct"],

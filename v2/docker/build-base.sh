@@ -16,6 +16,7 @@ FS_VERSION="${FS_VERSION:-8.2.0}"
 TAG="${BASE_IMAGE_TAG:-brainquake-base:fs${FS_VERSION}-fsl-flirt}"
 
 docker build \
+    --progress=plain \
     -f base.Dockerfile \
     --build-arg "FS_VERSION=${FS_VERSION}" \
     -t "${TAG}" \

@@ -5,8 +5,15 @@ import type { ReconType } from "../types";
 export function useRunRecon() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ subjectId, reconType }: { subjectId: number; reconType: ReconType }) =>
-      runRecon(subjectId, reconType),
+    mutationFn: ({
+      subjectId,
+      reconType,
+      ageMonths,
+    }: {
+      subjectId: number;
+      reconType: ReconType;
+      ageMonths?: number | null;
+    }) => runRecon(subjectId, reconType, ageMonths),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },

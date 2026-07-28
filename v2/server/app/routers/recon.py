@@ -11,6 +11,12 @@ router = APIRouter(prefix="/subjects", tags=["recon"])
 
 class ReconRequest(BaseModel):
     recon_type: Optional[str] = "recon-all"  # recon-all, fast-surfer, infant-surfer
+    # Required for infant-surfer: age at scan, in months. infant_recon_all picks
+    # its age-specific atlas/template from this -- see
+    # https://surfer.nmr.mgh.harvard.edu/fswiki/infantFS ("--age" section). The
+    # tool will run without it (falling back to volume-based age estimation) but
+    # the wiki recommends always passing it explicitly, so we require it here.
+    age_months: Optional[float] = None
 
 @router.post("/{subject_id}/recon", response_model=JobResponse)
 def run_recon(
@@ -24,6 +30,12 @@ def run_recon(
 
     if request.recon_type not in ["recon-all", "fast-surfer", "infant-surfer"]:
         raise HTTPException(status_code=400, detail="Invalid recon_type")
+
+    if request.recon_type == "infant-surfer":
+        if request.age_months is None:
+            raise HTTPException(status_code=400, detail="age_months is required for infant-surfer recon_type")
+        if not (0 <= request.age_months <= 60):
+            raise HTTPException(status_code=400, detail="age_months must be between 0 and 60")
 
     # Check if there is already an active job (queued or running) of this type
     active_job = db.query(Job).filter(
@@ -40,11 +52,15 @@ def run_recon(
     db.add(subject)
 
     # Create the job
+    params_json = {"recon_type": request.recon_type}
+    if request.recon_type == "infant-surfer":
+        params_json["age_months"] = request.age_months
+
     job = Job(
         subject_id=subject.id,
         job_type="recon",
         state="queued",
-        params_json={"recon_type": request.recon_type},
+        params_json=params_json,
         progress_pct=0.0,
         progress_message="Job queued"
     )
