@@ -112,8 +112,27 @@ def run_recon_job(db: Session, job: Job, log_file):
         # $SUBJECTS_DIR/<subjid>/mprage/001.mgz -- it now wants either
         # $SUBJECTS_DIR/<subjid>/mprage.nii.gz or an explicit -i/--inputfile,
         # and does its own mri_convert internally, so pass t1_path straight in.
-        cmd = f"infant_recon_all --s {name} --age {age_months} -i {t1_path}"
+        #
+        # --no-cleanup: unlike recon-all/fast-surfer, infant_recon_all never
+        # writes a raw pre-skullstrip orig.mgz -- it conforms+nu-corrects the
+        # input to work/mprage.nu.conf.nii.gz, skull-strips *that* into
+        # mri/norm.nii.gz, then deletes the work/ dir. work/mprage.nu.conf.nii.gz
+        # is the closest thing to orig.mgz this pipeline produces (same grid,
+        # skull/scalp intact -- needed for CT registration below), so keep it
+        # around with --no-cleanup and promote it to mri/orig.mgz ourselves.
+        cmd = f"infant_recon_all --s {name} --age {age_months} -i {t1_path} --no-cleanup"
         _run_subprocess_cmd(cmd, job, "infant-surfer", db, log_file, use_freesurfer_env=True)
+
+        work_conf_nii = os.path.join(settings.SUBJECTS_DIR, name, "work", "mprage.nu.conf.nii.gz")
+        if os.path.exists(work_conf_nii):
+            cmd_orig_mgz = f"mri_convert {work_conf_nii} {os.path.join(settings.SUBJECTS_DIR, name, 'mri', 'orig.mgz')}"
+            _run_subprocess_cmd(cmd_orig_mgz, job, "orig.mgz from infant_recon_all work dir", db, log_file, use_freesurfer_env=True)
+        else:
+            log_file.write(f"Warning: {work_conf_nii} not found; infant-surfer orig.mgz will be unavailable for CT registration.\n")
+
+        # Only needed the one file out of work/ -- don't leave the ~2G scratch
+        # dir around that --no-cleanup would otherwise retain permanently.
+        shutil.rmtree(os.path.join(settings.SUBJECTS_DIR, name, "work"), ignore_errors=True)
     else:
         raise ValueError(f"Unknown recon_type: {recon_type}")
 
