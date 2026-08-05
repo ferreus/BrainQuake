@@ -1,4 +1,3 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   deleteArtifact,
   detectElectrodes,
@@ -8,61 +7,25 @@ import {
   segmentElectrodes,
   updateLabels,
 } from "../endpoints";
-import type { DetectParams, SegmentParams } from "../endpoints";
+import { qk } from "../queryKeys";
+import { makeSubjectMutation, makeSubjectQuery } from "./factories";
+import type { Job } from "../types";
 
-export function useArtifacts(subjectId: number | undefined) {
-  return useQuery({
-    queryKey: ["artifacts", subjectId],
-    queryFn: () => listArtifacts(subjectId!),
-    enabled: subjectId != null,
-  });
-}
+export const useArtifacts = makeSubjectQuery(listArtifacts, qk.artifacts);
 
-export function useDeleteArtifact(subjectId: number) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (artifactId: number) => deleteArtifact(artifactId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] }),
-  });
-}
+export const useLabelsSummary = makeSubjectQuery(getLabelsSummary, qk.labelsSummary, { retry: false });
 
-export function useRegisterCt(subjectId: number) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () => registerCt(subjectId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-  });
-}
+// deleteArtifact is keyed by artifact id, not subject id -- the subject id
+// this hook is built with is only used to invalidate the right artifact list.
+export const useDeleteArtifact = makeSubjectMutation(
+  (_subjectId: number, artifactId: number) => deleteArtifact(artifactId),
+  (subjectId) => [qk.artifacts(subjectId)],
+);
 
-export function useDetectElectrodes(subjectId: number) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (params: DetectParams) => detectElectrodes(subjectId, params),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-  });
-}
+export const useRegisterCt = makeSubjectMutation<void, Job>(registerCt, () => [qk.jobs()]);
 
-export function useLabelsSummary(subjectId: number | undefined, enabled: boolean) {
-  return useQuery({
-    queryKey: ["labels-summary", subjectId],
-    queryFn: () => getLabelsSummary(subjectId!),
-    enabled: enabled && subjectId != null,
-    retry: false,
-  });
-}
+export const useDetectElectrodes = makeSubjectMutation(detectElectrodes, () => [qk.jobs()]);
 
-export function useUpdateLabels(subjectId: number) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (excludeLabels: number[]) => updateLabels(subjectId, excludeLabels),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["labels-summary", subjectId] }),
-  });
-}
+export const useSegmentElectrodes = makeSubjectMutation(segmentElectrodes, () => [qk.jobs()]);
 
-export function useSegmentElectrodes(subjectId: number) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (params: SegmentParams) => segmentElectrodes(subjectId, params),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-  });
-}
+export const useUpdateLabels = makeSubjectMutation(updateLabels, (subjectId) => [qk.labelsSummary(subjectId)]);

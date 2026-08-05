@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { Dispatch } from "react";
 import { Group, Loader, Stack, Text } from "@mantine/core";
-import { ApiError } from "../../api/client";
+import { errorMessage } from "../../lib/notify";
 import { useEdfMeta, useEdfWindow } from "../../api/queries/useEdf";
 import { EdfLoadErrorPanel } from "./EdfLoadErrorPanel";
 import type { EegViewerAction, EegViewerState } from "./useEegViewerState";
@@ -188,7 +188,7 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
       />
       {windowIsError ? (
         <Text size="xs" c="red">
-          Failed to load this window: {windowError instanceof ApiError ? windowError.message : String(windowError)}
+          Failed to load this window: {errorMessage(windowError)}
         </Text>
       ) : (
         <Text size="xs" c="dimmed">

@@ -1,21 +1,19 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { runRecon } from "../endpoints";
+import { qk } from "../queryKeys";
+import { makeMutation } from "./factories";
 import type { ReconType } from "../types";
 
-export function useRunRecon() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      subjectId,
-      reconType,
-      ageMonths,
-    }: {
-      subjectId: number;
-      reconType: ReconType;
-      ageMonths?: number | null;
-    }) => runRecon(subjectId, reconType, ageMonths),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    },
-  });
-}
+/** ageMonths is required by the server for infant-surfer only (see
+ * routers/recon.py's 400 on a missing age_months) and ignored otherwise. */
+export const useRunRecon = makeMutation(
+  ({
+    subjectId,
+    reconType,
+    ageMonths,
+  }: {
+    subjectId: number;
+    reconType: ReconType;
+    ageMonths?: number | null;
+  }) => runRecon(subjectId, reconType, ageMonths),
+  [qk.jobs()],
+);

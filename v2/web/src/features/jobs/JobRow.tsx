@@ -1,7 +1,6 @@
 import { ActionIcon, Badge, Group, Progress, Table, Text, Tooltip } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import { IconFileText, IconRefresh, IconTrash, IconX } from "@tabler/icons-react";
-import { ApiError } from "../../api/client";
+import { showApiError } from "../../lib/notify";
 import type { Job, JobState } from "../../api/types";
 import { TERMINAL_JOB_STATES } from "../../api/types";
 import { useCancelJob, useDeleteJob, useRetryJob } from "../../api/queries/useJobs";
@@ -30,25 +29,11 @@ export function JobRow({ job, subjectName, onViewLog }: JobRowProps) {
   const canRetry = job.state === "failed" || job.state === "cancelled";
 
   function handleRetry() {
-    retryJob.mutate(job, {
-      onError: (err) =>
-        notifications.show({
-          color: "red",
-          title: "Failed to retry job",
-          message: err instanceof ApiError ? err.message : String(err),
-        }),
-    });
+    retryJob.mutate(job, { onError: (err) => showApiError("Failed to retry job", err) });
   }
 
   function handleDelete() {
-    deleteJob.mutate(job.id, {
-      onError: (err) =>
-        notifications.show({
-          color: "red",
-          title: "Failed to delete job",
-          message: err instanceof ApiError ? err.message : String(err),
-        }),
-    });
+    deleteJob.mutate(job.id, { onError: (err) => showApiError("Failed to delete job", err) });
   }
 
   return (

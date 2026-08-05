@@ -1,20 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fuseSoz, getSozResult } from "../endpoints";
+import { qk } from "../queryKeys";
+import { makeSubjectMutation, makeSubjectQuery } from "./factories";
 import type { SozFuseParams } from "../endpoints";
+import type { Job } from "../types";
 
-export function useFuseSoz(subjectId: number) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (params: SozFuseParams = {}) => fuseSoz(subjectId, params),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
-  });
-}
+export const useFuseSoz = makeSubjectMutation<SozFuseParams, Job>(fuseSoz, () => [qk.jobs()]);
 
-export function useSozResult(subjectId: number | undefined, enabled: boolean) {
-  return useQuery({
-    queryKey: ["soz-result", subjectId],
-    queryFn: () => getSozResult(subjectId!),
-    enabled: enabled && subjectId != null,
-    retry: false,
-  });
-}
+export const useSozResult = makeSubjectQuery(getSozResult, qk.sozResult, { retry: false });

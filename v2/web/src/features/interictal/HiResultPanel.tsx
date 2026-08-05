@@ -1,5 +1,6 @@
-import { Paper, ScrollArea, Text, Title, useComputedColorScheme } from "@mantine/core";
+import { Paper, Text, Title, useComputedColorScheme } from "@mantine/core";
 import { useHfoResult } from "../../api/queries/useInterictal";
+import { ChannelBarChart } from "../../components/charts/ChannelBarChart";
 
 interface HiResultPanelProps {
   subjectId: number;
@@ -34,42 +35,20 @@ export function HiResultPanel({ subjectId, edfArtifactId }: HiResultPanelProps) 
     );
   }
 
-  const width = Math.max(600, data.chn_names.length * 22);
-  const height = 220;
-  const padding = { top: 24, bottom: 30, left: 4, right: 10 };
-  const maxCount = Math.max(...data.event_counts, 1);
-  const barWidth = (width - padding.left - padding.right) / data.chn_names.length;
-  const plotBottom = height - padding.bottom;
-
-  function yFor(v: number) {
-    return padding.top + (plotBottom - padding.top) * (1 - v / maxCount);
-  }
-
   return (
     <Paper withBorder p="sm" style={{ flex: 1, minWidth: 0 }}>
       <Title order={6} mb="xs">
         High-frequency events (HI)
       </Title>
-      <ScrollArea>
-        <svg width={width} height={height} role="img" aria-label="HFO event count per channel bar chart">
-          {data.chn_names.map((name, i) => {
-            const v = data.event_counts[i];
-            const x = padding.left + i * barWidth;
-            const y = yFor(v);
-            return (
-              <g key={name}>
-                <rect x={x + 1} y={y} width={Math.max(1, barWidth - 2)} height={Math.max(0, plotBottom - y)} fill={colors.bar} />
-                {v > 0 && (
-                  <text x={x + barWidth / 2} y={y - 4} textAnchor="middle" fontSize={9} fill={colors.text}>
-                    {name}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-          <line x1={padding.left} x2={width - padding.right} y1={plotBottom} y2={plotBottom} stroke={colors.axis} strokeWidth={1} />
-        </svg>
-      </ScrollArea>
+      <ChannelBarChart
+        channels={data.chn_names}
+        values={data.event_counts}
+        barColor={colors.bar}
+        axisColor={colors.axis}
+        labelColor={colors.text}
+        showLabel={(v) => v > 0}
+        ariaLabel="HFO event count per channel bar chart"
+      />
       <Text size="xs" c="dimmed" mt={4}>
         Toggle &ldquo;Show HFO detections&rdquo; above to overlay detected events on the traces.
       </Text>

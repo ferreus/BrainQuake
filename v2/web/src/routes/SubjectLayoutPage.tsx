@@ -2,6 +2,7 @@ import { useParams } from "react-router-dom";
 import { Alert, Group, Loader, Stack, Tabs, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { getSubject } from "../api/endpoints";
+import { qk } from "../api/queryKeys";
 import { ElectrodesPage } from "../features/electrodes/ElectrodesPage";
 import { IctalPage } from "../features/ictal/IctalPage";
 import { InterictalPage } from "../features/interictal/InterictalPage";
@@ -13,7 +14,7 @@ export function SubjectLayoutPage() {
   const id = Number(subjectId);
 
   const { data: subject, isLoading, isError } = useQuery({
-    queryKey: ["subject", id],
+    queryKey: qk.subject(id),
     queryFn: () => getSubject(id),
     enabled: Number.isFinite(id),
   });

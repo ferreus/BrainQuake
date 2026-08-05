@@ -4,7 +4,7 @@ import { notifications } from "@mantine/notifications";
 import { useCreateSubject } from "../../api/queries/useSubjects";
 import { useRunRecon } from "../../api/queries/useRecon";
 import { uploadFileWithProgress } from "../../api/client";
-import { ApiError } from "../../api/client";
+import { showApiError } from "../../lib/notify";
 import { RECON_TYPES } from "../../api/types";
 import type { ReconType } from "../../api/types";
 
@@ -89,8 +89,10 @@ export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialo
       reset();
       onClose();
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : String(err);
-      notifications.show({ color: "red", title: "Failed to create patient", message });
+      // Deliberately not useFileUpload here: this is a multi-step sequence
+      // (create -> upload T1 -> upload CT -> queue recon) where a failure at
+      // any step must abort the rest, so the uploads share this one catch.
+      showApiError("Failed to create patient", err);
       setStage("idle");
     }
   }

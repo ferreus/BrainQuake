@@ -1,6 +1,6 @@
 import { Button, Checkbox, Group, Paper, Table, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { ApiError } from "../../api/client";
+import { showApiError } from "../../lib/notify";
 import { useLabelsSummary, useUpdateLabels } from "../../api/queries/useElectrodes";
 
 interface LabelReviewPanelProps {
@@ -41,11 +41,7 @@ export function LabelReviewPanel({ subjectId, excluded, onExcludedChange }: Labe
         message: "Excluded clusters dropped and remaining ones renumbered.",
       });
     } catch (err) {
-      notifications.show({
-        color: "red",
-        title: "Failed to update labels",
-        message: err instanceof ApiError ? err.message : String(err),
-      });
+      showApiError("Failed to update labels", err);
     }
   }
 

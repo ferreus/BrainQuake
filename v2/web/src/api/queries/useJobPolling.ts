@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getJob } from "../endpoints";
+import { qk } from "../queryKeys";
 import { TERMINAL_JOB_STATES } from "../types";
 import type { Job } from "../types";
 
@@ -14,7 +15,7 @@ import type { Job } from "../types";
  */
 export function useJobPolling(jobId: number | undefined, onTerminal?: (job: Job) => void) {
   const query = useQuery({
-    queryKey: ["job", jobId],
+    queryKey: qk.job(jobId),
     queryFn: () => getJob(jobId!),
     enabled: jobId != null,
     refetchInterval: (q) => {

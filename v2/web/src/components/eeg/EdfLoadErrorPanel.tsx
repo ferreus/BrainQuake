@@ -1,5 +1,5 @@
 import { Box, Button, Group, Paper, Stack, Text } from "@mantine/core";
-import { ApiError } from "../../api/client";
+import { errorMessage } from "../../lib/notify";
 
 interface EdfLoadErrorPanelProps {
   title: string;
@@ -16,7 +16,7 @@ interface EdfLoadErrorPanelProps {
  * "Remove from server" button is the one place color is used deliberately,
  * since it's a destructive action. */
 export function EdfLoadErrorPanel({ title, error, onRetry, onRemove, removing }: EdfLoadErrorPanelProps) {
-  const message = error instanceof ApiError ? error.message : String(error);
+  const message = errorMessage(error);
 
   return (
     <Paper withBorder p="sm" radius="sm">

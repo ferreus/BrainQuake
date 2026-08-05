@@ -1,12 +1,9 @@
 import { useState } from "react";
 import { Button, Group, NumberInput, Paper, Text, Title } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
-import { useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "../../api/client";
 import { useComputeEi } from "../../api/queries/useIctal";
-import { useJobPolling } from "../../api/queries/useJobPolling";
-import { TERMINAL_JOB_STATES } from "../../api/types";
-import type { BaselineTargetSelection } from "../../components/eeg/BaselineTargetLayer";
+import { useJobRunner } from "../../api/queries/useJobRunner";
+import { qk } from "../../api/queryKeys";
+import type { BaselineTargetSelection } from "../../components/eeg/useBaselineTargetSelection";
 
 interface EiComputeFormProps {
   subjectId: number;
@@ -24,44 +21,33 @@ interface EiComputeFormProps {
 export function EiComputeForm({ subjectId, edfArtifactId, selection }: EiComputeFormProps) {
   const [bandLow, setBandLow] = useState(1.0);
   const [bandHigh, setBandHigh] = useState(500.0);
-  const [jobId, setJobId] = useState<number | undefined>();
 
   const computeEi = useComputeEi(subjectId);
-  const queryClient = useQueryClient();
 
-  const { data: job } = useJobPolling(jobId, (finishedJob) => {
-    queryClient.invalidateQueries({ queryKey: ["ei-result", subjectId, edfArtifactId] });
-    if (finishedJob.state === "failed") {
-      notifications.show({ color: "red", title: "EI computation failed", message: finishedJob.progress_message ?? "" });
-    }
-  });
-
-  async function handleCompute() {
-    if (!selection.baselineRange || !selection.targetRange) return;
-    try {
-      const j = await computeEi.mutateAsync({
+  const { run, job, running } = useJobRunner({
+    start: ([baseline, target]: [[number, number], [number, number]]) =>
+      computeEi.mutateAsync({
         edfArtifactId,
         params: {
-          baseline_start: selection.baselineRange[0],
-          baseline_end: selection.baselineRange[1],
-          target_start: selection.targetRange[0],
-          target_end: selection.targetRange[1],
+          baseline_start: baseline[0],
+          baseline_end: baseline[1],
+          target_start: target[0],
+          target_end: target[1],
           band_low: bandLow,
           band_high: bandHigh,
         },
-      });
-      setJobId(j.id);
-    } catch (err) {
-      notifications.show({
-        color: "red",
-        title: "Failed to start EI computation",
-        message: err instanceof ApiError ? err.message : String(err),
-      });
-    }
-  }
+      }),
+    failTitle: "EI computation failed",
+    startFailTitle: "Failed to start EI computation",
+    invalidate: [qk.eiResult(subjectId, edfArtifactId)],
+  });
 
-  const running = job ? !TERMINAL_JOB_STATES.has(job.state) : false;
   const ready = selection.baselineRange != null && selection.targetRange != null;
+
+  function handleCompute() {
+    if (!selection.baselineRange || !selection.targetRange) return;
+    run([selection.baselineRange, selection.targetRange]);
+  }
 
   return (
     <Paper withBorder p="sm" w={300}>

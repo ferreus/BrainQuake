@@ -1,12 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Button, Group, NumberInput, Paper, Text, Title } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
-import { useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "../../api/client";
 import { useSegmentElectrodes } from "../../api/queries/useElectrodes";
-import { useJobPolling } from "../../api/queries/useJobPolling";
-import { useLastJob } from "../../api/queries/useJobs";
-import { TERMINAL_JOB_STATES } from "../../api/types";
+import { useJobRunner } from "../../api/queries/useJobRunner";
+import { usePrefillFromLastJob } from "../../api/queries/usePrefillFromLastJob";
+import { qk } from "../../api/queryKeys";
+import type { SegmentParams } from "../../api/endpoints";
 
 interface SegmentFormProps {
   subjectId: number;
@@ -18,50 +16,21 @@ export function SegmentForm({ subjectId, disabled, segmented }: SegmentFormProps
   const [numMax, setNumMax] = useState(20);
   const [diameterSize, setDiameterSize] = useState(2.5);
   const [spacing, setSpacing] = useState(2.5);
-  const [jobId, setJobId] = useState<number | undefined>();
 
   const segmentMutation = useSegmentElectrodes(subjectId);
-  const queryClient = useQueryClient();
 
-  // Prefill from the last elec_segment job's params -- see DetectForm's
-  // matching comment.
-  const lastJob = useLastJob(subjectId, "elec_segment");
-  const prefilled = useRef(false);
-  useEffect(() => {
-    if (prefilled.current || !lastJob?.params_json) return;
-    const p = lastJob.params_json as { numMax?: number; diameterSize?: number; spacing?: number };
+  usePrefillFromLastJob<SegmentParams>(subjectId, "elec_segment", (p) => {
     if (p.numMax != null) setNumMax(p.numMax);
     if (p.diameterSize != null) setDiameterSize(p.diameterSize);
     if (p.spacing != null) setSpacing(p.spacing);
-    prefilled.current = true;
-  }, [lastJob]);
-
-  const { data: job } = useJobPolling(jobId, (finishedJob) => {
-    queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
-    queryClient.invalidateQueries({ queryKey: ["chn-xyz", subjectId] });
-    if (finishedJob.state === "failed") {
-      notifications.show({
-        color: "red",
-        title: "Segmentation failed",
-        message: finishedJob.progress_message ?? "",
-      });
-    }
   });
 
-  async function handleSegment() {
-    try {
-      const j = await segmentMutation.mutateAsync({ numMax, diameterSize, spacing });
-      setJobId(j.id);
-    } catch (err) {
-      notifications.show({
-        color: "red",
-        title: "Failed to start segmentation",
-        message: err instanceof ApiError ? err.message : String(err),
-      });
-    }
-  }
-
-  const running = job ? !TERMINAL_JOB_STATES.has(job.state) : false;
+  const { run, job, running } = useJobRunner({
+    start: () => segmentMutation.mutateAsync({ numMax, diameterSize, spacing }),
+    failTitle: "Segmentation failed",
+    startFailTitle: "Failed to start segmentation",
+    invalidate: [qk.artifacts(subjectId), qk.chnXyz(subjectId)],
+  });
 
   return (
     <Paper withBorder p="sm">
@@ -95,7 +64,7 @@ export function SegmentForm({ subjectId, disabled, segmented }: SegmentFormProps
         <Text size="xs" c="dimmed">
           {disabled ? "Detect electrodes first" : segmented ? "Already segmented -- rerun to redo" : ""}
         </Text>
-        <Button size="xs" loading={running} disabled={disabled} onClick={handleSegment}>
+        <Button size="xs" loading={running} disabled={disabled} onClick={() => run()}>
           Segment
         </Button>
       </Group>

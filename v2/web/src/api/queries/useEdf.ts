@@ -2,6 +2,8 @@ import { useEffect, useMemo } from "react";
 import { useDebouncedValue } from "@mantine/hooks";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getEdfMeta, getEdfWindow } from "../endpoints";
+import { qk } from "../queryKeys";
+import { makeEdfQuery } from "./factories";
 import type { EdfWindowParams } from "../endpoints";
 
 // Wheel-scrolling the EEG canvas dispatches PAN_TIME on every tick; without
@@ -10,28 +12,7 @@ import type { EdfWindowParams } from "../endpoints";
 // that down to one request per pause.
 const PAN_DEBOUNCE_MS = 150;
 
-export function useEdfMeta(subjectId: number | undefined, edfArtifactId: number | undefined) {
-  return useQuery({
-    queryKey: ["edf-meta", subjectId, edfArtifactId],
-    queryFn: () => getEdfMeta(subjectId!, edfArtifactId!),
-    enabled: subjectId != null && edfArtifactId != null,
-    staleTime: Infinity,
-    retry: false,
-  });
-}
-
-function edfWindowQueryKey(subjectId: number | undefined, edfArtifactId: number | undefined, params: EdfWindowParams) {
-  return [
-    "edf-window",
-    subjectId,
-    edfArtifactId,
-    params.start,
-    params.end,
-    params.channels?.join(",") ?? "*",
-    params.bandLow,
-    params.bandHigh,
-  ] as const;
-}
+export const useEdfMeta = makeEdfQuery(getEdfMeta, qk.edfMeta, { staleTime: Infinity, retry: false });
 
 export function useEdfWindow(
   subjectId: number | undefined,
@@ -53,7 +34,7 @@ export function useEdfWindow(
   const active = enabled && subjectId != null && edfArtifactId != null;
 
   const query = useQuery({
-    queryKey: edfWindowQueryKey(subjectId, edfArtifactId, debounced),
+    queryKey: qk.edfWindow(subjectId, edfArtifactId,debounced),
     queryFn: () => getEdfWindow(subjectId!, edfArtifactId!, debounced),
     enabled: active,
     placeholderData: keepPreviousData,
@@ -72,7 +53,7 @@ export function useEdfWindow(
       if (start === debounced.start) continue; // clamped -- e.g. panning back past t=0
       const neighbor: EdfWindowParams = { ...debounced, start, end: start + span };
       queryClient.prefetchQuery({
-        queryKey: edfWindowQueryKey(subjectId, edfArtifactId, neighbor),
+        queryKey: qk.edfWindow(subjectId, edfArtifactId,neighbor),
         queryFn: () => getEdfWindow(subjectId!, edfArtifactId!, neighbor),
       });
     }

@@ -3,7 +3,8 @@ import { Alert, Button, FileButton, Group, Modal, Progress, Stack, Text } from "
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { importPatient } from "../../api/endpoints";
-import { ApiError } from "../../api/client";
+import { qk } from "../../api/queryKeys";
+import { showApiError } from "../../lib/notify";
 
 interface ImportPatientDialogProps {
   opened: boolean;
@@ -36,8 +37,8 @@ export function ImportPatientDialog({ opened, onClose, onImported }: ImportPatie
       setProgress(0);
       const { subject } = await importPatient(file, setProgress).promise;
 
-      queryClient.invalidateQueries({ queryKey: ["subjects"] });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: qk.subjects() });
+      queryClient.invalidateQueries({ queryKey: qk.jobs() });
       notifications.show({
         color: "green",
         title: "Import queued",
@@ -47,8 +48,7 @@ export function ImportPatientDialog({ opened, onClose, onImported }: ImportPatie
       reset();
       onClose();
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : String(err);
-      notifications.show({ color: "red", title: "Import failed", message });
+      showApiError("Import failed", err);
       setBusy(false);
     }
   }

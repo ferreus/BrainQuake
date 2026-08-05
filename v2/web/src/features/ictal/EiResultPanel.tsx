@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { Paper, ScrollArea, Text, Title, useComputedColorScheme } from "@mantine/core";
+import { Paper, Text, Title, useComputedColorScheme } from "@mantine/core";
 import { useEiResult } from "../../api/queries/useIctal";
+import { ChannelBarChart } from "../../components/charts/ChannelBarChart";
 import { SpectrogramModal } from "./SpectrogramModal";
 
 interface EiResultPanelProps {
@@ -51,65 +52,23 @@ export function EiResultPanel({ subjectId, edfArtifactId, targetRange, bandLow, 
     );
   }
 
-  const width = Math.max(600, data.chn_names.length * 22);
-  const height = 220;
-  const padding = { top: 24, bottom: 30, left: 4, right: 10 };
-  const maxEi = Math.max(...data.ei, stats.threshold) * 1.1 || 1;
-  const barWidth = (width - padding.left - padding.right) / data.chn_names.length;
-  const plotBottom = height - padding.bottom;
-
-  function yFor(v: number) {
-    return padding.top + (plotBottom - padding.top) * (1 - v / maxEi);
-  }
-
   return (
     <Paper withBorder p="sm" style={{ flex: 1, minWidth: 0 }}>
       <Title order={6} mb="xs">
         Epileptogenicity Index (EI)
       </Title>
-      <ScrollArea>
-        <svg width={width} height={height} role="img" aria-label="EI per channel bar chart">
-          <line
-            x1={padding.left}
-            x2={width - padding.right}
-            y1={yFor(stats.threshold)}
-            y2={yFor(stats.threshold)}
-            stroke={colors.threshold}
-            strokeDasharray="4 3"
-            strokeWidth={1.5}
-          />
-          <text x={width - padding.right} y={yFor(stats.threshold) - 4} textAnchor="end" fontSize={10} fill={colors.threshold}>
-            mean + std
-          </text>
-          {data.chn_names.map((name, i) => {
-            const v = data.ei[i];
-            const flagged = v > stats.threshold;
-            const x = padding.left + i * barWidth;
-            const y = yFor(v);
-            return (
-              <g
-                key={name}
-                onClick={() => targetRange && setDrillDownChannel(name)}
-                style={{ cursor: targetRange ? "pointer" : "default" }}
-              >
-                <rect
-                  x={x + 1}
-                  y={y}
-                  width={Math.max(1, barWidth - 2)}
-                  height={Math.max(0, plotBottom - y)}
-                  fill={flagged ? colors.flagged : colors.bar}
-                />
-                {flagged && (
-                  <text x={x + barWidth / 2} y={y - 4} textAnchor="middle" fontSize={9} fill={colors.text}>
-                    {name}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-          <line x1={padding.left} x2={width - padding.right} y1={plotBottom} y2={plotBottom} stroke={colors.threshold} strokeWidth={1} />
-        </svg>
-      </ScrollArea>
+      <ChannelBarChart
+        channels={data.chn_names}
+        values={data.ei}
+        barColor={(v) => (v > stats.threshold ? colors.flagged : colors.bar)}
+        axisColor={colors.threshold}
+        labelColor={colors.text}
+        showLabel={(v) => v > stats.threshold}
+        threshold={{ value: stats.threshold, label: "mean + std", color: colors.threshold }}
+        onBarClick={targetRange ? (name) => setDrillDownChannel(name) : undefined}
+        headroom={1.1}
+        ariaLabel="EI per channel bar chart"
+      />
       <Text size="xs" c="dimmed" mt={4}>
         {targetRange
           ? "Click a bar to view that channel's raw signal + spectrogram."

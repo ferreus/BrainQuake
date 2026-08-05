@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Button, FileButton, Group, Loader, Paper, Progress, Stack, Text, Title } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
-import { ApiError, uploadFileWithProgress } from "../../api/client";
 import { useArtifacts, useRegisterCt } from "../../api/queries/useElectrodes";
-import { useJobPolling } from "../../api/queries/useJobPolling";
-import { useLastJob } from "../../api/queries/useJobs";
+import { useJobRunner } from "../../api/queries/useJobRunner";
+import { useLastJob, useOnJobFinished } from "../../api/queries/useJobs";
 import { useRebuildSurface, useSurfaceMesh } from "../../api/queries/useSurfaceMesh";
+import { qk } from "../../api/queryKeys";
 import { TERMINAL_JOB_STATES } from "../../api/types";
 import type { Artifact, Job } from "../../api/types";
+import { useFileUpload } from "../../lib/useFileUpload";
 import { BrainMesh } from "../../components/three/BrainMesh";
 import { ClusterCentroids } from "../../components/three/ClusterCentroids";
 import { ElectrodeContacts } from "../../components/three/ElectrodeContacts";
@@ -27,81 +27,78 @@ function newestArtifactTime(artifacts: Artifact[] | undefined, kind: string): nu
     }, null);
 }
 
-interface RegisterCtStepProps {
-  subjectId: number;
-  hasRawCt: boolean;
-  /** A registration ran all the way through and is current. */
-  ctRegistered: boolean;
-  /** A registration exists but a CT was uploaded after it, so it's outdated. */
-  ctStale: boolean;
-  reconComplete: boolean;
-  activeRecon: Job | null;
-  /** Newest ct_register job on the server, so a reload mid-registration still
-   * shows it as in flight instead of offering a duplicate-queuing button. */
-  lastRegisterJob: Job | undefined;
+/** Whether the subject's reconstruction has produced the mri/* output the CT
+ * registration and 3D view both read. The recon job's own verdict decides,
+ * with orig_nii (what flirt registers against) as the fallback for subjects
+ * with no recon job row -- imported, or job deleted from the Jobs panel.
+ * subject.subject_dir is deliberately not used: it is filled in at subject
+ * creation, long before any recon runs. */
+function useReconStatus(subjectId: number) {
+  const { data: artifacts } = useArtifacts(subjectId);
+  const reconJob = useLastJob(subjectId, "recon");
+  return {
+    reconJob,
+    activeRecon: reconJob && !TERMINAL_JOB_STATES.has(reconJob.state) ? reconJob : null,
+    reconComplete: reconJob
+      ? reconJob.state === "finished"
+      : (artifacts ?? []).some((a) => a.kind === "orig_nii"),
+  };
 }
 
-function RegisterCtStep({
-  subjectId,
-  hasRawCt,
-  ctRegistered,
-  ctStale,
-  reconComplete,
-  activeRecon,
-  lastRegisterJob,
-}: RegisterCtStepProps) {
-  const [jobId, setJobId] = useState<number | undefined>();
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+/** Whether the CT is uploaded, registered to MRI space, and still current.
+ *
+ * ct_register registers ct_reg_nii midway through, so that artifact alone
+ * does not mean the pipeline finished (the masking and legacy-copy steps that
+ * elec_detect actually reads from come after it). Trust the job's own verdict
+ * when there is a job row, and fall back to its last artifact for subjects
+ * whose job rows were deleted or that came in via import. */
+function useCtStatus(subjectId: number) {
+  const { data: artifacts } = useArtifacts(subjectId);
+  const lastRegisterJob = useLastJob(subjectId, "ct_register");
+
+  const ctRegArtifactTime = newestArtifactTime(artifacts, "ct_intracranial_nii");
+  const ctRegistered = lastRegisterJob ? lastRegisterJob.state === "finished" : ctRegArtifactTime != null;
+
+  // Every CT upload inserts a fresh raw_ct row (uploads are never deduped, see
+  // routers/subjects.py), so a raw_ct newer than the registration means what is
+  // on disk was registered from a superseded CT.
+  const newestCt = newestArtifactTime(artifacts, "raw_ct");
+  const registeredAt = lastRegisterJob?.finished_at ? Date.parse(lastRegisterJob.finished_at) : ctRegArtifactTime;
+
+  return {
+    lastRegisterJob,
+    ctRegistered,
+    hasRawCt: newestCt != null,
+    ctStale: ctRegistered && registeredAt != null && newestCt != null && newestCt > registeredAt,
+  };
+}
+
+function RegisterCtStep({ subjectId }: { subjectId: number }) {
+  const { activeRecon, reconComplete } = useReconStatus(subjectId);
+  const { lastRegisterJob, ctRegistered, ctStale, hasRawCt } = useCtStatus(subjectId);
   const registerCt = useRegisterCt(subjectId);
   const queryClient = useQueryClient();
+  const { progress, upload } = useFileUpload("Failed to upload CT");
 
-  const { data: job } = useJobPolling(jobId, (finishedJob) => {
-    queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
-    if (finishedJob.state === "failed") {
-      notifications.show({
-        color: "red",
-        title: "CT registration failed",
-        message: finishedJob.progress_message ?? "",
-      });
-    }
+  const { run, job, running } = useJobRunner({
+    start: () => registerCt.mutateAsync(),
+    failTitle: "CT registration failed",
+    startFailTitle: "Failed to start CT registration",
+    invalidate: [qk.artifacts(subjectId)],
   });
 
-  async function handleRegister() {
-    try {
-      const j = await registerCt.mutateAsync();
-      setJobId(j.id);
-    } catch (err) {
-      notifications.show({
-        color: "red",
-        title: "Failed to start CT registration",
-        message: err instanceof ApiError ? err.message : String(err),
-      });
-    }
-  }
+  // A registration already in flight when the page loaded has no local job to
+  // poll, so fall back to the server's newest one -- otherwise a reload
+  // mid-registration offers a button that would queue a duplicate.
+  const currentJob = job ?? lastRegisterJob;
+  const runningNow = running || (currentJob ? !TERMINAL_JOB_STATES.has(currentJob.state) : false);
 
-  // Every upload inserts a fresh raw_ct artifact row (see routers/subjects.py),
-  // which is what ctStale below compares against the last registration's
-  // timestamp -- this is the only way to get a newer CT onto the server once a
-  // subject already exists, since NewPatientDialog only uploads one at creation.
   async function handleUploadCt(file: File | null) {
     if (!file) return;
-    setUploadProgress(0);
-    try {
-      await uploadFileWithProgress(`/subjects/${subjectId}/upload`, file, "ct", setUploadProgress).promise;
-      queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
-    } catch (err) {
-      notifications.show({
-        color: "red",
-        title: "Failed to upload CT",
-        message: err instanceof ApiError ? err.message : String(err),
-      });
-    } finally {
-      setUploadProgress(null);
+    if (await upload(`/subjects/${subjectId}/upload`, file, "ct")) {
+      queryClient.invalidateQueries({ queryKey: qk.artifacts(subjectId) });
     }
   }
-
-  const currentJob = job ?? lastRegisterJob;
-  const running = currentJob ? !TERMINAL_JOB_STATES.has(currentJob.state) : false;
 
   // flirt registers against mri/orig.nii.gz, which only exists once recon has
   // produced orig.mgz -- offering the button any earlier just queues a job that
@@ -137,7 +134,7 @@ function RegisterCtStep({
           {status}
         </Text>
         {showButton && (
-          <Button size="xs" loading={running} disabled={!hasRawCt} onClick={handleRegister}>
+          <Button size="xs" loading={runningNow} disabled={!hasRawCt} onClick={() => run()}>
             {ctStale ? "Re-register" : "Register"}
           </Button>
         )}
@@ -150,13 +147,13 @@ function RegisterCtStep({
       <Group justify="flex-end" mt="xs">
         <FileButton onChange={handleUploadCt} accept=".nii.gz,.nii,application/gzip">
           {(props) => (
-            <Button size="xs" variant="default" loading={uploadProgress != null} {...props}>
+            <Button size="xs" variant="default" loading={progress != null} {...props}>
               {hasRawCt ? "Replace CT" : "Upload CT"}
             </Button>
           )}
         </FileButton>
       </Group>
-      {uploadProgress != null && <Progress value={uploadProgress * 100} size="xs" mt={4} animated />}
+      {progress != null && <Progress value={progress * 100} size="xs" mt={4} animated />}
     </Paper>
   );
 }
@@ -165,36 +162,14 @@ function RegisterCtStep({
  * see useRebuildSurface. Without this, a subject in that state just renders
  * an empty canvas with no indication why or how to fix it. */
 function SurfaceRebuildBanner({ subjectId, activeRecon }: { subjectId: number; activeRecon: Job | null }) {
-  const [jobId, setJobId] = useState<number | undefined>();
   const rebuild = useRebuildSurface(subjectId);
-  const queryClient = useQueryClient();
 
-  const { data: job } = useJobPolling(jobId, (finishedJob) => {
-    if (finishedJob.state === "finished") {
-      queryClient.invalidateQueries({ queryKey: ["surface", subjectId] });
-    } else if (finishedJob.state === "failed") {
-      notifications.show({
-        color: "red",
-        title: "Surface export failed",
-        message: finishedJob.progress_message ?? "",
-      });
-    }
+  const { run, running } = useJobRunner({
+    start: () => rebuild.mutateAsync(),
+    failTitle: "Surface export failed",
+    startFailTitle: "Failed to start surface export",
+    invalidate: [qk.surface(subjectId)],
   });
-
-  const running = job ? !TERMINAL_JOB_STATES.has(job.state) : rebuild.isPending;
-
-  async function handleGenerate() {
-    try {
-      const j = await rebuild.mutateAsync();
-      setJobId(j.id);
-    } catch (err) {
-      notifications.show({
-        color: "red",
-        title: "Failed to start surface export",
-        message: err instanceof ApiError ? err.message : String(err),
-      });
-    }
-  }
 
   return (
     <div
@@ -227,7 +202,7 @@ function SurfaceRebuildBanner({ subjectId, activeRecon }: { subjectId: number; a
             <Text size="sm" c="dimmed">
               No cached brain surface for this subject yet.
             </Text>
-            <Button size="xs" loading={running} onClick={handleGenerate}>
+            <Button size="xs" loading={running} onClick={() => run()}>
               Generate brain surface
             </Button>
           </>
@@ -245,59 +220,25 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
   const { data: artifacts } = useArtifacts(subjectId);
   const queryClient = useQueryClient();
   const kinds = new Set((artifacts ?? []).map((a) => a.kind));
-  const hasRawCt = kinds.has("raw_ct");
   const detected = kinds.has("labels_npy");
   const segmented = kinds.has("chnXyzDict");
   const [excludedClusters, setExcludedClusters] = useState<Set<number>>(new Set());
 
-  // ct_register registers ct_reg_nii midway through, so that artifact alone
-  // does not mean the pipeline finished (the masking and legacy-copy steps that
-  // elec_detect actually reads from come after it). Trust the job's own verdict
-  // when there is a job row, and fall back to its last artifact for subjects
-  // whose job rows were deleted from the Jobs panel or came in via import.
-  const lastRegisterJob = useLastJob(subjectId, "ct_register");
-  const ctRegArtifactTime = newestArtifactTime(artifacts, "ct_intracranial_nii");
-  const ctRegistered = lastRegisterJob
-    ? lastRegisterJob.state === "finished"
-    : ctRegArtifactTime != null;
-
-  // Every CT upload inserts a fresh raw_ct row (uploads are never deduped, see
-  // routers/subjects.py), so a raw_ct newer than the registration means what is
-  // on disk was registered from a superseded CT.
-  const newestCt = newestArtifactTime(artifacts, "raw_ct");
-  const registeredAt = lastRegisterJob?.finished_at
-    ? Date.parse(lastRegisterJob.finished_at)
-    : ctRegArtifactTime;
-  const ctStale = ctRegistered && registeredAt != null && newestCt != null && newestCt > registeredAt;
-
-  // Same shape as above: the recon job's verdict decides, with orig_nii (what
-  // flirt registers against) as the fallback for subjects with no recon job row.
-  // subject.subject_dir is deliberately not used -- it is filled in at subject
-  // creation, long before any recon runs.
-  const reconJob = useLastJob(subjectId, "recon");
-  const activeRecon = reconJob && !TERMINAL_JOB_STATES.has(reconJob.state) ? reconJob : null;
-  const reconComplete = reconJob ? reconJob.state === "finished" : kinds.has("orig_nii");
+  const { reconJob, activeRecon } = useReconStatus(subjectId);
+  const { ctRegistered } = useCtStatus(subjectId);
 
   const lhSurface = useSurfaceMesh(subjectId, "lh");
   const rhSurface = useSurfaceMesh(subjectId, "rh");
   const surfaceMissing = lhSurface.isError && rhSurface.isError;
 
   // A recon that completes while this page is open has just written the lh/rh
-  // mesh cache and the mri/* artifacts the gating above reads, but nothing
-  // refetches either on its own -- useSurfaceMesh is staleTime: Infinity +
-  // retry: false, so its 404 from during the recon would stick until a reload.
-  // Keyed on having seen the recon in flight so a plain revisit doesn't
-  // needlessly re-download a mesh that is already cached and valid.
-  const sawActiveRecon = useRef(false);
-  useEffect(() => {
-    if (activeRecon) {
-      sawActiveRecon.current = true;
-    } else if (reconComplete && sawActiveRecon.current) {
-      sawActiveRecon.current = false;
-      queryClient.invalidateQueries({ queryKey: ["surface", subjectId] });
-      queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
-    }
-  }, [activeRecon, reconComplete, queryClient, subjectId]);
+  // mesh cache and the mri/* artifacts the gating above reads, but neither
+  // refetches on its own -- useSurfaceMesh is staleTime: Infinity + retry:
+  // false, so its 404 from during the recon would stick until a reload.
+  useOnJobFinished(reconJob, () => {
+    queryClient.invalidateQueries({ queryKey: qk.surface(subjectId) });
+    queryClient.invalidateQueries({ queryKey: qk.artifacts(subjectId) });
+  });
 
   return (
     // Fixed viewport-relative height (not h="100%") on purpose: none of this
@@ -323,15 +264,7 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
         {surfaceMissing && <SurfaceRebuildBanner subjectId={subjectId} activeRecon={activeRecon} />}
       </div>
       <Stack w={360} h="100%" gap="md" style={{ overflowY: "auto" }}>
-        <RegisterCtStep
-          subjectId={subjectId}
-          hasRawCt={hasRawCt}
-          ctRegistered={ctRegistered}
-          ctStale={ctStale}
-          reconComplete={reconComplete}
-          activeRecon={activeRecon}
-          lastRegisterJob={lastRegisterJob}
-        />
+        <RegisterCtStep subjectId={subjectId} />
         <DetectForm subjectId={subjectId} disabled={!ctRegistered} detected={detected} />
         {detected && (
           <LabelReviewPanel subjectId={subjectId} excluded={excludedClusters} onExcludedChange={setExcludedClusters} />

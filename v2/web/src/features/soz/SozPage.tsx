@@ -1,14 +1,11 @@
 import { useState } from "react";
 import { Alert, Button, Group, NumberInput, Paper, Stack, Text, Title } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
-import { useQueryClient } from "@tanstack/react-query";
 import { interpolatePlasma } from "d3-scale-chromatic";
-import { ApiError } from "../../api/client";
 import { useArtifacts } from "../../api/queries/useElectrodes";
-import { useJobPolling } from "../../api/queries/useJobPolling";
+import { useJobRunner } from "../../api/queries/useJobRunner";
 import { useFuseSoz, useSozResult } from "../../api/queries/useSoz";
 import { useSurfaceMesh } from "../../api/queries/useSurfaceMesh";
-import { TERMINAL_JOB_STATES } from "../../api/types";
+import { qk } from "../../api/queryKeys";
 import { BrainMesh } from "../../components/three/BrainMesh";
 import { SceneCanvas } from "../../components/three/SceneCanvas";
 import { SozContacts } from "../../components/three/SozContacts";
@@ -44,37 +41,20 @@ export function SozPage({ subjectId }: SozPageProps) {
   const ready = hasElectrodes && hasEi && hasHi;
 
   const [topN, setTopN] = useState(10);
-  const [jobId, setJobId] = useState<number | undefined>();
 
   const fuseSoz = useFuseSoz(subjectId);
-  const queryClient = useQueryClient();
   const { data: rows } = useSozResult(subjectId, true);
 
   const lhSurface = useSurfaceMesh(subjectId, "lh");
   const rhSurface = useSurfaceMesh(subjectId, "rh");
   const surfaceMissing = lhSurface.isError && rhSurface.isError;
 
-  const { data: job } = useJobPolling(jobId, (finishedJob) => {
-    queryClient.invalidateQueries({ queryKey: ["soz-result", subjectId] });
-    if (finishedJob.state === "failed") {
-      notifications.show({ color: "red", title: "SOZ fusion failed", message: finishedJob.progress_message ?? "" });
-    }
+  const { run, job, running } = useJobRunner({
+    start: () => fuseSoz.mutateAsync({}),
+    failTitle: "SOZ fusion failed",
+    startFailTitle: "Failed to start SOZ fusion",
+    invalidate: [qk.sozResult(subjectId)],
   });
-
-  async function handleFuse() {
-    try {
-      const j = await fuseSoz.mutateAsync({});
-      setJobId(j.id);
-    } catch (err) {
-      notifications.show({
-        color: "red",
-        title: "Failed to start SOZ fusion",
-        message: err instanceof ApiError ? err.message : String(err),
-      });
-    }
-  }
-
-  const running = job ? !TERMINAL_JOB_STATES.has(job.state) : false;
 
   const missing = [
     !hasElectrodes && "segmented electrodes",
@@ -120,7 +100,7 @@ export function SozPage({ subjectId }: SozPageProps) {
               min={0}
               w={140}
             />
-            <Button size="xs" loading={running} disabled={!ready} onClick={handleFuse}>
+            <Button size="xs" loading={running} disabled={!ready} onClick={() => run()}>
               {rows && rows.length > 0 ? "Re-fuse" : "Fuse EI + HI"}
             </Button>
           </Group>

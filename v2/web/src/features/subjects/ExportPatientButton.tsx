@@ -1,11 +1,8 @@
-import { useCallback, useState } from "react";
 import { Button } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useExportPatient } from "../../api/queries/usePatientIo";
-import { useJobPolling } from "../../api/queries/useJobPolling";
+import { useJobRunner } from "../../api/queries/useJobRunner";
 import { patientExportDownloadUrl } from "../../api/endpoints";
-import { ApiError } from "../../api/client";
-import type { Job } from "../../api/types";
 
 /**
  * "Download Patient": queues a server-side job that zips the subject's entire
@@ -15,59 +12,38 @@ import type { Job } from "../../api/types";
  */
 export function ExportPatientButton({ subjectId, subjectName }: { subjectId: number; subjectName: string }) {
   const exportPatient = useExportPatient();
-  const [jobId, setJobId] = useState<number | undefined>();
 
-  const triggerBrowserDownload = useCallback(() => {
-    const a = document.createElement("a");
-    a.href = patientExportDownloadUrl(subjectId);
-    a.download = `${subjectName}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }, [subjectId, subjectName]);
-
-  const onTerminal = useCallback(
-    (job: Job) => {
-      setJobId(undefined);
-      if (job.state === "finished") {
-        notifications.show({
-          color: "green",
-          title: "Export ready",
-          message: `${subjectName}: your download should begin now.`,
-        });
-        triggerBrowserDownload();
-      } else {
-        notifications.show({
-          color: "red",
-          title: "Export failed",
-          message: job.progress_message ?? "See the Jobs panel for details.",
-        });
-      }
+  const { run, running } = useJobRunner({
+    start: () => exportPatient.mutateAsync(subjectId),
+    failTitle: "Export failed",
+    startFailTitle: "Could not start export",
+    onTerminal: (job) => {
+      if (job.state !== "finished") return;
+      notifications.show({
+        color: "green",
+        title: "Export ready",
+        message: `${subjectName}: your download should begin now.`,
+      });
+      const a = document.createElement("a");
+      a.href = patientExportDownloadUrl(subjectId);
+      a.download = `${subjectName}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     },
-    [subjectName, triggerBrowserDownload],
-  );
-
-  useJobPolling(jobId, onTerminal);
+  });
 
   async function handleClick() {
-    try {
-      const job = await exportPatient.mutateAsync(subjectId);
-      setJobId(job.id);
-      notifications.show({
-        color: "blue",
-        title: "Preparing export",
-        message: "Zipping patient data — the download starts automatically when it's ready.",
-      });
-    } catch (err) {
-      const message = err instanceof ApiError ? err.message : String(err);
-      notifications.show({ color: "red", title: "Could not start export", message });
-    }
+    if (!(await run())) return;
+    notifications.show({
+      color: "blue",
+      title: "Preparing export",
+      message: "Zipping patient data — the download starts automatically when it's ready.",
+    });
   }
 
-  const busy = exportPatient.isPending || jobId != null;
-
   return (
-    <Button variant="default" size="xs" onClick={handleClick} loading={busy}>
+    <Button variant="default" size="xs" onClick={handleClick} loading={running}>
       Download Patient
     </Button>
   );

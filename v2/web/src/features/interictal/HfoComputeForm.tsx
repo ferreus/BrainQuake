@@ -1,11 +1,8 @@
 import { useState } from "react";
 import { Button, NumberInput, Paper, Text, Title } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
-import { useQueryClient } from "@tanstack/react-query";
-import { ApiError } from "../../api/client";
 import { useComputeHfo } from "../../api/queries/useInterictal";
-import { useJobPolling } from "../../api/queries/useJobPolling";
-import { TERMINAL_JOB_STATES } from "../../api/types";
+import { useJobRunner } from "../../api/queries/useJobRunner";
+import { qk } from "../../api/queryKeys";
 
 interface HfoComputeFormProps {
   subjectId: number;
@@ -30,21 +27,12 @@ export function HfoComputeForm({ subjectId, edfArtifactId, bandLow, bandHigh, re
   const [absThresh, setAbsThresh] = useState(2.0);
   const [minGap, setMinGap] = useState(20.0);
   const [minLast, setMinLast] = useState(50.0);
-  const [jobId, setJobId] = useState<number | undefined>();
 
   const computeHfo = useComputeHfo(subjectId);
-  const queryClient = useQueryClient();
 
-  const { data: job } = useJobPolling(jobId, (finishedJob) => {
-    queryClient.invalidateQueries({ queryKey: ["hfo-result", subjectId, edfArtifactId] });
-    if (finishedJob.state === "failed") {
-      notifications.show({ color: "red", title: "HFO computation failed", message: finishedJob.progress_message ?? "" });
-    }
-  });
-
-  async function handleCompute() {
-    try {
-      const j = await computeHfo.mutateAsync({
+  const { run, job, running } = useJobRunner({
+    start: () =>
+      computeHfo.mutateAsync({
         edfArtifactId,
         params: {
           band_low: bandLow,
@@ -55,18 +43,11 @@ export function HfoComputeForm({ subjectId, edfArtifactId, bandLow, bandHigh, re
           min_last: minLast,
           remain_chns: remainChannels,
         },
-      });
-      setJobId(j.id);
-    } catch (err) {
-      notifications.show({
-        color: "red",
-        title: "Failed to start HFO computation",
-        message: err instanceof ApiError ? err.message : String(err),
-      });
-    }
-  }
-
-  const running = job ? !TERMINAL_JOB_STATES.has(job.state) : false;
+      }),
+    failTitle: "HFO computation failed",
+    startFailTitle: "Failed to start HFO computation",
+    invalidate: [qk.hfoResult(subjectId, edfArtifactId)],
+  });
 
   return (
     <Paper withBorder p="sm" w={300}>
@@ -80,7 +61,7 @@ export function HfoComputeForm({ subjectId, edfArtifactId, bandLow, bandHigh, re
       <NumberInput label="Abs. threshold (× global median)" value={absThresh} onChange={(v) => setAbsThresh(Number(v) || 0)} size="xs" step={0.5} mt={4} />
       <NumberInput label="Min gap (ms, merge events)" value={minGap} onChange={(v) => setMinGap(Number(v) || 0)} size="xs" mt={4} />
       <NumberInput label="Min duration (ms, keep event)" value={minLast} onChange={(v) => setMinLast(Number(v) || 0)} size="xs" mt={4} />
-      <Button size="xs" mt="sm" fullWidth loading={running} onClick={handleCompute}>
+      <Button size="xs" mt="sm" fullWidth loading={running} onClick={() => run()}>
         Compute HFO
       </Button>
       {job?.state === "running" && (

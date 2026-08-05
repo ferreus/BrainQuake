@@ -1,32 +1,16 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { createSubject, deleteSubject, listSubjects } from "../endpoints";
+import { qk } from "../queryKeys";
+import { makeMutation } from "./factories";
 import type { ReconType } from "../types";
 
 export function useSubjects() {
-  return useQuery({
-    queryKey: ["subjects"],
-    queryFn: listSubjects,
-  });
+  return useQuery({ queryKey: qk.subjects(), queryFn: listSubjects });
 }
 
-export function useCreateSubject() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ name, reconType }: { name: string; reconType?: ReconType }) =>
-      createSubject(name, reconType),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["subjects"] });
-    },
-  });
-}
+export const useCreateSubject = makeMutation(
+  ({ name, reconType }: { name: string; reconType?: ReconType }) => createSubject(name, reconType),
+  [qk.subjects()],
+);
 
-export function useDeleteSubject() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (id: number) => deleteSubject(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["subjects"] });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    },
-  });
-}
+export const useDeleteSubject = makeMutation((id: number) => deleteSubject(id), [qk.subjects(), qk.jobs()]);
