@@ -4,7 +4,9 @@ import os
 import shutil
 import struct
 import subprocess
+import tempfile
 import zipfile
+import h5py
 import numpy as np
 import mne
 import pytest
@@ -657,6 +659,438 @@ def test_labels_summary():
     sid2 = r2.json()["id"]
     r = client.get(f"/subjects/{sid2}/electrodes/labels-summary")
     assert r.status_code == 404
+
+
+def test_electrodes_import_contacts():
+    # elec_import bypasses ct_register/detect/segment entirely -- no CT_Reg.nii.gz
+    # or labels_npy needed, just a subject to hang fslresults/ off of.
+    r = client.post("/subjects", json={"name": "ImportTest"})
+    sid = r.json()["id"]
+
+    contacts = [
+        {"electrode": "G'", "contact_index": i, "x": float(i), "y": float(i) + 0.5, "z": float(i) - 0.5}
+        for i in (1, 2, 3)
+    ] + [
+        {"electrode": "X", "contact_index": i, "x": float(i) * 2, "y": 0.0, "z": 1.0}
+        for i in (1, 2)
+    ]
+
+    r = client.post(f"/subjects/{sid}/electrodes/import", json={"contacts": contacts})
+    assert r.status_code == 200
+    job_id = r.json()["id"]
+
+    run_job(job_id)
+
+    r = client.get(f"/jobs/{job_id}")
+    job_status = r.json()
+    assert job_status["state"] == "finished", job_status.get("progress_message")
+
+    db = SessionLocal()
+    kinds = [
+        a.kind for a in
+        db.query(Artifact).filter(Artifact.subject_id == sid, Artifact.job_id == job_id).all()
+    ]
+    db.close()
+    assert kinds.count("chnXyzDict") == 1
+    assert kinds.count("contact_txt") == 2  # one per electrode: G', X
+
+    r = client.get(f"/subjects/{sid}/electrodes/chn-xyz")
+    assert r.status_code == 200
+    data = r.json()
+    assert set(data.keys()) == {"G'", "X"}
+    assert data["G'"] == [[1.0, 1.5, 0.5], [2.0, 2.5, 1.5], [3.0, 3.5, 2.5]]
+    assert data["X"] == [[2.0, 0.0, 1.0], [4.0, 0.0, 1.0]]
+
+    r = client.get(f"/subjects/{sid}/electrodes/contacts/G'")
+    assert r.status_code == 200
+    assert r.json() == data["G'"]
+
+
+def test_electrodes_import_rejects_non_contiguous_indices():
+    r = client.post("/subjects", json={"name": "ImportGapTest"})
+    sid = r.json()["id"]
+
+    contacts = [
+        {"electrode": "A", "contact_index": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+        {"electrode": "A", "contact_index": 3, "x": 1.0, "y": 1.0, "z": 1.0},  # gap at 2
+    ]
+    r = client.post(f"/subjects/{sid}/electrodes/import", json={"contacts": contacts})
+    job_id = r.json()["id"]
+
+    run_job(job_id)
+
+    r = client.get(f"/jobs/{job_id}")
+    job_status = r.json()
+    assert job_status["state"] == "failed"
+    assert "not contiguous" in job_status["progress_message"]
+
+
+def test_electrodes_import_csv_text():
+    r = client.post("/subjects", json={"name": "ImportCsvTest"})
+    sid = r.json()["id"]
+
+    csv_text = (
+        "label,electrode,contact_index,R,A,S,surfR,surfA,surfS\n"
+        "G'1,G',1,0,0,0,1.0,1.5,0.5\n"
+        "G'2,G',2,0,0,0,2.0,2.5,1.5\n"
+    )
+    r = client.post(f"/subjects/{sid}/electrodes/import", json={"csv_text": csv_text})
+    assert r.status_code == 200
+    job_id = r.json()["id"]
+
+    run_job(job_id)
+
+    r = client.get(f"/jobs/{job_id}")
+    job_status = r.json()
+    assert job_status["state"] == "finished", job_status.get("progress_message")
+
+    r = client.get(f"/subjects/{sid}/electrodes/chn-xyz")
+    assert r.status_code == 200
+    assert r.json() == {"G'": [[1.0, 1.5, 0.5], [2.0, 2.5, 1.5]]}
+
+
+def test_electrodes_import_csv_text_missing_columns_fails_as_job():
+    # A bad CSV must still create a job (visible in the Jobs panel like every
+    # other pipeline step) that ends up 'failed' with a clear reason --
+    # never a 400 with no job at all, which is what the web client relies on.
+    r = client.post("/subjects", json={"name": "ImportCsvBadTest"})
+    sid = r.json()["id"]
+
+    csv_text = "electrode,contact_index,x,y,z\nG',1,0,0,0\n"  # wrong column names
+    r = client.post(f"/subjects/{sid}/electrodes/import", json={"csv_text": csv_text})
+    assert r.status_code == 200
+    job_id = r.json()["id"]
+    assert r.json()["state"] == "queued"
+
+    run_job(job_id)
+
+    r = client.get(f"/jobs/{job_id}")
+    job_status = r.json()
+    assert job_status["state"] == "failed"
+    assert "missing column" in job_status["progress_message"]
+
+
+def test_electrodes_import_requires_contacts_or_csv_text():
+    r = client.post("/subjects", json={"name": "ImportEmptyTest"})
+    sid = r.json()["id"]
+    r = client.post(f"/subjects/{sid}/electrodes/import", json={})
+    assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# 3D Slicer .mrb import (preview/approve/reject) -- see
+# docs/seeg_slicer_contact_import_plan.md and services/electrodes.parse_mrb.
+# ---------------------------------------------------------------------------
+
+def _make_synthetic_recon_subject(name, brain_radius=20.0, shape=(60, 60, 60)):
+    """Writes a real, loadable orig.mgz + brainmask.mgz (not the plain-text
+    mocks _apply_command_side_effects uses for recon-all, which parse_mrb's
+    nib.load calls can't read) -- identity-direction affine translated so the
+    volume's center voxel is RAS (0,0,0) and Pxyz_c ends up [0,0,0], which
+    keeps every coordinate in these tests easy to reason about by hand.
+    brainmask is 1 inside a `brain_radius`-mm sphere around the origin."""
+    import nibabel as nib
+    import nibabel.freesurfer.mghformat as mghf
+
+    mri_dir = os.path.join(settings.SUBJECTS_DIR, name, "mri")
+    os.makedirs(mri_dir, exist_ok=True)
+
+    affine = np.eye(4)
+    affine[:3, 3] = [-shape[0] / 2, -shape[1] / 2, -shape[2] / 2]
+
+    orig = mghf.MGHImage(np.zeros(shape, dtype=np.float32), affine)
+    nib.save(orig, os.path.join(mri_dir, "orig.mgz"))
+    assert tuple(orig.header.get("Pxyz_c")) == (0.0, 0.0, 0.0)
+
+    ii, jj, kk = np.meshgrid(*[np.arange(s) for s in shape], indexing="ij")
+    center = np.array(shape) / 2
+    dist = np.sqrt((ii - center[0]) ** 2 + (jj - center[1]) ** 2 + (kk - center[2]) ** 2)
+    brainmask_data = (dist <= brain_radius).astype(np.float32)
+    nib.save(mghf.MGHImage(brainmask_data, affine), os.path.join(mri_dir, "brainmask.mgz"))
+
+
+def _write_itk_h5_transform(path, A, t, c, transform_type="AffineTransform_double_3_3"):
+    with h5py.File(path, "w") as f:
+        f["TransformGroup/0/TransformType"] = [transform_type.encode()]
+        f["TransformGroup/0/TransformParameters"] = np.concatenate([A.flatten(), t])
+        f["TransformGroup/0/TransformFixedParameters"] = c
+
+
+def _make_synthetic_mrb(mrb_path, nodes):
+    """nodes: list of {"name": str, "points": [(label, [x,y,z]), ...],
+    "coordinate_system": "LPS"|"RAS", "transform": None | (A, t, c)}. Builds a
+    minimal but structurally real .mrb (zip of a .mrml + Data/*.mrk.json [+
+    Data/*.h5]) -- enough for parse_mrb()'s XML/JSON/HDF5 parsing, not a
+    faithful full Slicer scene."""
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = os.path.join(tmp, "Data")
+        os.makedirs(data_dir)
+        markup_xml, storage_xml, transform_xml, transform_storage_xml = [], [], [], []
+
+        for i, node in enumerate(nodes):
+            coord_system = node.get("coordinate_system", "LPS")
+            markup_id = f"vtkMRMLMarkupsFiducialNode{i + 1}"
+            storage_id = f"vtkMRMLMarkupsJsonStorageNode{i + 1}"
+            mrk_name = f"{node['name']}.mrk.json"
+            with open(os.path.join(data_dir, mrk_name), "w") as f:
+                json.dump({
+                    "markups": [{
+                        "coordinateSystem": coord_system,
+                        "controlPoints": [
+                            {"label": label, "position": list(pos)} for label, pos in node["points"]
+                        ],
+                    }],
+                }, f)
+
+            refs = f"storage:{storage_id};"
+            if node.get("transform"):
+                transform_id = f"vtkMRMLTransformNode{i + 1}"
+                transform_storage_id = f"vtkMRMLTransformStorageNode{i + 1}"
+                h5_name = f"{node['name']}_transform.h5"
+                _write_itk_h5_transform(os.path.join(data_dir, h5_name), *node["transform"])
+                transform_xml.append(
+                    f'<Transform id="{transform_id}" name="{node["name"]} transform" '
+                    f'references="storage:{transform_storage_id};"></Transform>')
+                transform_storage_xml.append(
+                    f'<TransformStorage id="{transform_storage_id}" fileName="Data/{h5_name}"></TransformStorage>')
+                refs += f"transform:{transform_id};"
+
+            markup_xml.append(
+                f'<MarkupsFiducial id="{markup_id}" name="{node["name"]}" references="{refs}"></MarkupsFiducial>')
+            storage_xml.append(
+                f'<MarkupsJsonStorage id="{storage_id}" fileName="Data/{mrk_name}" '
+                f'coordinateSystem="{coord_system}"></MarkupsJsonStorage>')
+
+        mrml = "<MRML>\n" + "\n".join(markup_xml + storage_xml + transform_xml + transform_storage_xml) + "\n</MRML>"
+        mrml_path = os.path.join(tmp, "scene.mrml")
+        with open(mrml_path, "w") as f:
+            f.write(mrml)
+
+        with zipfile.ZipFile(mrb_path, "w") as zf:
+            zf.write(mrml_path, "scene.mrml")
+            for fn in os.listdir(data_dir):
+                zf.write(os.path.join(data_dir, fn), os.path.join("Data", fn))
+
+
+class _NamedSubject:
+    """parse_mrb() only reads subject.name -- avoids a DB round-trip for the
+    direct-call unit tests below."""
+    def __init__(self, name):
+        self.name = name
+
+
+def test_parse_mrb_picks_contact_like_node_over_others():
+    from app.services.electrodes import parse_mrb
+
+    _make_synthetic_recon_subject("SlicerNodePick")
+    mrb_path = os.path.join(tempfile.gettempdir(), "node_pick_test.mrb")
+    _make_synthetic_mrb(mrb_path, [
+        {"name": "TargetPoints", "coordinate_system": "RAS",
+         "points": [("Entry point", [0, 0, 0]), ("Target point", [0, 0, 5])]},  # labels don't match electrode+int
+        {"name": "Contacts", "coordinate_system": "RAS",
+         "points": [("A1", [0, 0, 5]), ("A2", [0, 0, 6]), ("B1", [3, 0, 5])]},
+    ])
+    try:
+        contacts, diagnostics = parse_mrb(mrb_path, _NamedSubject("SlicerNodePick"))
+    finally:
+        os.remove(mrb_path)
+
+    assert diagnostics["node_name"] == "Contacts"
+    assert diagnostics["candidate_node_names"] == ["Contacts"]
+    assert diagnostics["transform_used"] == "none"
+    assert diagnostics["in_brain_fraction"] == 1.0
+    assert len(contacts) == 3
+    by_electrode = {(c["electrode"], c["contact_index"]): (c["x"], c["y"], c["z"]) for c in contacts}
+    assert by_electrode[("A", 1)] == (0.0, 0.0, 5.0)
+    assert by_electrode[("B", 1)] == (3.0, 0.0, 5.0)
+
+
+def test_parse_mrb_picks_correct_transform_direction():
+    from app.services.electrodes import parse_mrb
+
+    _make_synthetic_recon_subject("SlicerDirection")
+    # Identity rotation, translation chosen so the INVERSE direction lands
+    # near the brain center and the forward direction lands far outside it --
+    # mirrors what was found by hand against data/bella_3dslicer.mrb (see
+    # docs/seeg_slicer_contact_import_plan.md), generalized into a check
+    # instead of a hardcoded assumption about which node/direction is right.
+    A = np.eye(3)
+    t = np.array([0.0, 0.0, -50.0])
+    c = np.zeros(3)
+    mrb_path = os.path.join(tempfile.gettempdir(), "direction_test.mrb")
+    _make_synthetic_mrb(mrb_path, [
+        {"name": "Contacts", "coordinate_system": "RAS",
+         "points": [("A1", [0, 0, -50]), ("A2", [3, 0, -50])],
+         "transform": (A, t, c)},
+    ])
+    try:
+        contacts, diagnostics = parse_mrb(mrb_path, _NamedSubject("SlicerDirection"))
+    finally:
+        os.remove(mrb_path)
+
+    assert diagnostics["transform_used"] == "inverse"
+    assert diagnostics["in_brain_fraction"] == 1.0
+    by_index = {c["contact_index"]: (c["x"], c["y"], c["z"]) for c in contacts}
+    assert by_index[1] == pytest.approx((0.0, 0.0, 0.0))
+    assert by_index[2] == pytest.approx((3.0, 0.0, 0.0))
+
+
+def test_slicer_import_preview_approve_flow():
+    _make_synthetic_recon_subject("SlicerPreviewTest")
+    r = client.post("/subjects", json={"name": "SlicerPreviewTest"})
+    sid = r.json()["id"]
+
+    mrb_path = os.path.join(tempfile.gettempdir(), "preview_flow_test.mrb")
+    _make_synthetic_mrb(mrb_path, [
+        {"name": "Contacts", "coordinate_system": "RAS",
+         "points": [("A1", [0, 0, 5]), ("A2", [0, 0, 6])]},
+    ])
+    try:
+        with open(mrb_path, "rb") as f:
+            r = client.post(
+                f"/subjects/{sid}/upload?file_type=mrb",
+                files={"file": ("scene.mrb", f.read(), "application/zip")},
+            )
+    finally:
+        os.remove(mrb_path)
+    assert r.status_code == 200
+    assert r.json()["kind"] == "raw_mrb"
+    mrb_artifact_id = r.json()["id"]
+
+    r = client.post(f"/subjects/{sid}/electrodes/import/preview", json={"mrb_artifact_id": mrb_artifact_id})
+    assert r.status_code == 200
+    job_id = r.json()["id"]
+    run_job(job_id)
+
+    r = client.get(f"/jobs/{job_id}")
+    job_status = r.json()
+    assert job_status["state"] == "finished", job_status.get("progress_message")
+
+    r = client.get(f"/subjects/{sid}/electrodes/import/preview")
+    assert r.status_code == 200
+    preview = r.json()
+    assert preview["diagnostics"]["node_name"] == "Contacts"
+    assert len(preview["contacts"]) == 2
+
+    # not yet written to the real contacts artifacts
+    assert client.get(f"/subjects/{sid}/electrodes/chn-xyz").status_code == 404
+
+    r = client.post(f"/subjects/{sid}/electrodes/import/preview/approve")
+    assert r.status_code == 200
+
+    r = client.get(f"/subjects/{sid}/electrodes/chn-xyz")
+    assert r.status_code == 200
+    assert r.json() == {"A": [[0.0, 0.0, 5.0], [0.0, 0.0, 6.0]]}
+
+    # preview consumed
+    assert client.get(f"/subjects/{sid}/electrodes/import/preview").status_code == 404
+
+
+def test_slicer_import_preview_reject():
+    _make_synthetic_recon_subject("SlicerRejectTest")
+    r = client.post("/subjects", json={"name": "SlicerRejectTest"})
+    sid = r.json()["id"]
+
+    mrb_path = os.path.join(tempfile.gettempdir(), "preview_reject_test.mrb")
+    _make_synthetic_mrb(mrb_path, [
+        {"name": "Contacts", "coordinate_system": "RAS", "points": [("A1", [0, 0, 5])]},
+    ])
+    try:
+        with open(mrb_path, "rb") as f:
+            r = client.post(
+                f"/subjects/{sid}/upload?file_type=mrb",
+                files={"file": ("scene.mrb", f.read(), "application/zip")},
+            )
+    finally:
+        os.remove(mrb_path)
+    mrb_artifact_id = r.json()["id"]
+
+    r = client.post(f"/subjects/{sid}/electrodes/import/preview", json={"mrb_artifact_id": mrb_artifact_id})
+    run_job(r.json()["id"])
+    assert client.get(f"/subjects/{sid}/electrodes/import/preview").status_code == 200
+
+    r = client.post(f"/subjects/{sid}/electrodes/import/preview/reject")
+    assert r.status_code == 200
+
+    assert client.get(f"/subjects/{sid}/electrodes/import/preview").status_code == 404
+    assert client.get(f"/subjects/{sid}/electrodes/chn-xyz").status_code == 404
+
+
+def test_slicer_import_preview_requires_recon():
+    # No _make_synthetic_recon_subject call -- this subject has no orig.mgz/
+    # brainmask.mgz, so the job should fail with a clear reason rather than a
+    # raw traceback from nib.load on a missing file.
+    r = client.post("/subjects", json={"name": "SlicerNoReconTest"})
+    sid = r.json()["id"]
+
+    mrb_path = os.path.join(tempfile.gettempdir(), "no_recon_test.mrb")
+    _make_synthetic_mrb(mrb_path, [
+        {"name": "Contacts", "coordinate_system": "RAS", "points": [("A1", [0, 0, 5])]},
+    ])
+    try:
+        with open(mrb_path, "rb") as f:
+            r = client.post(
+                f"/subjects/{sid}/upload?file_type=mrb",
+                files={"file": ("scene.mrb", f.read(), "application/zip")},
+            )
+    finally:
+        os.remove(mrb_path)
+    mrb_artifact_id = r.json()["id"]
+
+    r = client.post(f"/subjects/{sid}/electrodes/import/preview", json={"mrb_artifact_id": mrb_artifact_id})
+    job_id = r.json()["id"]
+    run_job(job_id)
+
+    r = client.get(f"/jobs/{job_id}")
+    job_status = r.json()
+    assert job_status["state"] == "failed"
+    assert "reconstruction" in job_status["progress_message"]
+
+
+def test_delete_electrode_contacts():
+    from app.services.recon import register_artifact
+
+    r = client.post("/subjects", json={"name": "ClearTest"})
+    sid = r.json()["id"]
+
+    # simulate detect()'s cluster result
+    ct_dir = os.path.join(settings.SUBJECTS_DIR, "ClearTest", "fslresults")
+    os.makedirs(ct_dir, exist_ok=True)
+    labels_path = os.path.join(ct_dir, "ClearTest_labels.npy")
+    np.save(labels_path, np.zeros((4, 4, 4)))
+    db = SessionLocal()
+    register_artifact(db, sid, None, "labels_npy", labels_path)
+    db.close()
+
+    # simulate segment()'s (or import's) contact result
+    contacts = [{"electrode": "A", "contact_index": 1, "x": 0.0, "y": 0.0, "z": 0.0}]
+    r = client.post(f"/subjects/{sid}/electrodes/import", json={"contacts": contacts})
+    run_job(r.json()["id"])
+
+    result_dir = os.path.join(ct_dir, "ClearTest_result")
+    chn_xyz_path = os.path.join(ct_dir, "chnXyzDict.npy")
+    assert os.path.exists(labels_path)
+    assert os.path.exists(chn_xyz_path)
+    assert os.path.exists(result_dir)
+
+    r = client.delete(f"/subjects/{sid}/electrodes/contacts")
+    assert r.status_code == 200
+
+    assert not os.path.exists(labels_path)
+    assert not os.path.exists(chn_xyz_path)
+    assert not os.path.exists(result_dir)
+
+    db = SessionLocal()
+    remaining = (
+        db.query(Artifact)
+        .filter(Artifact.subject_id == sid, Artifact.kind.in_(["labels_npy", "chnXyzDict", "contact_txt"]))
+        .count()
+    )
+    db.close()
+    assert remaining == 0
+
+    assert client.get(f"/subjects/{sid}/electrodes/chn-xyz").status_code == 404
+    assert client.get(f"/subjects/{sid}/electrodes/labels-summary").status_code == 404
 
 
 def _make_synthetic_edf(path, n_channels=4, sfreq=1000.0, duration_sec=10.0):

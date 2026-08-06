@@ -5,8 +5,8 @@ import { useSubjects } from "../../api/queries/useSubjects";
 import { JobRow } from "./JobRow";
 import { JobLogViewer } from "./JobLogViewer";
 
-/** Always-mounted bottom panel listing every job, newest first -- mirrors
- * v2/client/jobs_panel.py's dockable Jobs panel (job table + log tail). */
+/** Always-mounted bottom panel listing every job, newest first (job table +
+ * log tail). */
 export function JobsDrawer() {
   const [viewingLogJobId, setViewingLogJobId] = useState<number | null>(null);
   const { data: jobs, isLoading } = useJobs();

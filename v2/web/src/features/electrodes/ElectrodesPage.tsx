@@ -3,7 +3,7 @@ import { Button, FileButton, Group, Loader, Paper, Progress, Stack, Text, Title 
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError, uploadFileWithProgress } from "../../api/client";
-import { useArtifacts, useRegisterCt } from "../../api/queries/useElectrodes";
+import { useArtifacts, useDeleteElectrodeContacts, useRegisterCt } from "../../api/queries/useElectrodes";
 import { useJobPolling } from "../../api/queries/useJobPolling";
 import { useLastJob } from "../../api/queries/useJobs";
 import { useRebuildSurface, useSurfaceMesh } from "../../api/queries/useSurfaceMesh";
@@ -13,9 +13,12 @@ import { BrainMesh } from "../../components/three/BrainMesh";
 import { ClusterCentroids } from "../../components/three/ClusterCentroids";
 import { ElectrodeContacts } from "../../components/three/ElectrodeContacts";
 import { SceneCanvas } from "../../components/three/SceneCanvas";
+import { SlicerContactsPreview } from "../../components/three/SlicerContactsPreview";
 import { DetectForm } from "./DetectForm";
+import { ImportSlicerForm } from "./ImportSlicerForm";
 import { LabelReviewPanel } from "./LabelReviewPanel";
 import { SegmentForm } from "./SegmentForm";
+import { SlicerImportReviewPanel } from "./SlicerImportReviewPanel";
 
 /** created_at of the most recent artifact of `kind`, as an epoch ms, or null. */
 function newestArtifactTime(artifacts: Artifact[] | undefined, kind: string): number | null {
@@ -237,6 +240,49 @@ function SurfaceRebuildBanner({ subjectId, activeRecon }: { subjectId: number; a
   );
 }
 
+interface DeleteContactsButtonProps {
+  subjectId: number;
+  disabled: boolean;
+}
+
+/** Clears clusters (detect()'s review data) and contacts (segment()'s or an
+ * import's), from the bottom of the sidebar -- the one way to throw out a bad
+ * hough3dlines/GMM run or a Slicer import and start the electrodes tab over. */
+function DeleteContactsButton({ subjectId, disabled }: DeleteContactsButtonProps) {
+  const deleteContacts = useDeleteElectrodeContacts(subjectId);
+
+  async function handleDelete() {
+    if (!confirm("Delete all clusters and contacts for this subject? This cannot be undone.")) return;
+    try {
+      await deleteContacts.mutateAsync();
+    } catch (err) {
+      notifications.show({
+        color: "red",
+        title: "Failed to delete contacts",
+        message: err instanceof ApiError ? err.message : String(err),
+      });
+    }
+  }
+
+  return (
+    // flexShrink: 0 -- as a direct child of the sidebar Stack (a scrollable flex
+    // column), a bare <button> is uniquely prone to being crushed by the shrink
+    // algorithm down to ~1px: form controls resolve their flex auto min-height
+    // to 0 instead of content size the way a <div> (e.g. the Paper cards above
+    // it) does, so without this it can render present-but-unclickable at the
+    // bottom of the scroll area.
+    <Button
+      color="red"
+      loading={deleteContacts.isPending}
+      disabled={disabled}
+      onClick={handleDelete}
+      style={{ flexShrink: 0 }}
+    >
+      Delete Contacts
+    </Button>
+  );
+}
+
 interface ElectrodesPageProps {
   subjectId: number;
 }
@@ -248,6 +294,7 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
   const hasRawCt = kinds.has("raw_ct");
   const detected = kinds.has("labels_npy");
   const segmented = kinds.has("chnXyzDict");
+  const hasPendingSlicerPreview = kinds.has("slicer_contacts_preview");
   const [excludedClusters, setExcludedClusters] = useState<Set<number>>(new Set());
 
   // ct_register registers ct_reg_nii midway through, so that artifact alone
@@ -314,7 +361,9 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
       <div style={{ flex: 1, minHeight: 520, height: "100%", position: "relative" }}>
         <SceneCanvas>
           <BrainMesh subjectId={subjectId} />
-          {segmented ? (
+          {hasPendingSlicerPreview ? (
+            <SlicerContactsPreview subjectId={subjectId} />
+          ) : segmented ? (
             <ElectrodeContacts subjectId={subjectId} />
           ) : (
             detected && <ClusterCentroids subjectId={subjectId} excluded={excludedClusters} />
@@ -323,6 +372,8 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
         {surfaceMissing && <SurfaceRebuildBanner subjectId={subjectId} activeRecon={activeRecon} />}
       </div>
       <Stack w={360} h="100%" gap="md" style={{ overflowY: "auto" }}>
+        <ImportSlicerForm subjectId={subjectId} disabled={!reconComplete} hasPendingPreview={hasPendingSlicerPreview} />
+        {hasPendingSlicerPreview && <SlicerImportReviewPanel subjectId={subjectId} />}
         <RegisterCtStep
           subjectId={subjectId}
           hasRawCt={hasRawCt}
@@ -337,6 +388,7 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
           <LabelReviewPanel subjectId={subjectId} excluded={excludedClusters} onExcludedChange={setExcludedClusters} />
         )}
         <SegmentForm subjectId={subjectId} disabled={!detected} segmented={segmented} />
+        <DeleteContactsButton subjectId={subjectId} disabled={!detected && !segmented} />
       </Stack>
     </Group>
   );

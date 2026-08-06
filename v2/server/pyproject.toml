@@ -19,6 +19,7 @@ dependencies = [
     "scipy>=1.10",
     "scikit-learn>=1.3",
     "python-multipart>=0.0.5",
+    "h5py>=3.8",  # reads ITK .h5 registration transforms exported by 3D Slicer (.mrb import)
 ]
 
 [project.optional-dependencies]

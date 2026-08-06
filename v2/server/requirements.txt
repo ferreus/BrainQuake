@@ -11,3 +11,4 @@ scikit-learn
 pytest
 httpx
 python-multipart
+h5py

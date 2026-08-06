@@ -1,14 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  approveSlicerMrbPreview,
   deleteArtifact,
+  deleteElectrodeContacts,
   detectElectrodes,
   getLabelsSummary,
+  getSlicerMrbPreview,
+  importContacts,
   listArtifacts,
   registerCt,
+  rejectSlicerMrbPreview,
   segmentElectrodes,
+  startSlicerMrbPreview,
   updateLabels,
 } from "../endpoints";
-import type { DetectParams, SegmentParams } from "../endpoints";
+import type { DetectParams, ImportContactsParams, SegmentParams } from "../endpoints";
 
 export function useArtifacts(subjectId: number | undefined) {
   return useQuery({
@@ -64,5 +70,66 @@ export function useSegmentElectrodes(subjectId: number) {
   return useMutation({
     mutationFn: (params: SegmentParams) => segmentElectrodes(subjectId, params),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+  });
+}
+
+export function useImportContacts(subjectId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: ImportContactsParams) => importContacts(subjectId, params),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+  });
+}
+
+export function useDeleteElectrodeContacts(subjectId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => deleteElectrodeContacts(subjectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["chn-xyz", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["labels-summary", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["slicer-mrb-preview", subjectId] });
+    },
+  });
+}
+
+export function useStartSlicerMrbPreview(subjectId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (mrbArtifactId: number) => startSlicerMrbPreview(subjectId, mrbArtifactId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+  });
+}
+
+export function useSlicerMrbPreview(subjectId: number | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["slicer-mrb-preview", subjectId],
+    queryFn: () => getSlicerMrbPreview(subjectId!),
+    enabled: enabled && subjectId != null,
+    retry: false,
+  });
+}
+
+export function useApproveSlicerMrbPreview(subjectId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => approveSlicerMrbPreview(subjectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["chn-xyz", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["slicer-mrb-preview", subjectId] });
+    },
+  });
+}
+
+export function useRejectSlicerMrbPreview(subjectId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => rejectSlicerMrbPreview(subjectId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["slicer-mrb-preview", subjectId] });
+    },
   });
 }

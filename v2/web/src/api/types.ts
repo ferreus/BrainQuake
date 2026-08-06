@@ -16,6 +16,8 @@ export type JobType =
   | "ct_register"
   | "elec_detect"
   | "elec_segment"
+  | "elec_import"
+  | "slicer_mrb_parse"
   | "ei_compute"
   | "hfo_compute"
   | "soz_fuse"
@@ -62,4 +64,4 @@ export interface Artifact {
   created_at: string;
 }
 
-export type UploadFileType = "t1" | "ct" | "edf" | "zip";
+export type UploadFileType = "t1" | "ct" | "edf" | "zip" | "mrb";

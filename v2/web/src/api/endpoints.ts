@@ -1,6 +1,4 @@
-// Thin REST resource functions, one per v2/server endpoint used so far --
-// mirrors v2/client/api_client.py's method surface so the two clients stay
-// easy to cross-reference.
+// Thin REST resource functions, one per v2/server endpoint used so far.
 import { API_BASE, apiDelete, apiGet, apiGetBinary, apiGetText, apiPost, apiPut, uploadFileWithProgress } from "./client";
 import { parseEdfWindowBinary } from "../lib/parseEdfWindowBinary";
 import type { Artifact, Job, ReconType, Subject } from "./types";
@@ -134,6 +132,95 @@ export function segmentElectrodes(subjectId: number, params: SegmentParams): Pro
   return apiPost<Job>(`/subjects/${subjectId}/electrodes/segment`, params);
 }
 
+export interface ImportContactItem {
+  electrode: string;
+  contact_index: number;
+  /** FreeSurfer surface (tkreg) RAS -- same space ElectrodeSeg.resulting() writes contacts in. */
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface ImportContactsParams {
+  contacts?: ImportContactItem[];
+  /** Raw electrode/contact_index/surfR/surfA/surfS CSV text -- parsed
+   * server-side inside the elec_import job, not here, so a malformed file
+   * still produces a real (failed) job with the parse error as its
+   * progress_message instead of a client-side error with no job at all. */
+  csvText?: string;
+}
+
+/** Bridges externally-resolved SEEG contacts (e.g. from a 3D Slicer .mrb --
+ * see docs/seeg_slicer_contact_import_plan.md) straight to chnXyzDict/contact_txt,
+ * bypassing register-ct/detect/segment entirely. Exactly one of
+ * params.contacts / params.csvText must be set. */
+export function importContacts(subjectId: number, params: ImportContactsParams): Promise<Job> {
+  return apiPost<Job>(`/subjects/${subjectId}/electrodes/import`, {
+    contacts: params.contacts,
+    csv_text: params.csvText,
+  });
+}
+
+/** Uploads a raw 3D Slicer .mrb scene file; the returned artifact id is what
+ * startSlicerMrbPreview takes. */
+export function uploadMrb(
+  subjectId: number,
+  file: File,
+  onProgress?: (fraction: number) => void,
+): { promise: Promise<Artifact>; cancel: () => void } {
+  return uploadFileWithProgress<Artifact>(`/subjects/${subjectId}/upload`, file, "mrb", onProgress);
+}
+
+/** Queues a job that parses an uploaded .mrb into a *preview* contacts list --
+ * see docs/seeg_slicer_contact_import_plan.md and the server's
+ * services/electrodes.parse_mrb for the auto-selection heuristics involved.
+ * Never writes real contacts directly -- the preview must be reviewed
+ * (getSlicerMrbPreview) then approved or rejected. */
+export function startSlicerMrbPreview(subjectId: number, mrbArtifactId: number): Promise<Job> {
+  return apiPost<Job>(`/subjects/${subjectId}/electrodes/import/preview`, { mrb_artifact_id: mrbArtifactId });
+}
+
+export interface SlicerMrbDiagnostics {
+  node_name: string;
+  candidate_node_names: string[];
+  n_points: number;
+  n_electrodes: number;
+  coordinate_system: string;
+  transform_used: "none" | "forward" | "inverse";
+  /** Fraction of contacts landing inside this subject's own brainmask --
+   * the sanity signal for whether the auto-picked node/transform direction
+   * is actually right. Low values deserve real scrutiny before approving. */
+  in_brain_fraction: number;
+  warnings: string[];
+}
+
+export interface SlicerMrbPreview {
+  contacts: ImportContactItem[];
+  diagnostics: SlicerMrbDiagnostics;
+}
+
+export function getSlicerMrbPreview(subjectId: number): Promise<SlicerMrbPreview> {
+  return apiGet<SlicerMrbPreview>(`/subjects/${subjectId}/electrodes/import/preview`);
+}
+
+/** Writes the pending preview's contacts into the real chnXyzDict/contact_txt
+ * and discards the preview. Synchronous (not a job) -- see the server
+ * endpoint's docstring for why. */
+export function approveSlicerMrbPreview(subjectId: number): Promise<{ n_contacts: number; n_electrodes: number }> {
+  return apiPost(`/subjects/${subjectId}/electrodes/import/preview/approve`);
+}
+
+export function rejectSlicerMrbPreview(subjectId: number): Promise<{ message: string }> {
+  return apiPost(`/subjects/${subjectId}/electrodes/import/preview/reject`);
+}
+
+/** Clears clusters (labels_npy) and contacts (chnXyzDict/contact_txt), from
+ * either detect()+segment() or an import, so the electrodes tab can be redone
+ * from scratch. */
+export function deleteElectrodeContacts(subjectId: number): Promise<{ message: string }> {
+  return apiDelete(`/subjects/${subjectId}/electrodes/contacts`);
+}
+
 export type ChnXyz = Record<string, number[][]>;
 
 export function getChnXyz(subjectId: number): Promise<ChnXyz> {
@@ -230,6 +317,12 @@ const RETRY_DISPATCH: Record<string, RetryFn> = {
   ct_register: (subjectId) => registerCt(subjectId),
   elec_detect: (subjectId, p) => detectElectrodes(subjectId, p as unknown as DetectParams),
   elec_segment: (subjectId, p) => segmentElectrodes(subjectId, p as SegmentParams),
+  elec_import: (subjectId, p) =>
+    importContacts(subjectId, {
+      contacts: p.contacts as ImportContactItem[] | undefined,
+      csvText: p.csv_text as string | undefined,
+    }),
+  slicer_mrb_parse: (subjectId, p) => startSlicerMrbPreview(subjectId, p.mrb_artifact_id as number),
   ei_compute: (subjectId, p) => {
     const { edf_artifact_id, ...params } = p;
     return computeEi(subjectId, edf_artifact_id as number, params as unknown as EiComputeParams);

@@ -5,8 +5,7 @@ import { TERMINAL_JOB_STATES } from "../types";
 import type { Job } from "../types";
 
 /**
- * Polls a single job until it reaches a terminal state, mirroring
- * v2/client/api_client.py's wait_for_job(). `onTerminal` fires exactly once
+ * Polls a single job until it reaches a terminal state. `onTerminal` fires exactly once
  * per job id when it first reaches finished/failed/cancelled -- later phases
  * use this to invalidate whatever resource query that job_type affects (e.g.
  * a finished `recon` job invalidating the cached surface mesh) instead of

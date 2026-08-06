@@ -1,9 +1,18 @@
 import os
 import re
+import csv
+import io
 import sys
+import json
 import math
 import time
+import shutil
+import zipfile
+import tempfile
 import subprocess
+import xml.etree.ElementTree as ET
+from urllib.parse import unquote
+import h5py
 import numpy as np
 import nibabel as nib
 from scipy.ndimage import binary_erosion
@@ -531,6 +540,504 @@ def run_elec_segment_job(db: Session, job: Job, log_file):
     result_dir = os.path.join(ct_dir, f"{subject.name}_result")
     for fname in os.listdir(result_dir):
         register_artifact(db, subject.id, job.id, "contact_txt", os.path.join(result_dir, fname))
+
+
+CONTACT_CSV_REQUIRED_COLUMNS = ("electrode", "contact_index", "surfR", "surfA", "surfS")
+
+
+def parse_contacts_csv(csv_text: str):
+    """Parses the electrode/contact_index/surfR/surfA/surfS CSV produced by
+    Steps 3-4 of docs/seeg_slicer_contact_import_plan.md into the contacts
+    list import_contacts() expects. Raises ValueError with a message meant to
+    be read as a job's progress_message -- deliberately called from inside
+    run_elec_import_job (not the router), so a malformed file still produces
+    a normal queued-then-failed job with a clear reason, the same as every
+    other pipeline step, instead of a client-side-only error with no job ever
+    created."""
+    text = csv_text.lstrip("﻿")  # tolerate a UTF-8 BOM from Excel exports
+    reader = csv.DictReader(io.StringIO(text))
+    fieldnames = [f.strip() for f in (reader.fieldnames or [])]
+    missing = [c for c in CONTACT_CSV_REQUIRED_COLUMNS if c not in fieldnames]
+    if missing:
+        raise ValueError(
+            f"CSV is missing column(s): {', '.join(missing)} "
+            f"(found: {', '.join(fieldnames) or '<empty header>'})")
+
+    contacts = []
+    for i, row in enumerate(reader, start=2):  # row 1 is the header
+        row = {(k.strip() if k else k): v for k, v in row.items()}
+        try:
+            contacts.append({
+                "electrode": row["electrode"].strip(),
+                "contact_index": int(float(row["contact_index"])),
+                "x": float(row["surfR"]),
+                "y": float(row["surfA"]),
+                "z": float(row["surfS"]),
+            })
+        except (TypeError, ValueError, AttributeError) as e:
+            raise ValueError(f"row {i}: could not parse {row!r} ({e})")
+
+    if not contacts:
+        raise ValueError("CSV has no data rows")
+    return contacts
+
+
+def _validate_contiguous_indices(contacts):
+    """Shared by import_contacts() and parse_mrb() -- for the latter, this
+    lets a gap fail the preview job outright instead of only surfacing once
+    someone clicks Approve."""
+    by_electrode = {}
+    for c in contacts:
+        by_electrode.setdefault(c["electrode"], []).append(c["contact_index"])
+    for electrode, indices in by_electrode.items():
+        indices_sorted = sorted(indices)
+        if indices_sorted != list(range(1, len(indices_sorted) + 1)):
+            raise ValueError(
+                f"Electrode {electrode!r} contact_index values are not contiguous "
+                f"1..N (got {indices_sorted}) -- chn-xyz/soz.py assume row order == contact "
+                f"number, so a gap would silently mislabel every contact after it.")
+
+
+def import_contacts(subject: Subject, contacts):
+    """Writes the same `<label>.txt` + `chnXyzDict.npy` artifacts segment()
+    produces, but from an externally-resolved contact list (e.g. from a 3D
+    Slicer `.mrb` -- see docs/seeg_slicer_contact_import_plan.md, Steps 1-5)
+    instead of hough3dlines/GMM/ElectrodeSeg. Bypasses ct_register/detect/
+    segment entirely -- no `CT_Reg.nii.gz` or `labels_npy` is required, only
+    a FreeSurfer recon (`_patient_dirs` still points at
+    `<SUBJECTS_DIR>/<patient>/fslresults`, same place segment() writes to, so
+    chn-xyz/contacts/soz_fuse all work unmodified on the result).
+
+    contacts: list of {"electrode": str, "contact_index": int (1-based),
+    "x": float, "y": float, "z": float}. Coordinates must already be in
+    FreeSurfer surface (tkreg) RAS -- the space `ElectrodeSeg.resulting()`
+    writes to `<label>.txt` (voxel (vx,vy,vz) -> (128-vx, vz-128, 128-vy) for
+    a 256^3 1mm conform volume), since that's what chn-xyz/contacts and
+    soz.py's fusion expect.
+    """
+    _validate_contiguous_indices(contacts)
+
+    by_electrode = {}
+    for c in contacts:
+        by_electrode.setdefault(c["electrode"], []).append(c)
+
+    _, ct_dir, _ = _patient_dirs(subject)
+    result_dir = os.path.join(ct_dir, f"{subject.name}_result")
+    os.makedirs(result_dir, exist_ok=True)
+
+    written = []
+    for electrode, pts in by_electrode.items():
+        pts_sorted = sorted(pts, key=lambda c: c["contact_index"])
+        arr = np.array([[p["x"], p["y"], p["z"]] for p in pts_sorted])
+        out_file = os.path.join(result_dir, f"{electrode}.txt")
+        with open(out_file, "ab") as f:
+            f.seek(0)
+            f.truncate()
+            np.savetxt(f, arr, fmt='%10.8f', delimiter=' ', newline='\n', header=f"{arr.shape[0]}")
+        written.append(out_file)
+
+    chn_xyz_path = savenpy(ct_dir, subject.name)
+    return chn_xyz_path, written
+
+
+# --- Raw .mrb parsing -------------------------------------------------------
+# Automates docs/seeg_slicer_contact_import_plan.md's Steps 1-4, which were
+# originally done by hand against data/bella_3dslicer.mrb. Two things in that
+# manual pass can't be assumed to generalize and are re-derived per .mrb here
+# rather than hardcoded:
+#   1. WHICH MarkupsFiducial node holds the per-contact list -- a scene can
+#      have more than one (e.g. Bella's had "F", a 20-point per-electrode
+#      entry/target set, alongside "Contacts_8", the real 184-point list).
+#      Picked as whichever node has the most control points whose labels ALL
+#      parse as "electrode name + integer" (e.g. "G1", "K'12") -- Bella's "F"
+#      labels ("G'-10") fail this because of the embedded "-", which is
+#      exactly the discriminator needed.
+#   2. WHICH DIRECTION to apply that node's referenced registration
+#      transform. The manual pass found that the transform's exported ITK
+#      parameters, applied with the textbook affine formula, did NOT match
+#      the direction implied by the transform node's own name/reference (a
+#      known BRAINSFit fixed/moving-convention trap) -- confirmed only by
+#      checking which direction landed points inside the brainmask. That
+#      check is what's automated below: both directions are tried and
+#      whichever has the higher in-brain fraction is used. This is a
+#      correctness-critical, patient-facing step, so the result is a
+#      *preview* (see run_slicer_mrb_parse_job) that must be reviewed and
+#      explicitly approved, not written directly.
+
+_CONTACT_LABEL_RE = re.compile(r"^([A-Za-z]+'?)(\d+)$")
+
+
+def _parse_mrml_references(ref_str):
+    """references="display:id1;storage:id2;transform:id3;" -> {"display": "id1", ...}"""
+    refs = {}
+    for part in (ref_str or "").split(";"):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        role, ids = part.split(":", 1)
+        ids = ids.strip().split()
+        if ids:
+            refs[role.strip()] = ids[0]
+    return refs
+
+
+def _find_contact_candidates(mrb_dir, mrml_path):
+    """Returns (candidates, nodes_by_id, all_markup_names). Each candidate is
+    a dict with name/control_points/coordinate_system/transform_id, for every
+    MarkupsFiducial node whose control points ALL match _CONTACT_LABEL_RE."""
+    root = ET.parse(mrml_path).getroot()
+    nodes_by_id = {}
+    markups = []
+    for el in root.iter():
+        node_id = el.get("id")
+        if node_id:
+            nodes_by_id[node_id] = el
+        if el.tag == "MarkupsFiducial":
+            markups.append(el)
+
+    candidates = []
+    all_names = []
+    for markup in markups:
+        name = markup.get("name") or markup.get("id")
+        all_names.append(name)
+        refs = _parse_mrml_references(markup.get("references"))
+        storage_el = nodes_by_id.get(refs.get("storage"))
+        if storage_el is None or storage_el.tag != "MarkupsJsonStorage":
+            continue  # inline-coordinate (pre-5.x) scenes aren't supported
+        file_name = storage_el.get("fileName")
+        if not file_name:
+            continue
+        mrk_path = os.path.join(mrb_dir, unquote(file_name))
+        if not os.path.exists(mrk_path):
+            continue
+        with open(mrk_path) as f:
+            data = json.load(f)
+        control_points = data["markups"][0]["controlPoints"]
+        if not control_points or not all(_CONTACT_LABEL_RE.match(cp.get("label") or "") for cp in control_points):
+            continue
+        coord_system = data["markups"][0].get("coordinateSystem") or storage_el.get("coordinateSystem") or "LPS"
+        candidates.append({
+            "name": name,
+            "control_points": control_points,
+            "coordinate_system": coord_system,
+            "transform_id": refs.get("transform"),
+        })
+    return candidates, nodes_by_id, all_names
+
+
+def _resolve_transform_h5(nodes_by_id, mrb_dir, transform_id):
+    if not transform_id:
+        return None
+    transform_el = nodes_by_id.get(transform_id)
+    if transform_el is None:
+        return None
+    refs = _parse_mrml_references(transform_el.get("references"))
+    storage_el = nodes_by_id.get(refs.get("storage"))
+    if storage_el is None:
+        return None
+    file_name = storage_el.get("fileName")
+    if not file_name:
+        return None
+    path = os.path.join(mrb_dir, unquote(file_name))
+    return path if os.path.exists(path) else None
+
+
+def _load_itk_linear_transform(h5_path):
+    with h5py.File(h5_path, "r") as f:
+        transform_type = f["TransformGroup/0/TransformType"][()][0]
+        if isinstance(transform_type, bytes):
+            transform_type = transform_type.decode()
+        if not any(k in transform_type for k in ("Affine", "Rigid", "Euler", "Similarity")):
+            raise ValueError(
+                f"Unsupported registration transform type {transform_type!r} in the .mrb "
+                f"(only linear/affine transforms are supported).")
+        params = np.asarray(f["TransformGroup/0/TransformParameters"][()], dtype=float)
+        fixed = np.asarray(f["TransformGroup/0/TransformFixedParameters"][()], dtype=float)
+    return params[:9].reshape(3, 3), params[9:12], fixed[:3]
+
+
+def _apply_affine(A, t, c, points):
+    return (points - c) @ A.T + t + c
+
+
+def _apply_affine_inverse(A, t, c, points):
+    return (points - t - c) @ np.linalg.inv(A).T + c
+
+
+def _in_brain_fraction(ras_points, mri_dir):
+    orig_path = os.path.join(mri_dir, "orig.mgz")
+    brainmask_path = os.path.join(mri_dir, "brainmask.mgz")
+    orig = nib.load(orig_path)
+    brainmask = nib.load(brainmask_path).get_fdata()
+    inv_affine = np.linalg.inv(orig.affine)
+
+    homo = np.column_stack([ras_points, np.ones(len(ras_points))])
+    voxel_idx = np.round((inv_affine @ homo.T).T[:, :3]).astype(int)
+    in_bounds = np.all((voxel_idx >= 0) & (voxel_idx < np.array(orig.shape)), axis=1)
+    if not in_bounds.any():
+        return 0.0
+    in_brain = np.zeros(len(ras_points), dtype=bool)
+    b = voxel_idx[in_bounds]
+    in_brain[in_bounds] = brainmask[b[:, 0], b[:, 1], b[:, 2]] > 0
+    return float(in_brain.mean())
+
+
+def _surface_ras(ras_points, mri_dir):
+    """scanner RAS -> FreeSurfer surface (tkreg) RAS, the space chn-xyz/contacts/
+    soz.py expect -- see docs/seeg_slicer_contact_import_plan.md Step 4."""
+    orig = nib.load(os.path.join(mri_dir, "orig.mgz"))
+    c_ras = np.asarray(orig.header.get("Pxyz_c"))
+    return ras_points - c_ras
+
+
+SLICER_PREVIEW_ARTIFACT_KIND = "slicer_contacts_preview"
+LOW_IN_BRAIN_FRACTION_WARNING = 0.3
+
+
+def parse_mrb(mrb_path, subject: Subject):
+    """Parses a 3D Slicer .mrb into a contacts list + diagnostics (see module
+    comment above for the two auto-selection heuristics involved). Returns
+    (contacts, diagnostics); raises ValueError/FileNotFoundError on anything
+    that makes the file unusable -- caller (run_slicer_mrb_parse_job) lets
+    that surface as a normal failed job."""
+    _, _, mri_dir = _patient_dirs(subject)
+    if not os.path.exists(os.path.join(mri_dir, "orig.mgz")) or not os.path.exists(os.path.join(mri_dir, "brainmask.mgz")):
+        raise FileNotFoundError(
+            "No FreeSurfer reconstruction found for this subject -- run reconstruction first "
+            "(needed for both the surface-RAS conversion and the in-brain sanity check).")
+
+    with tempfile.TemporaryDirectory(prefix="mrb_") as tmp:
+        with zipfile.ZipFile(mrb_path) as zf:
+            zf.extractall(tmp)
+
+        mrml_paths = [
+            os.path.join(root, f) for root, _, files in os.walk(tmp) for f in files if f.endswith(".mrml")
+        ]
+        if not mrml_paths:
+            raise ValueError("No .mrml scene file found inside the .mrb")
+        mrml_path = mrml_paths[0]
+        mrb_dir = os.path.dirname(mrml_path)
+
+        candidates, nodes_by_id, all_names = _find_contact_candidates(mrb_dir, mrml_path)
+        if not candidates:
+            raise ValueError(
+                "No markups node in the .mrb has contact-like labels (electrode name + "
+                f"number, e.g. G1, K'12). Markup nodes found: {', '.join(all_names) or '<none>'}.")
+        chosen = max(candidates, key=lambda c: len(c["control_points"]))
+
+        raw = np.array([cp["position"] for cp in chosen["control_points"]], dtype=float)
+        labels = [cp["label"] for cp in chosen["control_points"]]
+        coord_sign = np.array([-1.0, -1.0, 1.0]) if chosen["coordinate_system"].upper() == "LPS" else np.ones(3)
+
+        h5_path = _resolve_transform_h5(nodes_by_id, mrb_dir, chosen["transform_id"])
+        if h5_path:
+            A, t, c = _load_itk_linear_transform(h5_path)
+            fwd_ras = _apply_affine(A, t, c, raw) * coord_sign
+            inv_ras = _apply_affine_inverse(A, t, c, raw) * coord_sign
+            fwd_frac = _in_brain_fraction(fwd_ras, mri_dir)
+            inv_frac = _in_brain_fraction(inv_ras, mri_dir)
+            if fwd_frac >= inv_frac:
+                ras_points, in_brain_fraction, transform_used = fwd_ras, fwd_frac, "forward"
+            else:
+                ras_points, in_brain_fraction, transform_used = inv_ras, inv_frac, "inverse"
+        else:
+            ras_points = raw * coord_sign
+            in_brain_fraction = _in_brain_fraction(ras_points, mri_dir)
+            transform_used = "none"
+
+        surf_points = _surface_ras(ras_points, mri_dir)
+
+        contacts = []
+        for label, xyz in zip(labels, surf_points):
+            m = _CONTACT_LABEL_RE.match(label)
+            contacts.append({
+                "electrode": m.group(1), "contact_index": int(m.group(2)),
+                "x": float(xyz[0]), "y": float(xyz[1]), "z": float(xyz[2]),
+            })
+        _validate_contiguous_indices(contacts)
+
+        warnings = []
+        if in_brain_fraction < LOW_IN_BRAIN_FRACTION_WARNING:
+            warnings.append(
+                f"Only {in_brain_fraction:.0%} of contacts landed inside the brain mask -- the "
+                f"chosen node or transform direction may be wrong. Verify carefully before approving.")
+
+        diagnostics = {
+            "node_name": chosen["name"],
+            "candidate_node_names": [c["name"] for c in candidates],
+            "n_points": len(contacts),
+            "n_electrodes": len({c["electrode"] for c in contacts}),
+            "coordinate_system": chosen["coordinate_system"],
+            "transform_used": transform_used,
+            "in_brain_fraction": in_brain_fraction,
+            "warnings": warnings,
+        }
+        return contacts, diagnostics
+
+
+def _clear_slicer_preview(db: Session, subject: Subject):
+    old = (
+        db.query(Artifact)
+        .filter(Artifact.subject_id == subject.id, Artifact.kind == SLICER_PREVIEW_ARTIFACT_KIND)
+        .all()
+    )
+    for a in old:
+        path = os.path.join(settings.DATA_ROOT, a.rel_path)
+        if os.path.exists(path):
+            os.remove(path)
+        db.delete(a)
+    db.commit()
+
+
+def run_slicer_mrb_parse_job(db: Session, job: Job, log_file):
+    subject = db.query(Subject).filter(Subject.id == job.subject_id).first()
+    if not subject:
+        raise ValueError("Subject not found")
+
+    params = job.params_json or {}
+    mrb_artifact_id = params.get("mrb_artifact_id")
+    artifact = (
+        db.query(Artifact)
+        .filter(Artifact.id == mrb_artifact_id, Artifact.subject_id == subject.id)
+        .first()
+    )
+    if not artifact:
+        raise ValueError("mrb artifact not found")
+    mrb_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
+    if not os.path.exists(mrb_path):
+        raise FileNotFoundError(f"{mrb_path} not found")
+
+    check_cancelled(db, job)
+    job.progress_pct = 10.0
+    job.progress_message = "Unpacking and parsing .mrb scene"
+    db.commit()
+
+    contacts, diagnostics = parse_mrb(mrb_path, subject)
+
+    log_file.write(
+        f"Slicer .mrb parsed: node={diagnostics['node_name']!r} "
+        f"(candidates: {', '.join(diagnostics['candidate_node_names'])}) "
+        f"transform={diagnostics['transform_used']} "
+        f"in_brain={diagnostics['in_brain_fraction']:.1%}\n")
+    for w in diagnostics["warnings"]:
+        log_file.write(f"WARNING: {w}\n")
+    log_file.flush()
+
+    _clear_slicer_preview(db, subject)  # only the latest unreviewed preview is ever kept
+
+    _, ct_dir, _ = _patient_dirs(subject)
+    os.makedirs(ct_dir, exist_ok=True)
+    preview_path = os.path.join(ct_dir, f"{subject.name}_slicer_preview.json")
+    with open(preview_path, "w") as f:
+        json.dump({"contacts": contacts, "diagnostics": diagnostics}, f)
+    register_artifact(db, subject.id, job.id, SLICER_PREVIEW_ARTIFACT_KIND, preview_path)
+
+    job.progress_pct = 95.0
+    job.progress_message = (
+        f"Preview ready: {diagnostics['n_points']} contacts across {diagnostics['n_electrodes']} "
+        f"electrodes from node '{diagnostics['node_name']}' "
+        f"({diagnostics['in_brain_fraction']:.0%} in-brain) -- review before approving")
+    db.commit()
+
+
+def load_slicer_preview(db: Session, subject: Subject):
+    artifact = (
+        db.query(Artifact)
+        .filter(Artifact.subject_id == subject.id, Artifact.kind == SLICER_PREVIEW_ARTIFACT_KIND)
+        .order_by(Artifact.created_at.desc())
+        .first()
+    )
+    if not artifact:
+        raise FileNotFoundError("No pending Slicer import preview for this subject.")
+    with open(os.path.join(settings.DATA_ROOT, artifact.rel_path)) as f:
+        return json.load(f)
+
+
+def approve_slicer_preview(db: Session, subject: Subject):
+    preview = load_slicer_preview(db, subject)
+    chn_xyz_path, written = import_contacts(subject, preview["contacts"])
+    register_artifact(db, subject.id, None, "chnXyzDict", chn_xyz_path)
+    for path in written:
+        register_artifact(db, subject.id, None, "contact_txt", path)
+    _clear_slicer_preview(db, subject)
+    return {"n_contacts": len(preview["contacts"]), "n_electrodes": len(written)}
+
+
+def reject_slicer_preview(db: Session, subject: Subject):
+    load_slicer_preview(db, subject)  # raises FileNotFoundError if there's nothing to reject
+    _clear_slicer_preview(db, subject)
+
+
+def run_elec_import_job(db: Session, job: Job, log_file):
+    subject = db.query(Subject).filter(Subject.id == job.subject_id).first()
+    if not subject:
+        raise ValueError("Subject not found")
+
+    params = job.params_json or {}
+    contacts = params.get("contacts")
+    csv_text = params.get("csv_text")
+    if not contacts and not csv_text:
+        raise ValueError("No contacts or CSV provided")
+
+    check_cancelled(db, job)
+    job.progress_pct = 10.0
+    job.progress_message = "Parsing contacts CSV" if csv_text else f"Writing {len(contacts)} imported contacts"
+    db.commit()
+
+    if csv_text:
+        contacts = parse_contacts_csv(csv_text)
+
+    job.progress_pct = 30.0
+    job.progress_message = f"Writing {len(contacts)} imported contacts"
+    db.commit()
+
+    chn_xyz_path, written = import_contacts(subject, contacts)
+    register_artifact(db, subject.id, job.id, "chnXyzDict", chn_xyz_path)
+    for path in written:
+        register_artifact(db, subject.id, job.id, "contact_txt", path)
+
+    electrode_names = sorted(os.path.splitext(os.path.basename(p))[0] for p in written)
+    log_file.write(f"Imported {len(contacts)} contacts across {len(written)} electrodes: "
+                    f"{', '.join(electrode_names)}\n")
+    log_file.flush()
+
+    job.progress_pct = 95.0
+    job.progress_message = f"Imported {len(contacts)} contacts across {len(written)} electrodes"
+    db.commit()
+
+
+def clear_contacts(db: Session, subject: Subject):
+    """Deletes clusters (detect()'s labels_npy) and contacts (segment()'s or
+    import_contacts()'s chnXyzDict.npy + per-electrode result/freeview .txt
+    files) for a subject, plus the matching Artifact rows -- so the electrodes
+    tab can be fully reset and redone from scratch, regardless of whether the
+    prior contacts came from hough3dlines/GMM/ElectrodeSeg or a Slicer import.
+    Also discards any pending (not yet approved/rejected) Slicer import
+    preview. Leaves ct_register/detect's CT preprocessing artifacts
+    (ct_intra_nii, ct_intracranial_nii) alone -- those aren't clusters/
+    contacts, and a re-run of detect() overwrites them anyway."""
+    _, ct_dir, _ = _patient_dirs(subject)
+
+    labels_path = os.path.join(ct_dir, f"{subject.name}_labels.npy")
+    if os.path.exists(labels_path):
+        os.remove(labels_path)
+
+    chn_xyz_path = os.path.join(ct_dir, "chnXyzDict.npy")
+    if os.path.exists(chn_xyz_path):
+        os.remove(chn_xyz_path)
+
+    for dirname in (f"{subject.name}_result", f"{subject.name}_freeview_result"):
+        result_dir = os.path.join(ct_dir, dirname)
+        if os.path.exists(result_dir):
+            shutil.rmtree(result_dir)
+
+    db.query(Artifact).filter(
+        Artifact.subject_id == subject.id,
+        Artifact.kind.in_(["labels_npy", "chnXyzDict", "contact_txt"]),
+    ).delete(synchronize_session=False)
+    db.commit()
+
+    _clear_slicer_preview(db, subject)  # also discard any pending, not-yet-approved Slicer preview
 
 
 def load_chn_xyz(subject: Subject):

@@ -86,7 +86,7 @@ def delete_subject(subject_id: int, db: Session = Depends(get_db)):
 @router.post("/{subject_id}/upload", response_model=ArtifactResponse)
 def upload_file(
     subject_id: int,
-    file_type: str = Query(..., description="Type of file: 't1', 'ct', 'edf', 'zip'"),
+    file_type: str = Query(..., description="Type of file: 't1', 'ct', 'edf', 'zip', 'mrb'"),
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -106,6 +106,9 @@ def upload_file(
     elif file_type == "edf":
         filename = file.filename
         kind = "raw_edf"
+    elif file_type == "mrb":
+        filename = file.filename
+        kind = "raw_mrb"
     else:
         raise HTTPException(status_code=400, detail="Invalid file_type")
 

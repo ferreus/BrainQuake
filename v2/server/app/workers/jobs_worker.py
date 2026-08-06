@@ -14,7 +14,9 @@ from app.config import settings
 from app.models import Job, Subject
 from app.services.recon import run_recon_job
 from app.services.ct_register import run_ct_register_job
-from app.services.electrodes import run_elec_detect_job, run_elec_segment_job
+from app.services.electrodes import (
+    run_elec_detect_job, run_elec_segment_job, run_elec_import_job, run_slicer_mrb_parse_job,
+)
 from app.services.ictal import run_ei_compute_job
 from app.services.interictal import run_hfo_compute_job
 from app.services.soz import run_soz_fuse_job
@@ -121,6 +123,10 @@ def run_job(job_id: int):
                 run_elec_detect_job(db, job, log_file)
             elif job.job_type == "elec_segment":
                 run_elec_segment_job(db, job, log_file)
+            elif job.job_type == "elec_import":
+                run_elec_import_job(db, job, log_file)
+            elif job.job_type == "slicer_mrb_parse":
+                run_slicer_mrb_parse_job(db, job, log_file)
             elif job.job_type == "ei_compute":
                 run_ei_compute_job(db, job, log_file)
             elif job.job_type == "hfo_compute":
