@@ -3,6 +3,7 @@ import { Alert, Group, Loader, Stack, Tabs, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { getSubject } from "../api/endpoints";
 import { ElectrodesPage } from "../features/electrodes/ElectrodesPage";
+import { FreeBrowsePage } from "../features/freebrowse/FreeBrowsePage";
 import { IctalPage } from "../features/ictal/IctalPage";
 import { InterictalPage } from "../features/interictal/InterictalPage";
 import { SozPage } from "../features/soz/SozPage";
@@ -59,6 +60,7 @@ export function SubjectLayoutPage() {
           <Tabs.Tab value="ictal">Ictal</Tabs.Tab>
           <Tabs.Tab value="interictal">Interictal</Tabs.Tab>
           <Tabs.Tab value="soz">SOZ Result</Tabs.Tab>
+          <Tabs.Tab value="freebrowse">FreeBrowse</Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="electrodes" style={{ height: "calc(100% - 40px)" }}>
@@ -78,6 +80,9 @@ export function SubjectLayoutPage() {
         </Tabs.Panel>
         <Tabs.Panel value="soz" style={{ height: "calc(100% - 40px)" }}>
           <SozPage key={id} subjectId={id} />
+        </Tabs.Panel>
+        <Tabs.Panel value="freebrowse" style={{ height: "calc(100% - 40px)" }}>
+          <FreeBrowsePage key={id} subjectId={id} />
         </Tabs.Panel>
       </Tabs>
     </Stack>

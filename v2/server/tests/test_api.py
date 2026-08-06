@@ -1126,6 +1126,93 @@ def _create_subject_with_edf(name):
     return sid, artifact_id, ch_names, sfreq
 
 
+# ---------------------------------------------------------------------------
+# FreeBrowse tab -- .nvd document generation + whitelisted file serving.
+# ---------------------------------------------------------------------------
+
+def _write_freebrowse_surface(name, hemi_label):
+    import nibabel.freesurfer as fsio
+
+    surf_dir = os.path.join(settings.SUBJECTS_DIR, name, "surf")
+    os.makedirs(surf_dir, exist_ok=True)
+    tri_vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+    tri_faces = np.array([[0, 1, 2]], dtype=np.int32)
+    fsio.write_geometry(os.path.join(surf_dir, hemi_label), tri_vertices, tri_faces)
+
+
+def test_freebrowse_document_lists_only_existing_files():
+    _make_synthetic_recon_subject("FreeBrowseDocTest")  # writes mri/orig.mgz + mri/brainmask.mgz
+    mri_dir = os.path.join(settings.SUBJECTS_DIR, "FreeBrowseDocTest", "mri")
+    with open(os.path.join(mri_dir, "aseg.mgz"), "wb") as f:
+        f.write(b"not a real mgz -- existence is all build_nvd_document checks")
+    _write_freebrowse_surface("FreeBrowseDocTest", "lh.pial")
+    _write_freebrowse_surface("FreeBrowseDocTest", "rh.pial")
+    # deliberately no lh.white/rh.white/CT_Reg -- those keys must be absent below
+
+    r = client.post("/subjects", json={"name": "FreeBrowseDocTest"})
+    sid = r.json()["id"]
+
+    r = client.get(f"/subjects/{sid}/freebrowse.nvd")
+    assert r.status_code == 200
+    doc = r.json()
+
+    volume_keys = {v["url"].rsplit("/", 1)[-1] for v in doc["imageOptionsArray"]}
+    assert volume_keys == {"orig", "brainmask", "aseg"}
+    mesh_keys = {m["url"].rsplit("/", 1)[-1] for m in doc["meshes"]}
+    assert mesh_keys == {"lh_pial", "rh_pial"}
+
+    orig_entry = next(v for v in doc["imageOptionsArray"] if v["url"].endswith("/orig"))
+    # /api/ prefix is load-bearing, not cosmetic: these urls are fetched
+    # directly by the browser once the .nvd loads, so they must match
+    # nginx's `location /api/` proxy prefix (v2/docker/nginx.conf) the same
+    # way v2/web/src/api/client.ts's API_BASE does -- omitting it doesn't
+    # 404, it silently falls through to nginx's SPA route instead.
+    assert orig_entry["url"] == f"/api/subjects/{sid}/freebrowse/files/orig"
+    assert orig_entry["name"] == "orig.mgz"
+    assert orig_entry["colormap"] == "gray"
+    lh_pial_entry = next(m for m in doc["meshes"] if m["url"].endswith("/lh_pial"))
+    assert lh_pial_entry["url"] == f"/api/subjects/{sid}/freebrowse/files/lh_pial"
+
+
+def test_freebrowse_document_empty_for_subject_with_no_files():
+    r = client.post("/subjects", json={"name": "FreeBrowseEmptyTest"})
+    sid = r.json()["id"]
+
+    r = client.get(f"/subjects/{sid}/freebrowse.nvd")
+    assert r.status_code == 200
+    doc = r.json()
+    assert doc["imageOptionsArray"] == []
+    assert doc["meshes"] == []
+
+
+def test_freebrowse_file_serves_whitelisted_key():
+    _make_synthetic_recon_subject("FreeBrowseFileTest")
+    r = client.post("/subjects", json={"name": "FreeBrowseFileTest"})
+    sid = r.json()["id"]
+
+    r = client.get(f"/subjects/{sid}/freebrowse/files/orig")
+    assert r.status_code == 200
+    with open(os.path.join(settings.SUBJECTS_DIR, "FreeBrowseFileTest", "mri", "orig.mgz"), "rb") as f:
+        assert r.content == f.read()
+
+
+def test_freebrowse_file_rejects_unknown_key():
+    r = client.post("/subjects", json={"name": "FreeBrowseUnknownKeyTest"})
+    sid = r.json()["id"]
+    r = client.get(f"/subjects/{sid}/freebrowse/files/bogus")
+    assert r.status_code == 404
+
+
+def test_freebrowse_file_404_when_file_missing():
+    # Recon exists (orig.mgz/brainmask.mgz present) but this subject never had
+    # a CT registered -- ct_reg is a known key, just not present on disk.
+    _make_synthetic_recon_subject("FreeBrowseMissingFileTest")
+    r = client.post("/subjects", json={"name": "FreeBrowseMissingFileTest"})
+    sid = r.json()["id"]
+    r = client.get(f"/subjects/{sid}/freebrowse/files/ct_reg")
+    assert r.status_code == 404
+
+
 def test_edf_meta():
     sid, artifact_id, ch_names, sfreq = _create_subject_with_edf("EdfMetaTest")
 

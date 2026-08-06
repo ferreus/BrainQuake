@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db import engine, Base
-from app.routers import subjects, jobs, recon, electrodes, artifacts, ictal, interictal, soz, surface, edf, patient_io
+from app.routers import subjects, jobs, recon, electrodes, artifacts, ictal, interictal, soz, surface, edf, patient_io, freebrowse
 
 # Automatically create tables on startup if they don't exist
 Base.metadata.create_all(bind=engine)
@@ -33,6 +33,7 @@ app.include_router(surface.router)
 app.include_router(edf.router)
 app.include_router(patient_io.router)
 app.include_router(artifacts.router)
+app.include_router(freebrowse.router)
 
 @app.get("/")
 def read_root():

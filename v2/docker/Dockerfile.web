@@ -11,6 +11,21 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
+# FreeBrowse (v2/freebrowse, a vendored/unmodified git submodule of
+# https://github.com/freesurfer/freebrowse) built as a second, independent
+# static bundle -- VITE_SERVERLESS drops its own FastAPI-backend dependency
+# (we never use it; see services/freebrowse.py) and VITE_BASE_PATH matches
+# the /freebrowse/ location nginx serves it under below. Same node image/
+# glibc reasoning as the build stage above.
+FROM node:22-slim AS build-freebrowse
+WORKDIR /app
+COPY freebrowse/frontend/package.json freebrowse/frontend/package-lock.json ./
+RUN npm ci
+COPY freebrowse/frontend/ ./
+ENV VITE_BASE_PATH=/freebrowse/
+ENV VITE_SERVERLESS=true
+RUN npm run build:serverless
+
 # nginx-unprivileged, not stock nginx: ships a pre-chowned non-root `nginx`
 # user for /var/cache/nginx, /var/run, /etc/nginx/conf.d etc., and listens on
 # 8080 instead of 80 -- binding port 80 directly needs root/CAP_NET_BIND_SERVICE
@@ -19,4 +34,5 @@ RUN npm run build
 FROM nginxinc/nginx-unprivileged:1.27-alpine
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build-freebrowse /app/dist /usr/share/nginx/freebrowse
 EXPOSE 8080
