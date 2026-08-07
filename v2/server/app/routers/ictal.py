@@ -1,6 +1,8 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from app.services.signal_filters import DEFAULT_MAINS_FREQ
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.config import settings
@@ -19,12 +21,36 @@ def _get_subject_or_404(subject_id: int, db: Session) -> Subject:
 
 
 class EiRequest(BaseModel):
-    baseline_start: float  # seconds
+    baseline_start: float  # seconds from the start of the edf
     baseline_end: float
     target_start: float
     target_end: float
     band_low: float = 1.0  # Hz, bandpass filter applied before EI computation
+    # Clamped to just under Nyquist by signal_filters.clamp_band -- 500 Hz means
+    # "everything" but is exactly Nyquist on a 1 kHz recording, which butter() rejects.
     band_high: float = 500.0
+    # Grid frequency the data was recorded on: 50 for Europe/Asia, 60 for North
+    # America. Wrong value notches clean signal and leaves the interference.
+    mains_freq: float = DEFAULT_MAINS_FREQ
+
+    @model_validator(mode="after")
+    def _check_windows(self):
+        for label in ("baseline", "target"):
+            s = getattr(self, f"{label}_start")
+            e = getattr(self, f"{label}_end")
+            if s < 0:
+                raise ValueError(f"{label}_start must be >= 0, got {s}")
+            if e <= s:
+                raise ValueError(f"{label}_end ({e}) must be greater than {label}_start ({s})")
+        if self.band_low <= 0:
+            raise ValueError(f"band_low must be > 0, got {self.band_low}")
+        if self.band_high <= self.band_low:
+            raise ValueError(
+                f"band_high ({self.band_high}) must be greater than band_low ({self.band_low})"
+            )
+        if self.mains_freq < 0:
+            raise ValueError(f"mains_freq must be >= 0, got {self.mains_freq}")
+        return self
 
 
 @router.post("/{subject_id}/ictal/{edf_artifact_id}/ei", response_model=JobResponse)

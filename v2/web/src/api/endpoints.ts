@@ -298,7 +298,10 @@ export interface EiComputeParams {
   target_start: number;
   target_end: number;
   band_low?: number;
+  /** Clamped server-side to just under Nyquist. */
   band_high?: number;
+  /** Power-line frequency: 50 Europe/Asia, 60 North America. Defaults to 50. */
+  mains_freq?: number;
 }
 
 export function computeEi(subjectId: number, edfArtifactId: number, params: EiComputeParams): Promise<Job> {
@@ -355,12 +358,20 @@ export function getEiResult(subjectId: number, edfArtifactId: number): Promise<E
 
 export interface HfoComputeParams {
   band_low?: number;
+  /** Clamped server-side to just under Nyquist. */
   band_high?: number;
   rel_thresh?: number;
   abs_thresh?: number;
   min_gap?: number;
   min_last?: number;
   remain_chns?: string[];
+  /** Power-line frequency: 50 Europe/Asia, 60 North America. Defaults to 50.
+   * Matters more here than for EI -- on 60Hz mains the 180 and 240Hz harmonics
+   * fall inside the 80-250Hz ripple band and get detected as HFOs. */
+  mains_freq?: number;
+  /** Analysis window in seconds; omit for the whole recording. */
+  start_time?: number | null;
+  end_time?: number | null;
 }
 
 export function computeHfo(subjectId: number, edfArtifactId: number, params: HfoComputeParams): Promise<Job> {

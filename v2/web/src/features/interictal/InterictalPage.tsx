@@ -164,6 +164,8 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
                 bandLow={state.filterBandLow}
                 bandHigh={state.filterBandHigh}
                 remainChannels={remainChannels}
+                sfreq={meta.fs}
+                durationSec={meta.duration_sec}
               />
             </Stack>
           </Group>

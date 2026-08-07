@@ -1431,3 +1431,142 @@ def test_export_import_patient_roundtrip(mock_run):
         files={"file": ("bogus.zip", bogus.getvalue(), "application/zip")},
     )
     assert r.status_code == 400
+
+
+# --- mains-frequency + Nyquist regression tests -------------------------------
+#
+# The legacy code hardcoded a 50/100/150 Hz notch and let band_high default to
+# 500. On a 1 kHz North-American recording that combination both crashed
+# (band_high == Nyquist) and, once past the crash, notched clean signal while
+# leaving the real 60 Hz harmonics in place. For HFO detection that matters
+# most: 180 and 240 Hz fall inside the 80-250 Hz ripple band, so an un-notched
+# harmonic is counted as an HFO.
+
+
+def test_mains_harmonics_50hz_matches_legacy_series():
+    """The 50 Hz default must reproduce the legacy notch exactly, so the
+    already-verified S1 HFO/EI output does not drift."""
+    from app.services.signal_filters import mains_harmonics
+
+    # filter_for_display's legacy series was np.arange(50, 151, 50)
+    np.testing.assert_array_equal(
+        mains_harmonics(50.0, 1000.0, up_to=50.0 * 3.5), np.arange(50, 151, 50)
+    )
+    # interictal's legacy series was np.arange(50, band_high + 10, 50)
+    np.testing.assert_array_equal(
+        mains_harmonics(50.0, 1000.0, up_to=250.0 + 10.0), np.arange(50, 260, 50)
+    )
+
+
+def test_mains_harmonics_60hz_covers_ripple_band():
+    from app.services.signal_filters import mains_harmonics
+
+    h = mains_harmonics(60.0, 1000.0, up_to=250.0 + 12.0)
+    np.testing.assert_array_equal(h, [60, 120, 180, 240])
+
+
+def test_mains_harmonics_never_reaches_nyquist():
+    """iirnotch needs 0 < w < 1; the legacy 250 Hz harmonic on a 500 Hz
+    recording would have been exactly Nyquist and raised."""
+    from app.services.signal_filters import mains_harmonics
+
+    h = mains_harmonics(50.0, 500.0, up_to=260.0)
+    assert len(h) > 0
+    assert h.max() < 250.0
+
+
+def test_clamp_band_allows_band_high_at_nyquist():
+    """band_high=500 on a 1 kHz recording means 'everything', not an error."""
+    from scipy.signal import butter
+    from app.services.signal_filters import clamp_band
+
+    low, high = clamp_band(1.0, 500.0, 1000.0)
+    assert high < 500.0
+    butter(5, [low / 500.0, high / 500.0], btype="bandpass")  # must not raise
+
+    with pytest.raises(ValueError):
+        clamp_band(0.0, 300.0, 1000.0)
+    with pytest.raises(ValueError):
+        clamp_band(300.0, 100.0, 1000.0)
+
+
+def test_filter_for_display_band_high_at_nyquist_does_not_raise():
+    from app.services.signal_filters import filter_for_display
+
+    fs = 1000.0
+    data = np.random.RandomState(0).randn(4, 4000)
+    out = filter_for_display(data, fs, 1.0, 500.0)  # the old default
+    assert out.shape == data.shape
+    assert np.isfinite(out).all()
+
+
+def test_notch_removes_the_selected_mains_harmonics_only():
+    """A 60 Hz recording filtered with mains=50 keeps its 180 Hz interference;
+    with mains=60 it loses it. 180 Hz sits inside the HFO ripple band."""
+    from app.services.interictal import notch_filt
+    from app.services.signal_filters import mains_harmonics
+
+    fs = 1000.0
+    t = np.arange(0, 10, 1 / fs)
+    rng = np.random.RandomState(0)
+    sig = rng.randn(2, len(t)) + 20 * np.sin(2 * np.pi * 180 * t)
+
+    def power_at(x, f0):
+        spec = np.abs(np.fft.rfft(x, axis=-1)) ** 2
+        fr = np.fft.rfftfreq(x.shape[-1], 1 / fs)
+        return spec[:, (fr > f0 - 1) & (fr < f0 + 1)].max()
+
+    before = power_at(sig, 180)
+    kept = notch_filt(sig, fs, mains_harmonics(50.0, fs, up_to=260.0))
+    removed = notch_filt(sig, fs, mains_harmonics(60.0, fs, up_to=262.0))
+
+    assert power_at(kept, 180) > before * 0.5  # 50 Hz series never touches 180
+    assert power_at(removed, 180) < before * 0.01  # 60 Hz series kills it
+
+
+def test_ei_request_rejects_invalid_windows():
+    sid, artifact_id, _, _ = _create_subject_with_edf("EiValidateTest")
+    base = {
+        "baseline_start": 0.0, "baseline_end": 1.0,
+        "target_start": 2.0, "target_end": 3.0,
+    }
+    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json=base)
+    assert r.status_code == 200
+
+    for bad in (
+        {"baseline_end": 0.0},          # end == start
+        {"target_end": 1.0},            # end before start
+        {"baseline_start": -1.0},       # negative
+        {"band_low": 0.0},              # non-positive band
+        {"band_low": 400.0, "band_high": 100.0},  # inverted band
+        {"mains_freq": -1.0},
+    ):
+        r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json={**base, **bad})
+        assert r.status_code == 422, f"expected 422 for {bad}, got {r.status_code}"
+
+
+def test_hfo_request_rejects_invalid_window_and_accepts_none():
+    sid, artifact_id, _, _ = _create_subject_with_edf("HfoValidateTest")
+
+    # blank window == whole recording, the legacy behavior
+    r = client.post(f"/subjects/{sid}/interictal/{artifact_id}/hfo", json={})
+    assert r.status_code == 200
+    job_id = r.json()["id"]
+    db = SessionLocal()
+    try:
+        params = db.query(Job).filter(Job.id == job_id).first().params_json
+        assert params["start_time"] is None and params["end_time"] is None
+        assert params["mains_freq"] == 50.0
+        db.query(Job).filter(Job.id == job_id).delete()
+        db.commit()
+    finally:
+        db.close()
+
+    for bad in (
+        {"start_time": -1.0},
+        {"start_time": 10.0, "end_time": 5.0},
+        {"mains_freq": -1.0},
+        {"band_low": 250.0, "band_high": 80.0},
+    ):
+        r = client.post(f"/subjects/{sid}/interictal/{artifact_id}/hfo", json=bad)
+        assert r.status_code == 422, f"expected 422 for {bad}, got {r.status_code}"

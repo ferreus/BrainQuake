@@ -11,7 +11,7 @@ from app.models import Job, Subject, Artifact
 from app.services.recon import register_artifact
 from app.services.job_control import check_cancelled
 from app.services.edf_common import resolve_edf_path
-from app.services.signal_filters import filter_for_display
+from app.services.signal_filters import DEFAULT_MAINS_FREQ, filter_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +207,7 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
     baseline_end = float(params["baseline_end"])
     target_start = float(params["target_start"])
     target_end = float(params["target_end"])
+    mains_freq = float(params.get("mains_freq", DEFAULT_MAINS_FREQ))
 
     job.progress_pct = 10.0
     job.progress_message = "Loading edf and applying notch + bandpass filter"
@@ -218,12 +219,24 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
     chn_names = edf_data.ch_names
     raw_data, _ = edf_data[:]
 
-    filtered = filter_for_display(raw_data, fs, band_low, band_high)
+    filtered = filter_for_display(raw_data, fs, band_low, band_high, mains_freq=mains_freq)
 
     base_start_i = int(baseline_start * fs)
     base_end_i = int(baseline_end * fs)
     target_start_i = int(target_start * fs)
     target_end_i = int(target_end * fs)
+
+    # Typed-in windows can land outside the recording or invert; catch it here
+    # with a message naming the recording length rather than failing later on an
+    # empty slice inside compute_hfer.
+    n_samples = filtered.shape[1]
+    for label, s_i, e_i in (("baseline", base_start_i, base_end_i),
+                            ("target", target_start_i, target_end_i)):
+        if s_i < 0 or e_i > n_samples or s_i >= e_i:
+            raise ValueError(
+                f"{label} window {s_i / fs:.3f}-{e_i / fs:.3f}s is invalid for a "
+                f"{n_samples / fs:.3f}s recording"
+            )
 
     job.progress_pct = 60.0
     job.progress_message = "Computing HFER + EI index"

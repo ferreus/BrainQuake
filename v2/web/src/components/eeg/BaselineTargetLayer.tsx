@@ -12,6 +12,11 @@ export interface BaselineTargetSelection {
   startBaselineSelect: () => void;
   startTargetSelect: () => void;
   handleClick: (time: number) => void;
+  /** Set a window directly, for times typed in rather than clicked. Clicking
+   * and typing drive the same state, so the trace overlay always matches what
+   * gets submitted. */
+  setBaselineRange: (range: [number, number] | null) => void;
+  setTargetRange: (range: [number, number] | null) => void;
   reset: () => void;
 }
 
@@ -65,5 +70,30 @@ export function useBaselineTargetSelection(): BaselineTargetSelection {
     setPendingStart(null);
   }, []);
 
-  return { baselineRange, targetRange, awaitingClick, pendingStart, startBaselineSelect, startTargetSelect, handleClick, reset };
+  // Typing a window cancels any half-finished click selection, so the two
+  // input paths can't leave a stale pending start behind.
+  const setBaselineRangeDirect = useCallback((range: [number, number] | null) => {
+    setBaselineRange(range);
+    setAwaitingClick(null);
+    setPendingStart(null);
+  }, []);
+
+  const setTargetRangeDirect = useCallback((range: [number, number] | null) => {
+    setTargetRange(range);
+    setAwaitingClick(null);
+    setPendingStart(null);
+  }, []);
+
+  return {
+    baselineRange,
+    targetRange,
+    awaitingClick,
+    pendingStart,
+    startBaselineSelect,
+    startTargetSelect,
+    handleClick,
+    setBaselineRange: setBaselineRangeDirect,
+    setTargetRange: setTargetRangeDirect,
+    reset,
+  };
 }

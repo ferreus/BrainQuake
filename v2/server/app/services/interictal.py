@@ -12,6 +12,7 @@ from app.models import Job, Subject, Artifact
 from app.services.recon import register_artifact
 from app.services.job_control import check_cancelled
 from app.services.edf_common import resolve_edf_path
+from app.services.signal_filters import DEFAULT_MAINS_FREQ, clamp_band, mains_harmonics
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,8 @@ def find_high_enveTimes_dir(enve_dir, segment_time=200, rel_thresh=3.0, abs_thre
     return whole_enveTimes_cat, chns_highEnve_cout, seg_chNames
 
 
-def HI_preprocess_file(filename, remain_chns, highpass_freqband, progress_cb):
+def HI_preprocess_file(filename, remain_chns, highpass_freqband, progress_cb,
+                       mains_freq=DEFAULT_MAINS_FREQ, start_time=None, end_time=None):
     filedir = os.path.dirname(os.path.abspath(filename))
     fileBaseName = os.path.basename(filename)
     filePreExt = fileBaseName.split('.')[0]
@@ -154,13 +156,29 @@ def HI_preprocess_file(filename, remain_chns, highpass_freqband, progress_cb):
 
     edf_data = mne.io.read_raw_edf(filename, preload=False, stim_channel=None)
     fs = edf_data.info['sfreq']
+    # band_filt()'s butter() has the same 0 < Wn < 1 constraint as the display
+    # filter, so a 250 Hz ripple band on a 500 Hz recording would have raised.
+    highpass_freqband = list(clamp_band(highpass_freqband[0], highpass_freqband[1],
+                                        fs, "HI_preprocess_file"))
 
     valid_chns_index = np.arange(len(edf_data.ch_names))[np.array([x in remain_chns for x in edf_data.ch_names])]
     valid_chns = np.array(edf_data.ch_names)[valid_chns_index]
     valid_chns_st = valid_chns
 
-    time_inter = np.arange(0, edf_data.times[-1], segment_time)
-    time_inter = np.append(time_inter, edf_data.times[-1])
+    # Restrict to the requested window before segmenting. Defaults to the whole
+    # recording, which is what the legacy code always did.
+    t_end_file = float(edf_data.times[-1])
+    t0 = 0.0 if start_time is None else max(0.0, float(start_time))
+    t1 = t_end_file if end_time is None else min(t_end_file, float(end_time))
+    if t1 - t0 < 1.0 / fs:
+        raise ValueError(
+            f"analysis window {t0:.3f}-{t1:.3f}s is empty "
+            f"(recording is 0-{t_end_file:.3f}s)"
+        )
+    logger.info('analysing %.3f-%.3fs of %.3fs, mains %.1f Hz', t0, t1, t_end_file, mains_freq)
+
+    time_inter = np.arange(t0, t1, segment_time)
+    time_inter = np.append(time_inter, t1)
     time_ranges = np.array(list(zip(time_inter[:-1], time_inter[1:])))
 
     for id, tr in enumerate(time_ranges):
@@ -168,7 +186,13 @@ def HI_preprocess_file(filename, remain_chns, highpass_freqband, progress_cb):
         start, end = edf_data.time_as_index(tr)
         batch_data = edf_data[valid_chns_index, start:end][0]
         batch_data = batch_data - batch_data.mean(axis=0)
-        batch_data = notch_filt(batch_data, fs, np.arange(50, highpass_freqband[1] + 10, 50))
+        # Legacy swept 50 Hz harmonics up to the top of the HFO band. On 60 Hz
+        # mains the real harmonics (60/120/180/240) fall *inside* the 80-250 Hz
+        # ripple band, so getting this wrong manufactures HFO detections.
+        batch_data = notch_filt(
+            batch_data, fs,
+            mains_harmonics(mains_freq, fs, up_to=highpass_freqband[1] + mains_freq * 0.2),
+        )
         batch_enve = return_hil_enve_norm(batch_data, fs, highpass_freqband)
         batch_t = np.arange(batch_enve.shape[1]) / fs + tr[0]
 
@@ -216,6 +240,9 @@ def run_hfo_compute_job(db: Session, job: Job, log_file):
     abs_thresh = float(params.get("abs_thresh", 2.0))
     min_gap = float(params.get("min_gap", 20))
     min_last = float(params.get("min_last", 50))
+    mains_freq = float(params.get("mains_freq", DEFAULT_MAINS_FREQ))
+    start_time = params.get("start_time")
+    end_time = params.get("end_time")
 
     job.progress_pct = 5.0
     job.progress_message = "Loading edf"
@@ -236,7 +263,8 @@ def run_hfo_compute_job(db: Session, job: Job, log_file):
         job.progress_message = f"Computing envelope ({job.progress_pct:.0f}%)"
         db.commit()
 
-    HI_preprocess_file(edf_path, remain_chns, [band_low, band_high], progress_cb)
+    HI_preprocess_file(edf_path, remain_chns, [band_low, band_high], progress_cb,
+                       mains_freq=mains_freq, start_time=start_time, end_time=end_time)
 
     check_cancelled(db, job)
     job.progress_pct = 92.0

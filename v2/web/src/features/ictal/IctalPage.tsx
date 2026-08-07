@@ -154,7 +154,12 @@ export function IctalPage({ subjectId }: IctalPageProps) {
                 excludedChannels={state.excludedChannels}
                 onDelete={(chs) => dispatch({ type: "DELETE_CHANNELS", channels: chs })}
               />
-              <EiComputeForm subjectId={subjectId} edfArtifactId={effectiveEdfId} selection={selection} />
+              <EiComputeForm
+                subjectId={subjectId}
+                edfArtifactId={effectiveEdfId}
+                selection={selection}
+                sfreq={meta.fs}
+              />
             </Stack>
           </Group>
           <EiResultPanel

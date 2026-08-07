@@ -1,7 +1,9 @@
 import os
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from app.services.signal_filters import DEFAULT_MAINS_FREQ
 from sqlalchemy.orm import Session
 from app.db import get_db
 from app.config import settings
@@ -27,6 +29,33 @@ class HfoRequest(BaseModel):
     min_gap: float = 20.0  # ms, merge high-envelope segments closer together than this
     min_last: float = 50.0  # ms, minimum event duration to count
     remain_chns: Optional[List[str]] = None  # channel names to include; default: all
+    # Grid frequency the data was recorded on. This matters more here than for EI:
+    # on 60 Hz mains the 180 and 240 Hz harmonics land inside the 80-250 Hz ripple
+    # band, and an un-notched harmonic is detected as an HFO.
+    mains_freq: float = DEFAULT_MAINS_FREQ
+    # Seconds from the start of the edf; None means the whole recording, which is
+    # what the legacy code always did.
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.band_low <= 0:
+            raise ValueError(f"band_low must be > 0, got {self.band_low}")
+        if self.band_high <= self.band_low:
+            raise ValueError(
+                f"band_high ({self.band_high}) must be greater than band_low ({self.band_low})"
+            )
+        if self.mains_freq < 0:
+            raise ValueError(f"mains_freq must be >= 0, got {self.mains_freq}")
+        if self.start_time is not None and self.start_time < 0:
+            raise ValueError(f"start_time must be >= 0, got {self.start_time}")
+        if (self.start_time is not None and self.end_time is not None
+                and self.end_time <= self.start_time):
+            raise ValueError(
+                f"end_time ({self.end_time}) must be greater than start_time ({self.start_time})"
+            )
+        return self
 
 
 @router.post("/{subject_id}/interictal/{edf_artifact_id}/hfo", response_model=JobResponse)

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Button, NumberInput, Paper, Text, Title } from "@mantine/core";
+import { useEffect, useState } from "react";
+import { Button, Group, NumberInput, Paper, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
@@ -17,6 +17,9 @@ interface HfoComputeFormProps {
   /** Channels not deleted in the channel list; sent as remain_chns so the
    * server only scans the same set the user is looking at. */
   remainChannels: string[];
+  /** Recording sample rate and length, for Nyquist and window validation. */
+  sfreq?: number;
+  durationSec?: number;
 }
 
 /**
@@ -25,12 +28,48 @@ interface HfoComputeFormProps {
  * gap to merge, min duration to keep). On finish it invalidates the hfo-result
  * query so HiResultPanel and the canvas overlay pick up the detections.
  */
-export function HfoComputeForm({ subjectId, edfArtifactId, bandLow, bandHigh, remainChannels }: HfoComputeFormProps) {
+export function HfoComputeForm({
+  subjectId,
+  edfArtifactId,
+  bandLow,
+  bandHigh,
+  remainChannels,
+  sfreq,
+  durationSec,
+}: HfoComputeFormProps) {
   const [relThresh, setRelThresh] = useState(2.0);
   const [absThresh, setAbsThresh] = useState(2.0);
   const [minGap, setMinGap] = useState(20.0);
   const [minLast, setMinLast] = useState(50.0);
+  // Seeded from the display filter but independently editable, so an exact band
+  // can be typed here without disturbing what the traces are rendered with.
+  // Changing the display filter re-seeds these.
+  const [band, setBand] = useState<[number, number]>([bandLow, bandHigh]);
+  useEffect(() => setBand([bandLow, bandHigh]), [bandLow, bandHigh]);
+  // 50Hz Europe/Asia, 60Hz North America. Critical here: on 60Hz mains the 180
+  // and 240Hz harmonics land inside the 80-250Hz ripple band, so a wrong value
+  // manufactures HFO detections.
+  const [mainsFreq, setMainsFreq] = useState(50.0);
+  // Blank = whole recording, the legacy behavior.
+  const [startTime, setStartTime] = useState<number | "">("");
+  const [endTime, setEndTime] = useState<number | "">("");
   const [jobId, setJobId] = useState<number | undefined>();
+
+  const nyquist = sfreq ? sfreq / 2 : undefined;
+  const bandHighTooHigh = nyquist != null && band[1] >= nyquist;
+  const bandInverted = band[0] <= 0 || band[0] >= band[1];
+
+  const windowError = (() => {
+    const s = startTime === "" ? null : Number(startTime);
+    const e = endTime === "" ? null : Number(endTime);
+    if (s != null && s < 0) return "Start must be >= 0.";
+    if (s != null && e != null && e <= s) return "End must be after start.";
+    if (durationSec != null) {
+      if (s != null && s >= durationSec) return `Start is past the end of the recording (${durationSec.toFixed(1)}s).`;
+      if (e != null && e > durationSec) return `End is past the end of the recording (${durationSec.toFixed(1)}s).`;
+    }
+    return null;
+  })();
 
   const computeHfo = useComputeHfo(subjectId);
   const queryClient = useQueryClient();
@@ -47,13 +86,16 @@ export function HfoComputeForm({ subjectId, edfArtifactId, bandLow, bandHigh, re
       const j = await computeHfo.mutateAsync({
         edfArtifactId,
         params: {
-          band_low: bandLow,
-          band_high: bandHigh,
+          band_low: band[0],
+          band_high: band[1],
           rel_thresh: relThresh,
           abs_thresh: absThresh,
           min_gap: minGap,
           min_last: minLast,
           remain_chns: remainChannels,
+          mains_freq: mainsFreq,
+          start_time: startTime === "" ? null : Number(startTime),
+          end_time: endTime === "" ? null : Number(endTime),
         },
       });
       setJobId(j.id);
@@ -74,13 +116,86 @@ export function HfoComputeForm({ subjectId, edfArtifactId, bandLow, bandHigh, re
         Compute HFO (High-frequency events)
       </Title>
       <Text size="xs" c="dimmed" mb="xs">
-        Band {bandLow}&ndash;{bandHigh} Hz (from display filter), {remainChannels.length} channels.
+        {remainChannels.length} channels. Band seeded from the display filter; editable here.
       </Text>
-      <NumberInput label="Rel. threshold (× channel median)" value={relThresh} onChange={(v) => setRelThresh(Number(v) || 0)} size="xs" step={0.5} />
+      <Text size="xs" fw={500}>
+        Ripple band (Hz)
+      </Text>
+      <Group gap={4} grow>
+        <NumberInput
+          aria-label="Band low"
+          value={band[0]}
+          onChange={(v) => setBand([Number(v) || 0, band[1]])}
+          size="xs"
+        />
+        <NumberInput
+          aria-label="Band high"
+          value={band[1]}
+          onChange={(v) => setBand([band[0], Number(v) || 0])}
+          size="xs"
+        />
+      </Group>
+      {bandHighTooHigh && (
+        <Text size="xs" c="orange" mt={4}>
+          Band high must be below Nyquist ({nyquist} Hz); it will be clamped.
+        </Text>
+      )}
+      {bandInverted && (
+        <Text size="xs" c="red" mt={4}>
+          Band low must be above 0 and below band high.
+        </Text>
+      )}
+      <NumberInput
+        label="Mains (Hz)"
+        description="50 Europe/Asia, 60 North America"
+        value={mainsFreq}
+        onChange={(v) => setMainsFreq(Number(v) || 0)}
+        size="xs"
+        mt={4}
+      />
+      <Text size="xs" fw={500} mt={4}>
+        Analysis window (s)
+      </Text>
+      <Group gap={4} grow>
+        <NumberInput
+          aria-label="Window start"
+          placeholder="start"
+          value={startTime}
+          onChange={(v) => setStartTime(v === "" ? "" : Number(v))}
+          size="xs"
+          step={0.1}
+          decimalScale={3}
+        />
+        <NumberInput
+          aria-label="Window end"
+          placeholder="end"
+          value={endTime}
+          onChange={(v) => setEndTime(v === "" ? "" : Number(v))}
+          size="xs"
+          step={0.1}
+          decimalScale={3}
+        />
+      </Group>
+      <Text size="xs" c="dimmed">
+        Blank = whole recording.
+      </Text>
+      {windowError && (
+        <Text size="xs" c="red" mt={4}>
+          {windowError}
+        </Text>
+      )}
+      <NumberInput label="Rel. threshold (× channel median)" value={relThresh} onChange={(v) => setRelThresh(Number(v) || 0)} size="xs" step={0.5} mt={4} />
       <NumberInput label="Abs. threshold (× global median)" value={absThresh} onChange={(v) => setAbsThresh(Number(v) || 0)} size="xs" step={0.5} mt={4} />
       <NumberInput label="Min gap (ms, merge events)" value={minGap} onChange={(v) => setMinGap(Number(v) || 0)} size="xs" mt={4} />
       <NumberInput label="Min duration (ms, keep event)" value={minLast} onChange={(v) => setMinLast(Number(v) || 0)} size="xs" mt={4} />
-      <Button size="xs" mt="sm" fullWidth loading={running} onClick={handleCompute}>
+      <Button
+        size="xs"
+        mt="sm"
+        fullWidth
+        loading={running}
+        disabled={windowError != null || bandInverted}
+        onClick={handleCompute}
+      >
         Compute HFO
       </Button>
       {job?.state === "running" && (
