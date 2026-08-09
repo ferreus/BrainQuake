@@ -14,7 +14,9 @@ datablock header:
   then          n_samples frames of (n_channels + 1) little-endian u16;
                 word 0 of each frame is the mark/event word.
 """
+import datetime as dt
 import os
+import re
 import struct
 
 # JE-120A/225A: EEG inputs are +/-3200 uV over the 16-bit range.
@@ -88,6 +90,74 @@ def read_blocks(eeg_path, first=17403):
     if addr != size:
         raise ValueError(f"chain ended at {addr}, file is {size}")
     return blocks
+
+
+_RUN14 = re.compile(rb"(?<!\d)(\d{14})(?!\d)")
+_RUN6 = re.compile(rb"(?<!\d)(\d{6})(?!\d)")
+
+
+def _parse_stamp(buf):
+    """Best-effort timestamp from a log entry's trailing bytes.
+
+    Returns a datetime (full YYYYMMDDhhmmss), a time (bare hhmmss, whose date
+    the caller resolves against the clip), or None. Scans for digit runs rather
+    than assuming a fixed offset, because the entry layout is the one part of
+    this format not verified byte-exact -- see read_log().
+    """
+    m = _RUN14.search(buf)
+    if m:
+        try:
+            return dt.datetime.strptime(m.group(1).decode(), "%Y%m%d%H%M%S")
+        except ValueError:
+            pass
+    for m in _RUN6.finditer(buf):
+        try:
+            return dt.datetime.strptime(m.group(1).decode(), "%H%M%S").time()
+        except ValueError:
+            continue
+    return None
+
+
+def read_log(log_path):
+    """Parse a Nihon Kohden .LOG into [{'when': datetime|time, 'text': str}].
+
+    UNVERIFIED. Unlike the .EEG datablock chain -- which is self-checking, since
+    walking it has to land exactly on EOF -- this layout has no such invariant
+    and was not confirmed against a reference file. Treat the output as a
+    proposal: run `nk2edf.py INPUT.EEG --dump-log` and check the events against
+    what the Nihon Kohden viewer shows before trusting any converted file.
+
+    Assumed layout:
+      0x92            u8    number of log blocks
+      0x93 + i*20     u32   address of log block i
+      <block> + 0x12  u8    number of entries in the block
+      <block> + 0x14  45 B  per entry: 20 bytes of text, then a timestamp
+    """
+    with open(log_path, "rb") as fh:
+        data = fh.read()
+    if len(data) < 0x94:
+        raise ValueError(f"{log_path} is too short to be a Nihon Kohden log")
+
+    events = []
+    n_blocks = data[0x92]
+    for i in range(n_blocks):
+        off = 0x93 + i * 20
+        if off + 4 > len(data):
+            break
+        (addr,) = struct.unpack_from("<I", data, off)
+        if not (0 < addr < len(data) - 0x14):
+            continue
+        n_entries = data[addr + 0x12]
+        for j in range(n_entries):
+            lo = addr + 0x14 + j * 45
+            rec = data[lo : lo + 45]
+            if len(rec) < 45:
+                break
+            text = rec[:20].decode("latin-1").replace("\x00", " ").strip()
+            when = _parse_stamp(rec[20:])
+            if text and when is not None:
+                events.append({"when": when, "text": text})
+    return events
 
 
 if __name__ == "__main__":

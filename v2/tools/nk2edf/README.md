@@ -52,20 +52,64 @@ carry only mains pickup — ~350 µV RMS, mutually correlated at r=0.999, with
 By default the exporter stops where the `.21E` index sequence restarts. Pass
 `--all-channels` to keep everything and judge for yourself.
 
+## Events
+
+Two sources of event data exist, and earlier versions of this converter
+discarded both. Every clip carried a valid but empty `EDF Annotations` signal,
+so the clinical marks lived only in the `.LOG` and had to be transcribed by
+hand against a per-clip time offset.
+
+**The `.LOG`** is read automatically if it sits next to the `.EEG`, and its
+entries are written as EDF+ annotations. Events are matched to clips by
+**absolute wall-clock time** — each datablock carries its own
+`YYYYMMDDhhmmss` start, so an event either falls inside a clip or it does not.
+This deliberately avoids the viewer's "elapsed" counter, which is cumulative
+across the whole study rather than time within a clip.
+
+**The mark/event word** (word 0 of every frame — patient button, technician
+marks) is now written as a `MARK` signal, physical == digital, no unit. It is
+raw and uninterpreted: preserving it beats guessing its encoding, and it can be
+decoded later without re-converting. `--no-mark-channel` restores the old
+behaviour of dropping it.
+
+> **The `.LOG` layout is not verified.** Unlike the datablock chain, which is
+> self-checking (walking it must land exactly on EOF), the log has no such
+> invariant and was reverse-engineered without a reference to test against.
+> **Run `--dump-log` first** and compare the events against the Nihon Kohden
+> viewer before trusting a converted file. If nothing lands inside a clip, the
+> entry layout in `nk.read_log()` is wrong.
+
+The EDF+ annotation signal is sized to fit the busiest record (at least 120
+bytes, as before), so a dense log cannot overflow it.
+
 ## Usage
 
 ```bash
 pip install numpy                      # required
 pip install pyedflib                   # optional, for validation only
 
+python nk2edf.py INPUT.EEG --dump-log              # check log parsing FIRST
 python nk2edf.py INPUT.EEG --list                  # inventory, no writes
-python nk2edf.py INPUT.EEG OUTDIR                  # all clips
+python nk2edf.py INPUT.EEG OUTDIR                  # all clips, with annotations
 python nk2edf.py INPUT.EEG OUTDIR --blocks 0,3,17-20
 python nk2edf.py INPUT.EEG OUTDIR --ascii-labels   # G'1 -> Gp1
 python nk2edf.py INPUT.EEG OUTDIR --all-channels
+python nk2edf.py INPUT.EEG OUTDIR --no-log         # ignore the .LOG
+python nk2edf.py INPUT.EEG OUTDIR --annotations events.csv
 ```
 
 Requires the `.21E` file next to the `.EEG` for electrode labels.
+
+`--annotations` takes a sidecar CSV, `<when>,<text>` per line with `#`
+comments, where `when` is an ISO datetime (matched to clips like log entries)
+or a bare number of seconds from the start of the clip (single-block
+conversions only). Use it when the `.LOG` cannot be parsed, or to add marks
+that were never in it:
+
+```
+2024-03-19T07:24:16,A LVFA -> broad
+2024-03-19T07:24:28,EEG onset
+```
 
 Output is one EDF+C per clip, named `{stem}_{index}_{YYYYMMDDhhmmss}.edf`.
 Each clip is continuous; clips are separated by gaps of minutes to hours, which
@@ -81,3 +125,8 @@ independent EDF implementation) and comparing against a direct re-read of the
 digital  max|err| = 0            over 203 ch x 7000 samples
 physical max|err| = 1.65e-12 mV  (per-channel calibration)
 ```
+
+The annotation writer round-trips through MNE: events land at the requested
+onsets, including several within one record, and the signal is sized so the
+busiest record fits. That check does not cover `nk.read_log()`, which needs a
+real `.LOG` — see the warning above.
