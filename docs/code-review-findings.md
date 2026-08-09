@@ -170,3 +170,42 @@ survives. (A first version only asserted "the output changes", which passed
 vacuously on a synthetic file with no mains content — not a real check.)
 Plus `test_edf_window_rejects_unknown_channel_names` and
 `test_edf_meta_cache_is_invalidated_when_the_file_changes`.
+
+---
+
+## services/soz.py + services/interictal.py
+
+Reviewed 2026-08-09. `soz.py` is where imaging and EEG have to agree on names;
+`interictal.py` got a lighter pass, since HFO may be dropped entirely
+(see [project-direction.md](project-direction.md)).
+
+### high
+
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 33 | **A total contact/channel name mismatch produced a well-formed, meaningless CSV and a successful job.** Contact names come from imaging, channel names from the EDF header, and nothing guarantees one convention (`A1` vs `POL A1` vs `A'1`). Every lookup missing means every value is `NaN`, every combined score becomes `0`, the rows sort into a no-op order, and the job reports success. Now the overlap is measured and logged, and a total mismatch fails the job with example names from both sides. Partial matches log how many contacts matched. | `run_soz_fuse_job` | **fixed** |
+| 34 | **HFO event times were shifted by the analysis-window offset.** Segment start was recomputed as `(segment_index - 1) * segment_time`, which assumes the analysis began at t=0. Whenever `start_time` was used — the v2-added windowing feature — every reported HFO time was wrong by that offset. The correct start was already being saved as `rawTimes`; it is now read from there, which also removes the assumption that segments are uniformly spaced. | `find_high_enveTimes_dir` | **fixed** |
+
+### medium
+
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 35 | `dict(zip(chn_names, values))` silently kept only the last of any duplicated channel name, and silently truncated if the name and value arrays disagreed in length. Both now raise. | `load_ei_result`, `load_hi_result` | **fixed** |
+| 36 | `find_high_enveTimes_dir`'s `segment_time` default was 200 while the module constant is 50 — correct only because every caller passed it positionally. The parameter is now gone entirely (see #34). | `find_high_enveTimes_dir` | **fixed** |
+| 37 | The job's completion message counted all contacts as "ranked" regardless of how many actually had a score. Now reports `ranked/total`. | `run_soz_fuse_job` | **fixed** |
+
+### low
+
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 38 | `for id, tr in ...` shadowed the `id` builtin. | `HI_preprocess_file` | **fixed** |
+| 39 | A window length that is not a multiple of `segment_time` produces a final segment that can be arbitrarily short (down to one sample), which filtering may not handle. | `HI_preprocess_file` | open |
+
+### Tests added
+
+`tests/test_soz_matching.py` — 11 tests: duplicate/length rejection, overlap
+reporting for total and partial mismatches, primed names (`X'12`) matching
+verbatim, EI-only fusion still working with HFO absent, a CHARACTERISATION test
+showing what a total mismatch produces (which is why the job now refuses it),
+and a segment-timing test that pins #34 by running two segments at a 600 s
+window offset and asserting absolute event times.

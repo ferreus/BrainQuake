@@ -59,7 +59,7 @@ def return_hil_enve_norm(data, fs, freqband):
     else:
         filter_bank = np.arange(freqband[0], freqband[1], 20)
         filter_bank = np.append(filter_bank, freqband[1])
-        filter_bank = list(zip(filter_bank[:-1], filter_bank[1:]))
+        filter_bank = list(zip(filter_bank[:-1], filter_bank[1:], strict=True))
         multi_band_enve = []
         for freq in filter_bank:
             tmp_enve = return_hil_enve(data, fs, freq)
@@ -123,7 +123,7 @@ def cat_chns_times(times_1, times_2):
     return cat_times
 
 
-def find_high_enveTimes_dir(enve_dir, segment_time=200, rel_thresh=3.0, abs_thresh=3., min_gap=20, min_last=50):
+def find_high_enveTimes_dir(enve_dir, rel_thresh=3.0, abs_thresh=3., min_gap=20, min_last=50):
     whole_enveTimes = []
     seg_chNames = None
     for filename in os.listdir(enve_dir):
@@ -133,7 +133,12 @@ def find_high_enveTimes_dir(enve_dir, segment_time=200, rel_thresh=3.0, abs_thre
             seg_enve = tmp_enveResults['rawEnve']
             seg_chNames = tmp_enveResults['valid_chns']
             seg_fs = tmp_enveResults['fs']
-            seg_startTime = (int(filename.split('.')[0].split('_')[1]) - 1) * segment_time
+            # Read the segment's real start from the times the preprocessing
+            # step already saved. It was previously recomputed as
+            # (segment_index - 1) * segment_time, which silently assumed the
+            # analysis started at t=0 -- so every reported HFO time was shifted
+            # by the window offset whenever start_time was used.
+            seg_startTime = float(tmp_enveResults['rawTimes'][0])
             seg_highTimes = find_high_enveTimes(seg_enve, seg_chNames, seg_fs, rel_thresh=rel_thresh, abs_thresh=abs_thresh,
                                                  min_gap=min_gap, min_last=min_last, start_time=seg_startTime)
             whole_enveTimes.append(seg_highTimes)
@@ -181,10 +186,10 @@ def HI_preprocess_file(filename, remain_chns, highpass_freqband, progress_cb,
 
     time_inter = np.arange(t0, t1, segment_time)
     time_inter = np.append(time_inter, t1)
-    time_ranges = np.array(list(zip(time_inter[:-1], time_inter[1:])))
+    time_ranges = np.array(list(zip(time_inter[:-1], time_inter[1:], strict=True)))
 
-    for id, tr in enumerate(time_ranges):
-        logger.info(f'part {id + 1}/{time_ranges.shape[0]}')
+    for seg_i, tr in enumerate(time_ranges):
+        logger.info(f'part {seg_i + 1}/{time_ranges.shape[0]}')
         start, end = edf_data.time_as_index(tr)
         batch_data = edf_data[valid_chns_index, start:end][0]
         batch_data = batch_data - batch_data.mean(axis=0)
@@ -198,12 +203,12 @@ def HI_preprocess_file(filename, remain_chns, highpass_freqband, progress_cb,
         batch_enve = return_hil_enve_norm(batch_data, fs, highpass_freqband)
         batch_t = np.arange(batch_enve.shape[1]) / fs + tr[0]
 
-        np.savez(os.path.join(fileResultsDir, f'rawEnve_{id + 1}.npz'), rawEnve=batch_enve, rawTimes=batch_t,
+        np.savez(os.path.join(fileResultsDir, f'rawEnve_{seg_i + 1}.npz'), rawEnve=batch_enve, rawTimes=batch_t,
                  valid_chns_index=valid_chns_index, valid_chns=valid_chns_st, fs=fs)
 
         del batch_data, batch_enve
         gc.collect()
-        progress_cb(int(90 * (id + 1) / time_ranges.shape[0]))
+        progress_cb(int(90 * (seg_i + 1) / time_ranges.shape[0]))
 
 
 def HI_count_highEvents_chns(filename, rel_thresh, abs_thresh, min_gap, min_last):
@@ -214,7 +219,7 @@ def HI_count_highEvents_chns(filename, rel_thresh, abs_thresh, min_gap, min_last
     fileResultsDir = os.path.join(hfoDetsDir, filePreExt)
 
     file_highEnve_times, file_highEnve_chnsCount, file_chnsNames = find_high_enveTimes_dir(
-        fileResultsDir, segment_time, rel_thresh=rel_thresh, abs_thresh=abs_thresh, min_gap=min_gap, min_last=min_last)
+        fileResultsDir, rel_thresh=rel_thresh, abs_thresh=abs_thresh, min_gap=min_gap, min_last=min_last)
 
     out_path = os.path.join(hfoDetsDir, filePreExt + '_events.npz')
     np.savez(out_path, file_highEventsCount=file_highEnve_chnsCount, file_chnsNames=file_chnsNames,

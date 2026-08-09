@@ -1,4 +1,5 @@
 import csv
+import logging
 import math
 import os
 
@@ -9,6 +10,8 @@ from app.config import settings
 from app.models import Artifact, Job, Subject
 from app.services.job_control import check_cancelled
 from app.services.recon import register_artifact
+
+logger = logging.getLogger(__name__)
 
 # Ported from soz_result.py (git tag legacy-final) -- pure fusion/ranking logic
 # only; the mayavi plot_3d call was dropped (this module only produces the
@@ -24,16 +27,52 @@ def load_contact_xyz(elec_xyz_path):
     return contact_xyz
 
 
+def _by_channel(chn_names, values, source):
+    """Channel name -> value, refusing the two ways this can quietly go wrong."""
+    if len(chn_names) != len(values):
+        raise ValueError(
+            f"{source}: {len(chn_names)} channel names but {len(values)} values"
+        )
+    duplicates = {n for n in chn_names if chn_names.count(n) > 1}
+    if duplicates:
+        # dict() would keep only the last of each, silently discarding results.
+        raise ValueError(f"{source}: duplicate channel names {sorted(duplicates)}")
+    return dict(zip(chn_names, values, strict=True))
+
+
 def load_ei_result(ei_result_path):
     data = np.load(ei_result_path, allow_pickle=True)
     chn_names = [str(n) for n in data['chn_names']]
-    return dict(zip(chn_names, data['ei']))
+    return _by_channel(chn_names, data['ei'], "EI result")
 
 
 def load_hi_result(hi_result_path):
     data = np.load(hi_result_path, allow_pickle=True)
     chn_names = [str(n) for n in data['file_chnsNames']]
-    return dict(zip(chn_names, data['file_highEventsCount']))
+    return _by_channel(chn_names, data['file_highEventsCount'], "HFO result")
+
+
+def describe_name_overlap(contact_names, by_chan, kind):
+    """How well imaging contact names line up with EEG channel names.
+
+    These two name sets come from completely different places -- contacts from
+    the electrode segmentation or the 3D Slicer import, channels from the EDF
+    header -- and nothing upstream guarantees they use the same convention
+    ('A1' vs 'POL A1' vs "A'1"). A mismatch produces NaN for every contact,
+    which then becomes a combined score of 0 for every contact: a ranking that
+    looks well-formed and means nothing.
+    """
+    contacts = set(contact_names)
+    channels = set(by_chan)
+    matched = sorted(contacts & channels)
+    return {
+        "kind": kind,
+        "matched": len(matched),
+        "n_contacts": len(contacts),
+        "n_channels": len(channels),
+        "unmatched_contacts": sorted(contacts - channels)[:10],
+        "unused_channels": sorted(channels - contacts)[:10],
+    }
 
 
 def rank_pct(values):
@@ -138,6 +177,37 @@ def run_soz_fuse_job(db: Session, job: Job, log_file):
     job.progress_message = "Ranking contacts"
     db.commit()
 
+    overlaps = [
+        describe_name_overlap(contact_xyz, ei_by_chan, "EI"),
+        describe_name_overlap(contact_xyz, hi_by_chan, "HFO"),
+    ]
+    for o in overlaps:
+        if o["matched"] == 0:
+            logger.warning(
+                "%s: none of the %d contacts matched any of the %d channel names. "
+                "Example contacts: %s. Example channels: %s.",
+                o["kind"], o["n_contacts"], o["n_channels"],
+                o["unmatched_contacts"], o["unused_channels"],
+            )
+        else:
+            logger.info(
+                "%s: matched %d/%d contacts against %d channels (unmatched e.g. %s)",
+                o["kind"], o["matched"], o["n_contacts"], o["n_channels"],
+                o["unmatched_contacts"],
+            )
+
+    if all(o["matched"] == 0 for o in overlaps):
+        # Every value would be NaN, every combined score 0, and the CSV would
+        # look perfectly well-formed while ranking nothing. Fail instead.
+        ei_o, hi_o = overlaps
+        raise ValueError(
+            "No contact name matched any EEG channel name, so there is nothing to rank. "
+            f"Contacts look like {ei_o['unmatched_contacts'][:5]}; "
+            f"EI channels look like {ei_o['unused_channels'][:5]}; "
+            f"HFO channels look like {hi_o['unused_channels'][:5]}. "
+            "The electrode labels and the EDF channel labels need to use the same convention."
+        )
+
     rows = build_result_table(contact_xyz, ei_by_chan, hi_by_chan)
 
     out_csv = os.path.join(settings.SUBJECTS_DIR, subject.name, "soz_result.csv")
@@ -145,7 +215,8 @@ def run_soz_fuse_job(db: Session, job: Job, log_file):
     register_artifact(db, subject.id, job.id, "soz_csv", out_csv)
 
     job.progress_pct = 95.0
-    job.progress_message = f"Ranked {len(rows)} contacts"
+    ranked = sum(1 for r in rows if r["combined_score"] > 0)
+    job.progress_message = f"Ranked {ranked}/{len(rows)} contacts (rest had no EI or HFO value)"
     db.commit()
 
 
