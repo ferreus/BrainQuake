@@ -1,0 +1,15 @@
+# label,edf_path,onset
+#
+# onset is either a number of seconds from the start of that EDF, or
+# @<regex> matched against the file's EDF+ annotations (exactly one must match).
+# Relative edf_path entries resolve against this manifest's directory, so a
+# copy of this file can sit next to the recordings.
+#
+#   python export_edf.py --manifest seizures.csv -o outdir
+#
+# One row per seizure. Each seizure is usually in its own clip, which is why
+# the path is per row rather than global.
+
+SZ1P,recordings/clip_17.edf,@^SZ 1P$
+SZ2P,recordings/clip_20.edf,@^SZ 2P$
+SZ3P,recordings/clip_21.edf,120
