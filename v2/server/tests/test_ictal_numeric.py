@@ -220,12 +220,18 @@ def test_bandpass_rejects_outside_the_band():
 # Data-quality screening
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["EKG1", "ecg", "REF2", "DC01", "EMG-L", "Annotations", "SpO2"])
+# Every auxiliary name below is real -- taken from the 203-channel Nihon Kohden
+# export of Bella's clip 17 (184 SEEG contacts + 19 of these).
+@pytest.mark.parametrize(
+    "name",
+    ["EKG1", "EKG2", "ecg", "REF1", "REF2", "DC01", "DC10", "UNUSED248", "E",
+     "EMG-L", "Annotations", "SpO2"],
+)
 def test_auxiliary_channel_names_are_recognised(name):
     assert find_non_seeg_channels([name]) == [0]
 
 
-@pytest.mark.parametrize("name", ["A1", "X'12", "L'8", "D6", "M10", "G'3"])
+@pytest.mark.parametrize("name", ["A1", "X'12", "L'8", "D6", "M10", "G'3", "Q6", "K'12"])
 def test_seeg_contact_names_are_not_flagged(name):
     assert find_non_seeg_channels([name]) == []
 

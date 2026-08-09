@@ -331,20 +331,27 @@ def compute_full_band(raw_data, sfreq, ei):
     return spec_pca, pre_labels, chosen_cluster_ind
 
 
-# Channels that are recorded alongside the SEEG contacts but are not brain
-# signal. They matter twice over: they are ranked as if they were contacts, and
-# -- worse -- filter_for_display() subtracts the mean across ALL channels, so an
-# EKG trace leaks into every SEEG channel through the common-average reference.
-_NON_SEEG_CHANNEL_RE = re.compile(
-    r"^(ekg|ecg|emg|eog|eeg\s|ref|dc\d|trig|mark|events?|annotations?|"
-    r"spo2|pleth|pr|resp|sat|osat|photic|sti\d*)",
-    re.IGNORECASE,
-)
+# An SEEG contact is named for its shaft and its position on it: one letter,
+# optionally primed for the contralateral shaft, then the contact number --
+# A1, D6, X'12, G'10. Anything else in the file is an auxiliary trace.
+#
+# Identifying contacts positively rather than blacklisting known auxiliary
+# names is what makes this reliable: a blacklist has to anticipate every
+# amplifier's naming (REF1, DC01, EKG1, UNUSED248 and a bare E all appear in
+# one Nihon Kohden export), while the contact convention is fixed by the
+# implantation scheme.
+_SEEG_CONTACT_RE = re.compile(r"^[A-Za-z]'?\d+$")
 
 
 def find_non_seeg_channels(chn_names):
-    """Indices of channels whose names look like non-SEEG auxiliary traces."""
-    return [i for i, n in enumerate(chn_names) if _NON_SEEG_CHANNEL_RE.match(str(n).strip())]
+    """Indices of channels that are not SEEG contacts.
+
+    These matter twice over: they are ranked as if they were contacts, and --
+    worse -- filter_for_display() subtracts the mean across every channel it is
+    given, so an EKG or DC trace leaks into every SEEG channel through the
+    common-average reference.
+    """
+    return [i for i, n in enumerate(chn_names) if not _SEEG_CONTACT_RE.match(str(n).strip())]
 
 
 def find_saturated_channels(data, frac_threshold=0.01):
