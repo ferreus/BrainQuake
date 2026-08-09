@@ -129,28 +129,16 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# uploaded data
-BrainQuake/Server_codes/data/recv/
-BrainQuake/upload/
+# uploaded / patient data — never commit, contains imaging + EEG
 datasets/
 data/
-BrainQuake/Server_codes/data/recv/
-BrainQuake/download/
 
 # FreeSurfer license (never commit; mounted at runtime via v2/docker/.env)
 v2/docker/license.txt
 
-# SQLite runtime database + WAL/SHM sidecar files (regenerated at runtime)
-v2/server/data/brainquake.db
-v2/server/data/brainquake.db-shm
-v2/server/data/brainquake.db-wal
-
-# Local hough-3d-lines checkout + build output. The canonical source is the
-# git submodule at BrainQuake/utils/hough-3d-lines, and the v2 server builds
-# its own binary from source in v2/docker/base.Dockerfile -- this directory is
-# only ever a local working copy (BrainQuake/utils/elec_utils.py invokes
-# ./hough-3d-lines/hough3dlines.exe relative to the legacy app's cwd), so the
-# 11MB of sources, .obj files and platform-specific executables stay untracked.
-BrainQuake/hough-3d-lines/
+# v2 server runtime data: SQLite DB, uploads (recv/), FreeSurfer subjects,
+# logs, test DATA_ROOT. Never commit anything under here — it holds patient
+# data (imaging + EEG) which must stay out of the repository entirely.
+v2/server/data/
 
 

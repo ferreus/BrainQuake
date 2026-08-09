@@ -16,11 +16,11 @@ from app.services.signal_filters import DEFAULT_MAINS_FREQ, clamp_band, mains_ha
 
 logger = logging.getLogger(__name__)
 
-# Ported from BrainQuake/utils/interictal_utils.py (pure signal-processing helpers)
-# and BrainQuake/utils/HI_apis.py (the two entry points HI_preprocess_file/
-# HI_count_highEvents_chns), merged into one service module per PLAN.md's Phase (b)
-# checklist. Behavior is unchanged except progress reporting, which now updates the
-# Job row instead of emitting a Qt signal.
+# Ported from utils/interictal_utils.py (pure signal-processing helpers) and
+# utils/HI_apis.py (the two entry points HI_preprocess_file/HI_count_highEvents_chns)
+# -- git tag legacy-final -- merged into one service module. Behavior is unchanged
+# except progress reporting, which now updates the Job row instead of emitting a
+# Qt signal.
 
 segment_time = 50
 

@@ -4,42 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-BrainQuake is a pre-surgical epilepsy planning tool for SEEG electrode localization, brain surface reconstruction, and seizure-focus computation (EI/HFO/SOZ). It is used by researchers and clinicians to process MRI/CT scans and intracranial EEG data.
+BrainQuake is a self-hosted research platform for SEEG analysis: electrode localization, brain surface reconstruction (FreeSurfer recon jobs), and seizure-focus computation (EI/HFO/SOZ, neural fragility via external tools). It began as a reproduction of the BrainQuake paper (PMC8782204) and became a personal research platform — the motivating case and real goals are in **[docs/project-direction.md](docs/project-direction.md)**; read it before making prioritization decisions. The paper's algorithms are one replaceable plugin, not the project's purpose.
 
 ## Repository layout
 
 ```
-BrainQuake/     # Legacy client/server — do NOT modify; kept as golden-output baseline
 v2/
-  server/       # FastAPI + SQLite REST service (phases a+b done)
-  web/          # React + Vite web UI (Mantine, react-three-fiber); the only v2 client now.
-                # The earlier v2/client/ PyQt5 desktop client (phase d) was removed 2026-08-06.
-datasets/       # Bundled S1 and Bella sample data (T1, CT, EDF)
-tutorials/      # Jupyter tutorial + electrode module install notes
+  server/       # FastAPI + SQLite REST service
+  web/          # React + Vite web UI (Mantine, react-three-fiber); the only client.
+                # The earlier v2/client/ PyQt5 desktop client was removed 2026-08-06.
+datasets/       # LOCAL ONLY, gitignored — S1 (public Zenodo) and Bella (T1, CT, EDF)
+data/           # LOCAL ONLY, gitignored — working data (e.g. Bella FreeSurfer subject)
+docs/           # project-direction.md (goals/roadmap), cleanup-plan.md, analysis notes
 ```
 
-The re-architecture plan lives in [PLAN.md](PLAN.md). All new work goes under `v2/` — the `BrainQuake/` directory stays runnable as the verification baseline throughout.
+The legacy v1 client/server (`BrainQuake/`, `tutorials/`) was removed 2026-08-09 — see [docs/cleanup-plan.md](docs/cleanup-plan.md). Its full history and final state are preserved at git tag `legacy-final`; check it out (`git checkout legacy-final`) if you need to read v1 source.
+
+**Data privacy**: `datasets/`, `data/`, and `v2/server/data/` are gitignored and must stay that way — they contain patient imaging and EEG. Never commit files from these directories, never weaken those ignore rules, and never add sample/fixture data containing real recordings to the tree.
+
+All work goes under `v2/`. Current roadmap: [docs/project-direction.md](docs/project-direction.md) (validation roadmap, evidence state) and [docs/cleanup-plan.md](docs/cleanup-plan.md) (legacy removal + v2 review plan).
 
 ## Commands
-
-### Legacy app (v1 — reference only)
-
-```bash
-# Conda environment (recommended):
-conda create -n bq_env -c conda-forge python=3.7 numpy scipy matplotlib=3.4.3 nb_conda vtk mayavi=4.6.2 mne nibabel scikit-learn
-conda activate bq_env
-
-cd BrainQuake/BrainQuake
-python client_main.py          # launches the main launcher window
-```
-
-The legacy server is a separate long-running process:
-```bash
-# On the server machine (requires FreeSurfer + FSL installed):
-cd BrainQuake/BrainQuake/Server_codes
-python server.py        # raw TCP on port 6669
-python combine.py       # separate always-running recon-all poller
-```
 
 ### v2 server
 
@@ -81,14 +66,6 @@ pytest tests/test_api.py::test_subject_crud
 
 ## Architecture
 
-### Legacy (v1)
-
-- **5 independent PyQt5 windows** launched from `client_main.py`: `client_surf`, `client_elec`, `client_ictal`, `client_inter`, `client_soz`
-- **TCP socket server** on port 6669 (`Server_codes/server.py`), custom pickle-framed protocol (`utils_scs.py`), spawning per-request `multiprocessing.Process` jobs
-- **`combine.py`** is a separate always-running 8s-cycle poller that shells out to `recon-all`, `flirt`/`fnirt`, `mri_convert`, and the vendored C++ `hough3dlines` binary
-- **All numeric computation runs client-side**: EI/HFER (`client_ictal.py`), HFO/HI (`utils/HI_apis.py`), electrode segmentation (`utils/elec_utils.py`), SOZ fusion (`soz_result.py`)
-- **Flat-file task queue**: `task_log.txt`/`task_done.txt`, 6 space-delimited fields, no locking
-
 ### v2 (FastAPI + SQLite)
 
 **Server** (`v2/server/app/`):
@@ -98,7 +75,7 @@ pytest tests/test_api.py::test_subject_crud
 - `models/` — SQLAlchemy ORM: `Subject`, `Job`, `Artifact`
 - `schemas/` — Pydantic request/response models
 - `routers/` — one file per resource group; each job-creating endpoint inserts a `queued` row and returns it
-- `services/` — ported numeric modules (`recon.py`, `ct_register.py`); future: `electrodes.py`, `ictal.py`, `interictal.py`, `soz.py`
+- `services/` — ported numeric modules: `recon.py`, `ct_register.py`, `electrodes.py`, `ictal.py`, `interictal.py`, `soz.py`, `edf.py`/`edf_common.py`, `signal_filters.py`, `freebrowse.py`, `fastsurfer_client.py`, `job_control.py`
 - `workers/jobs_worker.py` — polls `jobs` table for `queued` rows, claims one, runs it, writes a per-job log file to `DATA_ROOT/logs/job_{id}.log`. On startup, fails any stale `running` rows from a previous crash.
 
 **Job state machine**: `queued → running → finished | failed | cancelled`
@@ -109,26 +86,24 @@ pytest tests/test_api.py::test_subject_crud
 
 **Tests** (`v2/server/tests/test_api.py`): use `fastapi.testclient.TestClient` + `unittest.mock.patch` on `subprocess.run` so tests run without FreeSurfer/FSL installed. The mock creates the expected output files so artifact-registration logic is fully exercised. Tests use an in-memory SQLite path (`./data/test_brainquake.db`) cleaned up in the `autouse` fixture.
 
-### Critical files for porting work (v1 → v2)
+### v1 → v2 porting provenance
 
-| File | What to port | Status |
+All v1 numeric modules were ported (all "Done"); the v1 sources live at git tag `legacy-final` once `BrainQuake/` is removed:
+
+| v1 source (at `legacy-final`) | What was ported | v2 home |
 |---|---|---|
-| `BrainQuake/Server_codes/utils.py` | `reconrun`/`fastrun`/`infantrun` shell-outs, file task queue | Done (`services/recon.py`) |
-| `BrainQuake/Server_codes/eePipeline.py` | CT→MRI FSL registration pipeline | Done (`services/ct_register.py`) |
-| `BrainQuake/utils/elec_utils.py` | hough3dlines subprocess, GMM, `ElectrodeSeg` — split into `detect`/`segment` | Done (`services/electrodes.py`) |
-| `BrainQuake/client_ictal.py` | `compute_hfer`, `compute_ei_index`, `compute_full_band` | Done (`services/ictal.py`) |
-| `BrainQuake/utils/HI_apis.py` + `interictal_utils.py` | HFO/HI detection | Done (`services/interictal.py`) |
-| `BrainQuake/soz_result.py` | SOZ fusion/ranking (mayavi call stays client-side) | Done (`services/soz.py`) |
+| `BrainQuake/Server_codes/utils.py` | `reconrun`/`fastrun`/`infantrun` shell-outs | `services/recon.py` |
+| `BrainQuake/Server_codes/eePipeline.py` | CT→MRI FSL registration pipeline | `services/ct_register.py` |
+| `BrainQuake/utils/elec_utils.py` | hough3dlines subprocess, GMM, `ElectrodeSeg` — split into `detect`/`segment` | `services/electrodes.py` |
+| `BrainQuake/client_ictal.py` | `compute_hfer`, `compute_ei_index`, `compute_full_band` | `services/ictal.py` |
+| `BrainQuake/utils/HI_apis.py` + `interictal_utils.py` | HFO/HI detection | `services/interictal.py` |
+| `BrainQuake/soz_result.py` | SOZ fusion/ranking (mayavi call dropped) | `services/soz.py` |
 
-## Current plan (PLAN.md phases)
+## Status and roadmap
 
-See [PLAN.md](PLAN.md) for the full itemized checklist. Summary:
+The old PLAN.md phase system is retired. Current roadmap: **[docs/project-direction.md](docs/project-direction.md)** (validation roadmap for the Bella case, multi-algorithm convergence strategy) and **[docs/cleanup-plan.md](docs/cleanup-plan.md)** (legacy removal, v2 review order, marking conventions, synthetic-test plan). Historical notes worth keeping:
 
-- **Phase (a) — FastAPI+SQLite skeleton**: done (subjects, jobs, recon, ct_register, artifacts routers + worker; 5 passing tests)
-- **Phase (b) — Numeric pipeline port**: services + routers done (electrode-seg detect/segment/labels/chn-xyz/contacts, EI, HFO, SOZ fusion — see `v2/server/app/services/{electrodes,ictal,interictal,soz}.py`); still pending the user's own manual comparison against the legacy app on the S1 dataset (no automated golden-output harness — EI/HFO depend on manual GUI inputs the legacy app never persists, so captured outputs aren't reproducible from scratch)
-- **Phase (c) — Docker image**: done — split into a hierarchical two-image build to keep the public image small and avoid rebuilding FreeSurfer/FSL on every app change: `v2/docker/base.Dockerfile` (→ `brainquake-base`, built separately via `v2/docker/build-base.sh`, not by compose) holds `FROM ubuntu:24.04` + FreeSurfer **8.2.0** (upgraded from 7.4.1 — 7.4.1's tarball didn't ship `infant_recon_all` at all, which 8.2.0 bundles; 8.x is only distributed as a `.deb` built against Ubuntu 24.04, `wget`ed straight from `surfer.nmr.mgh.harvard.edu` during the build and installed via `apt-get install <local .deb>` so apt resolves its declared deps — the base image moved off 22.04 to match, since resolving a noble-targeted package against a jammy repo risks broken dependency versions; the Dockerfile symlinks wherever the `.deb` actually installs `SetUpFreeSurfer.sh` to `/usr/local/freesurfer`, since every hardcoded path elsewhere in the repo still expects that exact location) + FSL's `fsl-flirt` conda package only (installed via micromamba from FSL's own conda channel — `flirt` is the only FSL binary the codebase calls; this replaced a full `fslinstaller.py` install that cost ~10.5GB for that one binary) + `hough-3d-lines` built from source in a discarded builder stage. `v2/docker/Dockerfile` (→ `brainquake-server`, `api`+`worker` in `docker-compose.yml`) is `FROM brainquake-base` and adds only the Python venv + app code — this is the file to edit for a new apt/pip dependency, since it never touches the base layers. `docker-compose.yml` also has a `web` service (`v2/web/Dockerfile`, multi-stage node build → nginx) so `docker compose up --build` serves the browsable UI alongside `api`/`worker`. FS_LICENSE mounted at runtime, never baked in. Validated on 7.4.1/22.04: both containers build/boot healthy, all native binaries (`recon-all`, `flirt`, `hough3dlines`) run, DB round-trip works. The 8.2.0/24.04 base image itself has not yet been built/validated — that's the next thing to confirm on whichever machine picks this up. A real end-to-end `recon-all` run (needs the user's own `FS_LICENSE` + hours) is still open.
-- **Phase (d) — Client REST integration**: superseded — the original `v2/client/` PyQt5 desktop client (5 separate windows rewired to `api_client.py`) was removed 2026-08-06 in favor of `v2/web/`, a React + Vite + Mantine web UI that talks to the same `v2/server` REST API (see `v2/web/src/api/endpoints.ts`); `BrainQuake/` itself untouched.
-- **Phase (e) — Unified web UI**: `v2/web/` already has a tabbed single-page layout (subject → electrodes/ictal/interictal/soz feature pages) + an always-mounted Jobs drawer with progress + log tail — the Qt-specific framing of this phase (`QMainWindow`, `QProgressBar`) is obsolete now that the client is web-based.
-- **Phase (f) — Integration/E2E**: full S1 pipeline end-to-end via Docker server + `v2/web`
+- **Server + web app**: functional — subjects/jobs/recon/ct_register/electrodes/EI/HFO/SOZ routers + worker; tabbed web UI with Jobs drawer, FreeBrowse tab, 3D Slicer contact import.
+- **Docker**: done — split into a hierarchical two-image build to keep the public image small and avoid rebuilding FreeSurfer/FSL on every app change: `v2/docker/base.Dockerfile` (→ `brainquake-base`, built separately via `v2/docker/build-base.sh`, not by compose) holds `FROM ubuntu:24.04` + FreeSurfer **8.2.0** (upgraded from 7.4.1 — 7.4.1's tarball didn't ship `infant_recon_all` at all, which 8.2.0 bundles; 8.x is only distributed as a `.deb` built against Ubuntu 24.04, `wget`ed straight from `surfer.nmr.mgh.harvard.edu` during the build and installed via `apt-get install <local .deb>` so apt resolves its declared deps — the base image moved off 22.04 to match, since resolving a noble-targeted package against a jammy repo risks broken dependency versions; the Dockerfile symlinks wherever the `.deb` actually installs `SetUpFreeSurfer.sh` to `/usr/local/freesurfer`, since every hardcoded path elsewhere in the repo still expects that exact location) + FSL's `fsl-flirt` conda package only (installed via micromamba from FSL's own conda channel — `flirt` is the only FSL binary the codebase calls; this replaced a full `fslinstaller.py` install that cost ~10.5GB for that one binary) + `hough-3d-lines` built from source in a discarded builder stage. `v2/docker/Dockerfile` (→ `brainquake-server`, `api`+`worker` in `docker-compose.yml`) is `FROM brainquake-base` and adds only the Python venv + app code — this is the file to edit for a new apt/pip dependency, since it never touches the base layers. `docker-compose.yml` also has a `web` service (`v2/web/Dockerfile`, multi-stage node build → nginx) so `docker compose up --build` serves the browsable UI alongside `api`/`worker`. FS_LICENSE mounted at runtime, never baked in. Validated on 7.4.1/22.04: both containers build/boot healthy, all native binaries (`recon-all`, `flirt`, `hough3dlines`) run, DB round-trip works. The 8.2.0/24.04 base image itself has not yet been built/validated — that's the next thing to confirm on whichever machine picks this up. A real end-to-end `recon-all` run (needs the user's own `FS_LICENSE` + hours) is still open.
 
-**Key constraint**: Phase (b) correctness is the highest-risk item — zero tests exist on the numeric code today, and no automated golden-output harness is being built (per explicit user decision). The user manually verifies each ported service (EI values, HFO event counts, electrode contact coordinates) against the unmodified legacy app on the S1 dataset.
+**Key constraint**: numeric-service correctness remains the highest-risk item — zero tests exist on the math today, and no v1 golden-output harness is being built (per explicit user decision; EI/HFO depended on manual GUI inputs the legacy app never persisted). The strategy is now (a) synthetic-signal characterization tests per `docs/cleanup-plan.md`, and (b) cross-validation against independent implementations (ezfragility, AnyWave/epycom EI, independent HFO detectors) per `docs/project-direction.md` — not comparison against the legacy app.

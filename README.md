@@ -1,75 +1,104 @@
 # BrainQuake
 
-A multi-modal neurodata processing software for intracranial stereo-encephalography (SEEG) electrode localization, ictal &amp; inter-ictal data analysis, and cortical surface reconstruction.
+A self-hosted research platform for pre-surgical SEEG epilepsy analysis:
+electrode localization, FreeSurfer brain-surface reconstruction, and
+seizure-focus computation (EI, HFO, SOZ fusion), through a browser UI backed
+by a job-queue server.
 
 ## Contents
 
 - [Overview](#overview)
-- [System Requirements](#system-requirements)
-- [Installation Guide](#installation-guide)
-- [Tutorial](#tutorial)
-- [Outputs](#outputs)
-- [Example Dataset](#example-dataset)
-- [Documentation](#documentation)
+- [Project direction](#project-direction)
+- [Repository layout](#repository-layout)
+- [Running it](#running-it)
+- [Provenance](#provenance)
 - [License](#license)
-- [Manuscripts](#manuscripts)
-- [Issues](#issues)
 
 ## Overview
 
-The **BrainQuake** software has been developed as a comprehensive pre-surgical solution for epilepsy neurosurgeries by providing tools of SEEG electrode registration, surface reconstruction, SEEG ictal and inter-ictal data processing.
+BrainQuake began as a reproduction of the [BrainQuake paper and its published
+code](https://pmc.ncbi.nlm.nih.gov/articles/PMC8782204/) and grew into a
+different thing: a self-hosted platform that runs the full SEEG pre-surgical
+pipeline as background jobs — FreeSurfer reconstruction, CT↔MRI registration,
+electrode contact detection/segmentation (including import from 3D Slicer),
+and epileptogenicity computation (EI/HFO/SOZ) — with a React web UI to drive
+it and inspect the results (including a FreeBrowse tab for browsing FreeSurfer
+volumes/surfaces without a local install).
 
-![](./docs/Figure1_MainSoftware.png)
+The current architecture is FastAPI + SQLite (`v2/server/`) with a React +
+Vite + Mantine web client (`v2/web/`), both packaged as Docker images.
 
-## System Requirements
+## Project direction
 
-The **BrainQuake** software:
+**[docs/project-direction.md](docs/project-direction.md)** is the canonical
+statement of what this project is for and where it's headed — read it before
+making prioritization calls. In short: the paper's own algorithms are one
+replaceable component in a larger platform, not the point of the project.
+**[docs/cleanup-plan.md](docs/cleanup-plan.md)** tracks the ongoing legacy
+removal and code-quality review.
 
-- was developed and tested on Mac OSX, Ubuntu, and Windows;
-- works on Python 3.7 or higher;
-- has key functions built upon FSL, Freesurfer, Matplotlib, Mayavi, MNE-Python, Nibabel, Numpy, PyQt5, Scikit-learn, Scipy, Socket, and others;
-- takes approximately 40 min to run for most datasets.
+## Repository layout
 
-## Installation Guide
+```
+v2/
+  server/       # FastAPI + SQLite REST service, job worker
+  web/          # React + Vite web UI (Mantine, react-three-fiber) -- the client
+  docker/       # Dockerfiles + compose (base image w/ FreeSurfer+FSL, app image, web image)
+datasets/       # LOCAL ONLY, gitignored -- sample/patient imaging + EEG
+data/           # LOCAL ONLY, gitignored -- working data
+docs/           # Project direction, cleanup plan, analysis notes
+```
 
-**BrainQuake** server package relies on [FSL](http://fsl.fmrib.ox.ac.uk/fsl/fslwiki/FslInstallation) and [Freesurfer](https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall). You should install them through the instructions on their website. Server codes are not mandatory to be installed. BrainQuake group provides a public server to do the reconstruction and registration works for users. The client package and its Python dependencies can be installed and run with the following：
+An earlier PyQt5 desktop client/server (`BrainQuake/`) was the project's
+starting point; it was removed 2026-08-09 once the web app fully replaced it.
+Its full history is preserved at git tag `legacy-final` — see
+[Provenance](#provenance).
 
-    git clone https://github.com/HongLabTHU/BrainQuake.git
-    cd BrainQuake
-    pip install -r requirements.txt
-    cd BrainQuake
-    python client_main.py
+## Running it
 
-**Note!!!** Installation using pip may face a problem of dependency package version conflict! The newest 'mayavi' version has a conflict with the newest 'vtk' package, so in requirement.txt we define the downloading versions to be 'vtk==8.1.2' and 'mayavi==4.6.2'. If you have installed a later version of mayavi or vtk before, please notice the version changing issue. For now, matplotlib version should be fixed to 3.4.3.
+### Docker (recommended)
 
-We **HIGHLY RECOMMEND** a one-stop installation option that you use anaconda to create a virtual environment for all those packages and dependencies. After installing [anaconda](https://www.anaconda.com/products/individual#Downloads), run the following: (python>=3.6 will all be fine.)
+```bash
+# 1. Get a free FreeSurfer license: https://surfer.nmr.mgh.harvard.edu/registration.html
+# 2. cp v2/docker/.env.example v2/docker/.env and point FS_LICENSE_HOST at it
+# 3. Build the base image once (FreeSurfer + FSL + hough-3d-lines -- rarely changes):
+v2/docker/build-base.sh
+# 4. Build and start the app:
+docker compose -f v2/docker/docker-compose.yml up --build
+# 5. Open http://<host>:${WEB_PORT:-80}/
+```
 
-    conda create -n bq_env -c conda-forge python=3.7 numpy scipy matplotlib=3.4.3 nb_conda vtk mayavi=4.6.2 mne nibabel scikit-learn
-    
-With this conda virtual environment (venv) 'bq_env' created, BrainQuake main window can pop up by running:
+### Local development
 
-    conda activate bq_env
-    cd <directory>/BrainQuake/BrainQuake
-    python client_main.py
+Server:
+```bash
+cd v2/server
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[test]"
+uvicorn app.main:app --reload --port 8000       # API
+python -m app.workers.jobs_worker               # job worker, separate terminal
+pytest                                           # tests
+```
 
-## Tutorial
+Web:
+```bash
+cd v2/web
+npm install
+npm run dev
+```
 
-## Outputs
+See [CLAUDE.md](CLAUDE.md) for environment variables, architecture notes, and
+job types.
 
-![](./docs/result.png)
+## Provenance
 
-## Example Dataset
-
-For example data, please see [TestData on Zenodo](https://doi.org/10.5281/zenodo.5494990)
-
-## Documentation
+The original BrainQuake desktop application and TCP server — the paper's
+reference implementation — lived at `BrainQuake/` and is preserved in full at
+git tag `legacy-final` (`git checkout legacy-final`). The v2 numeric services
+under `v2/server/app/services/` are ports of that code; each module's header
+comment records its source file. See
+[docs/cleanup-plan.md](docs/cleanup-plan.md) for the removal record.
 
 ## License
 
-This project is covered under the [Apache 2.0 License](https://github.com/HongLabTHU/BrainQuake/blob/main/LICENSE).
-
-## Manuscripts
-
-## Issues
-
-If you're having trouble, encountering a bug, or want to contribute, please feel free to open a git issue or pull request. Thanks!
+This project is covered under the [Apache 2.0 License](LICENSE).

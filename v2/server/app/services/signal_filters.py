@@ -56,7 +56,7 @@ def clamp_band(band_low, band_high, fs, context=""):
 def filter_for_display(data, fs, band_low, band_high, mains_freq=DEFAULT_MAINS_FREQ):
     """Common-average reference, then a mains-harmonic notch, then a
     user-specified zero-phase Butterworth bandpass -- ported from
-    BrainQuake/client_ictal.py's IctalModule.filter_data(). This is the
+    client_ictal.py's IctalModule.filter_data() (git tag legacy-final). This is the
     "trace display" filter both the ictal and interictal Qt viewers apply
     before showing/computing on a signal; the new windowed EDF endpoint
     (services/edf.py) reuses it too, so there aren't three copies.

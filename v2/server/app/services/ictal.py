@@ -15,8 +15,8 @@ from app.services.signal_filters import DEFAULT_MAINS_FREQ, filter_for_display
 
 logger = logging.getLogger(__name__)
 
-# Ported near-verbatim from BrainQuake/client_ictal.py's module-scope compute_*
-# functions (already pure numpy/scipy, no Qt/GUI dependency). The interactive
+# Ported near-verbatim from client_ictal.py's module-scope compute_* functions
+# (git tag legacy-final; already pure numpy/scipy, no Qt/GUI dependency). The interactive
 # baseline/target range-select and band-filter text fields become explicit
 # request parameters (see routers/ictal.py) instead of mouse clicks.
 
@@ -173,8 +173,7 @@ def norm_specs(specs):
 def compute_full_band(raw_data, sfreq, ei):
     # Cluster channels by spectral shape to reveal electrodes that share the
     # seizure-onset zone's spectral signature. Not wired to a router endpoint yet
-    # (ported for parity with the legacy module; no REST consumer defined in
-    # PLAN.md's Phase (b) checklist).
+    # (ported for parity with the legacy module; no REST consumer defined).
     ei_elec_num = 10
     raw_specs, spec_shape, t, f = cal_specs_matrix(raw_data, sfreq, 'STFT')
     raw_specs_norm = norm_specs(raw_specs)

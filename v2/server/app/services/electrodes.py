@@ -24,8 +24,8 @@ from app.models import Job, Subject, Artifact
 from app.services.recon import register_artifact
 from app.services.job_control import check_cancelled, run_and_track_subprocess
 
-# Ported from BrainQuake/utils/elec_utils.py. Split into two job types per PLAN.md
-# 2.7: detect() (Preprocess_thread + GenerateLabel_thread -- hough3dlines + GMM
+# Ported from utils/elec_utils.py (git tag legacy-final). Split into two job
+# types: detect() (Preprocess_thread + GenerateLabel_thread -- hough3dlines + GMM
 # clustering, producing a voxel-labeled volume) and segment() (ContactSegment_thread
 # -- per-contact convergence via ElectrodeSeg, producing final contact coordinates).
 # The GMM label review step in between is `commit_labels` (PUT .../labels), a new

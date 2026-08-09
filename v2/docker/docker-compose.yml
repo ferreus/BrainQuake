@@ -11,8 +11,7 @@
 #      machine on the network.
 #
 # api and worker share the same image, the same SUBJECTS_DIR/DATA_ROOT volume, and
-# the same SQLite DB file (WAL mode) -- mirrors the single-process legacy layout,
-# just split across two containers per PLAN.md 2.3. Both FROM brainquake-base
+# the same SQLite DB file (WAL mode), split across two containers. Both FROM brainquake-base
 # (see base.Dockerfile) -- that image holds FreeSurfer/FSL/hough-3d-lines and is
 # built separately via build-base.sh, not by this compose file, so `docker compose
 # build` never re-downloads/re-extracts them.

@@ -8,8 +8,8 @@ from app.models import Job, Subject, Artifact
 from app.services.recon import register_artifact
 from app.services.job_control import check_cancelled
 
-# Ported from BrainQuake/soz_result.py's pure fusion/ranking logic (the mayavi
-# plot_3d call stays client-side per PLAN.md 2.7 -- this module only produces the
+# Ported from soz_result.py (git tag legacy-final) -- pure fusion/ranking logic
+# only; the mayavi plot_3d call was dropped (this module only produces the
 # ranked contact table + CSV).
 
 
