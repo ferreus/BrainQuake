@@ -6,7 +6,7 @@ import struct
 import subprocess
 import tempfile
 import zipfile
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import h5py
 import mne
@@ -26,6 +26,7 @@ from app.config import settings
 from app.db import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.models import Artifact, Job
+from app.workers import jobs_worker
 from app.workers.jobs_worker import run_job
 
 # Use the app's own engine and SessionLocal for tests so that the worker
@@ -445,7 +446,7 @@ def test_job_cancelled_error_ends_in_cancelled_not_failed():
     r = client.post(f"/subjects/{sid}/recon", json={"recon_type": "recon-all"})
     jid = r.json()["id"]
 
-    with patch("app.workers.jobs_worker.run_recon_job", side_effect=JobCancelledError("cancelled mid-run")):
+    with patch.dict(jobs_worker.JOB_HANDLERS, {"recon": MagicMock(side_effect=JobCancelledError("cancelled mid-run"))}):
         run_job(jid)
 
     r = client.get(f"/jobs/{jid}")

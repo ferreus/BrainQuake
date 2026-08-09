@@ -88,7 +88,7 @@ def import_patient(file: UploadFile = File(...), db: Session = Depends(get_db)):
         manifest = read_import_manifest(tmp_path)
     except ValueError as e:
         os.remove(tmp_path)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     name = manifest["name"]
     existing = db.query(Subject).filter(Subject.name == name).first()

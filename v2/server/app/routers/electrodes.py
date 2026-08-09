@@ -94,7 +94,7 @@ def get_labels_summary(subject_id: int, db: Session = Depends(get_db)):
     try:
         return electrodes_service.summarize_labels(subject)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 class LabelsUpdateRequest(BaseModel):
@@ -111,7 +111,7 @@ def update_labels(subject_id: int, request: LabelsUpdateRequest, db: Session = D
     try:
         K = electrodes_service.commit_labels(subject, request.exclude_labels)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return LabelsUpdateResponse(K=K)
 
 
@@ -229,7 +229,7 @@ def get_slicer_preview(subject_id: int, db: Session = Depends(get_db)):
     try:
         return electrodes_service.load_slicer_preview(db, subject)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.post("/{subject_id}/electrodes/import/preview/approve")
@@ -246,9 +246,9 @@ def approve_slicer_preview(subject_id: int, db: Session = Depends(get_db)):
     try:
         result = electrodes_service.approve_slicer_preview(db, subject)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return result
 
 
@@ -258,7 +258,7 @@ def reject_slicer_preview(subject_id: int, db: Session = Depends(get_db)):
     try:
         electrodes_service.reject_slicer_preview(db, subject)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return {"message": "Preview rejected"}
 
 
@@ -280,7 +280,7 @@ def get_chn_xyz(subject_id: int, db: Session = Depends(get_db)):
     try:
         return electrodes_service.load_chn_xyz(subject)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get("/{subject_id}/electrodes/contacts/{label}")
@@ -289,4 +289,4 @@ def get_contacts(subject_id: int, label: str, db: Session = Depends(get_db)):
     try:
         return electrodes_service.load_contact(subject, label)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e

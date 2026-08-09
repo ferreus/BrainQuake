@@ -48,7 +48,7 @@ def _run_fastsurfer_via_sidecar(t1_path: str, sid: str, job: Job, db: Session, l
         raise RuntimeError(
             f"FastSurfer is enabled but the fastsurfer-worker service at {url} is not "
             f"reachable. Is it running (docker compose --profile fastsurfer up)? ({e})"
-        )
+        ) from e
 
     if resp.status_code == 429:
         raise RuntimeError("fastsurfer-worker is at capacity (FASTSURFER_MAX_CONCURRENT); this run will need to be retried.")

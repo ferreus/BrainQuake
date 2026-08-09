@@ -29,6 +29,27 @@ from app.services.soz import run_soz_fuse_job
 from app.services.surface import run_surface_export_job
 
 POLL_INTERVAL_SECONDS = 2
+_POLL_PAGE_SIZE = 200
+
+# job_type -> handler. A registry rather than an if/elif chain so the set of
+# valid job types is introspectable: routers create jobs by writing this string
+# into a row, and a typo there previously produced a job that queued happily and
+# then failed only once a worker picked it up. Tests substitute handlers with
+# patch.dict on this mapping.
+JOB_HANDLERS = {
+    "recon": run_recon_job,
+    "ct_register": run_ct_register_job,
+    "elec_detect": run_elec_detect_job,
+    "elec_segment": run_elec_segment_job,
+    "elec_import": run_elec_import_job,
+    "slicer_mrb_parse": run_slicer_mrb_parse_job,
+    "ei_compute": run_ei_compute_job,
+    "hfo_compute": run_hfo_compute_job,
+    "soz_fuse": run_soz_fuse_job,
+    "surface_export": run_surface_export_job,
+    "export_patient": run_export_patient_job,
+    "import_patient": run_import_patient_job,
+}
 
 # Set up logging for the worker itself
 logging.basicConfig(
@@ -41,7 +62,18 @@ logging.basicConfig(
 logger = logging.getLogger("jobs_worker")
 
 def cleanup_stale_jobs():
-    """Fail or requeue jobs that were left in the 'running' state from a previous run."""
+    """Fail jobs left in the 'running' state by a previous worker run.
+
+    FIXME(correctness): this fails *every* running job, with no way to tell a
+    crashed worker's zombies from another worker's live work. One worker
+    container is the current deployment (docker-compose), so it is safe today,
+    but starting a second worker -- or scaling the service -- would mark
+    healthy in-flight jobs as failed the moment it booted. The `host` column is
+    recorded but not consulted, and would not settle it either since two
+    workers can share a host. A real fix needs a worker identity plus a
+    heartbeat or lease, so only jobs whose owner has stopped renewing are
+    reaped.
+    """
     db = SessionLocal()
     try:
         stale_jobs = db.query(Job).filter(Job.state == "running").all()
@@ -119,32 +151,13 @@ def run_job(job_id: int):
             log_file.write(f"Parameters: {job.params_json}\n\n")
             log_file.flush()
 
-            if job.job_type == "recon":
-                run_recon_job(db, job, log_file)
-            elif job.job_type == "ct_register":
-                run_ct_register_job(db, job, log_file)
-            elif job.job_type == "elec_detect":
-                run_elec_detect_job(db, job, log_file)
-            elif job.job_type == "elec_segment":
-                run_elec_segment_job(db, job, log_file)
-            elif job.job_type == "elec_import":
-                run_elec_import_job(db, job, log_file)
-            elif job.job_type == "slicer_mrb_parse":
-                run_slicer_mrb_parse_job(db, job, log_file)
-            elif job.job_type == "ei_compute":
-                run_ei_compute_job(db, job, log_file)
-            elif job.job_type == "hfo_compute":
-                run_hfo_compute_job(db, job, log_file)
-            elif job.job_type == "soz_fuse":
-                run_soz_fuse_job(db, job, log_file)
-            elif job.job_type == "surface_export":
-                run_surface_export_job(db, job, log_file)
-            elif job.job_type == "export_patient":
-                run_export_patient_job(db, job, log_file)
-            elif job.job_type == "import_patient":
-                run_import_patient_job(db, job, log_file)
-            else:
-                raise ValueError(f"Unknown job type: {job.job_type}")
+            handler = JOB_HANDLERS.get(job.job_type)
+            if handler is None:
+                raise ValueError(
+                    f"Unknown job type {job.job_type!r}; known types are "
+                    f"{sorted(JOB_HANDLERS)}"
+                )
+            handler(db, job, log_file)
 
             job.state = "finished"
             job.progress_pct = 100.0
@@ -158,6 +171,10 @@ def run_job(job_id: int):
         # Reload job in case session was closed/messed up
         db.rollback()
         job = db.query(Job).filter(Job.id == job_id).first()
+        if job is None:
+            logger.error(f"Job {job_id} vanished while being cancelled")
+            db.close()
+            return
         job.state = "cancelled"
         job.progress_message = "Job cancelled by user"
         job.finished_at = datetime.now(timezone.utc)
@@ -165,8 +182,8 @@ def run_job(job_id: int):
         try:
             with open(log_path, "a") as log_file:
                 log_file.write(f"\n--- Job {job.id} Cancelled at {job.finished_at} ---\n")
-        except Exception:
-            pass
+        except OSError as log_err:
+            logger.warning(f"could not append cancellation note to {log_path}: {log_err}")
 
     except Exception as e:
         logger.error(f"Job {job.id} failed with error: {e}")
@@ -175,6 +192,10 @@ def run_job(job_id: int):
         # Reload job in case session was closed/messed up
         db.rollback()
         job = db.query(Job).filter(Job.id == job_id).first()
+        if job is None:
+            logger.error(f"Job {job_id} vanished while failing: {e}")
+            db.close()
+            return
         job.state = "failed"
         job.progress_message = f"Error: {str(e)}"
         job.finished_at = datetime.now(timezone.utc)
@@ -184,8 +205,8 @@ def run_job(job_id: int):
             with open(log_path, "a") as log_file:
                 log_file.write(f"\n--- Job {job.id} Failed at {job.finished_at} ---\n")
                 log_file.write(traceback.format_exc())
-        except Exception:
-            pass
+        except OSError as log_err:
+            logger.warning(f"could not append traceback to {log_path}: {log_err}")
 
     finally:
         db.commit()
@@ -225,34 +246,48 @@ def _dispatch_loop(loop_name: str, job_predicate, pool_size: int):
         if capacity > 0:
             db = SessionLocal()
             try:
+                # Paged rather than a single limited query: this loop only takes
+                # jobs matching its predicate, and the predicate depends on
+                # params_json, so it cannot be pushed into SQL. With a fixed
+                # LIMIT, enough queued jobs belonging to the *other* loop sitting
+                # at the head of the queue would fill every page and this loop
+                # would never see its own jobs at all -- starving them for as
+                # long as the others stayed queued.
+                #
                 # already_submitted jobs still show up here (they're 'running'
-                # by now, or momentarily still 'queued' until their thread
-                # gets to run_job's atomic claim) -- filtered out below rather
-                # than in SQL, since it's small in-memory state, not a DB column.
-                candidates = (
-                    db.query(Job)
-                    .filter(Job.state == "queued")
-                    .order_by(Job.created_at.asc())
-                    .limit(max(50, pool_size * 10))
-                    .all()
-                )
+                # by now, or momentarily still 'queued' until their thread gets
+                # to run_job's atomic claim) -- filtered out below rather than
+                # in SQL, since it's small in-memory state, not a DB column.
+                offset = 0
+                while capacity > 0:
+                    page = (
+                        db.query(Job)
+                        .filter(Job.state == "queued")
+                        .order_by(Job.created_at.asc())
+                        .offset(offset)
+                        .limit(_POLL_PAGE_SIZE)
+                        .all()
+                    )
+                    if not page:
+                        break
+                    offset += len(page)
+                    for job in page:
+                        if capacity <= 0:
+                            break
+                        if job.id in already_submitted or not job_predicate(job):
+                            continue
+                        with lock:
+                            in_flight.add(job.id)
+                        fut = executor.submit(run_job, job.id)
+                        fut.add_done_callback(lambda f, jid=job.id: _on_done(jid, f))
+                        already_submitted.add(job.id)
+                        capacity -= 1
+                    if len(page) < _POLL_PAGE_SIZE:
+                        break
             except Exception as e:
                 logger.error(f"[{loop_name}] error polling for queued jobs: {e}")
-                candidates = []
             finally:
                 db.close()
-
-            for job in candidates:
-                if capacity <= 0:
-                    break
-                if job.id in already_submitted or not job_predicate(job):
-                    continue
-                with lock:
-                    in_flight.add(job.id)
-                fut = executor.submit(run_job, job.id)
-                fut.add_done_callback(lambda f, jid=job.id: _on_done(jid, f))
-                already_submitted.add(job.id)
-                capacity -= 1
 
         time.sleep(POLL_INTERVAL_SECONDS)
 

@@ -34,7 +34,7 @@ def get_freebrowse_file(subject_id: int, key: str, db: Session = Depends(get_db)
     try:
         abs_path, name = freebrowse_service.resolve_file_path(subject, key)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Unknown freebrowse file key: {key!r}")
+        raise HTTPException(status_code=404, detail=f"Unknown freebrowse file key: {key!r}") from None
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail=f"No {key!r} file exists for this subject")
+        raise HTTPException(status_code=404, detail=f"No {key!r} file exists for this subject") from None
     return FileResponse(abs_path, filename=name, media_type="application/octet-stream")

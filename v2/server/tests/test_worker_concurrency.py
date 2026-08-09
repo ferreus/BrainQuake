@@ -1,7 +1,7 @@
 import os
 import shutil
 import threading
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -14,6 +14,7 @@ from test_api import client
 from app.config import settings
 from app.db import Base, SessionLocal, engine
 from app.models import Job
+from app.workers import jobs_worker
 from app.workers.jobs_worker import _is_fastsurfer_job, run_job
 
 
@@ -70,7 +71,7 @@ def test_atomic_claim_prevents_double_execution():
         with calls_lock:
             calls.append(job.id)
 
-    with patch("app.workers.jobs_worker.run_recon_job", side_effect=fake_run_recon_job):
+    with patch.dict(jobs_worker.JOB_HANDLERS, {"recon": fake_run_recon_job}):
         t1 = threading.Thread(target=run_job, args=(jid,))
         t2 = threading.Thread(target=run_job, args=(jid,))
         t1.start()
@@ -110,7 +111,7 @@ def test_different_subjects_execute_concurrently():
         with seen_lock:
             seen.add(job.id)
 
-    with patch("app.workers.jobs_worker.run_recon_job", side_effect=fake_run_recon_job):
+    with patch.dict(jobs_worker.JOB_HANDLERS, {"recon": fake_run_recon_job}):
         threads = [threading.Thread(target=run_job, args=(jid,)) for jid in job_ids]
         for t in threads:
             t.start()
@@ -152,7 +153,8 @@ def test_claim_succeeds_once_conflicting_job_no_longer_running():
     queued_id = queued_job.id
     db.close()
 
-    with patch("app.workers.jobs_worker.run_ct_register_job") as mock_handler:
+    mock_handler = MagicMock()
+    with patch.dict(jobs_worker.JOB_HANDLERS, {"ct_register": mock_handler}):
         run_job(queued_id)
 
     mock_handler.assert_called_once()
@@ -161,3 +163,30 @@ def test_claim_succeeds_once_conflicting_job_no_longer_running():
     refreshed = db.query(Job).filter(Job.id == queued_id).first()
     assert refreshed.state == "finished"
     db.close()
+
+
+def test_every_job_type_the_api_creates_has_a_handler():
+    """Routers create jobs by writing a job_type string into a row; the worker
+    looks that string up. Nothing connects the two, so a typo on either side
+    produces a job that queues happily and only fails once it is picked up.
+    This scans the source for the job types actually created and asserts the
+    worker knows all of them."""
+    import pathlib
+    import re
+
+    from app.workers.jobs_worker import JOB_HANDLERS
+
+    app_dir = pathlib.Path(__file__).resolve().parent.parent / "app"
+    created = set()
+    for path in list(app_dir.glob("routers/*.py")) + list(app_dir.glob("services/*.py")):
+        for m in re.finditer(r"""job_type\s*=\s*["']([a-z_]+)["']""", path.read_text()):
+            created.add(m.group(1))
+
+    assert created, "found no job_type= literals; the scan pattern needs updating"
+    unknown = sorted(created - set(JOB_HANDLERS))
+    assert not unknown, f"job types created but not dispatchable by the worker: {unknown}"
+
+
+def test_every_handler_is_callable():
+    for job_type, handler in jobs_worker.JOB_HANDLERS.items():
+        assert callable(handler), f"{job_type} maps to something not callable"

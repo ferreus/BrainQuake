@@ -233,11 +233,11 @@ def read_import_manifest(zip_path: str) -> dict:
         try:
             raw = zf.read(MANIFEST_NAME)
         except KeyError:
-            raise ValueError("Not a BrainQuake patient export (missing manifest.json).")
+            raise ValueError("Not a BrainQuake patient export (missing manifest.json).") from None
     try:
         manifest = json.loads(raw)
     except json.JSONDecodeError:
-        raise ValueError("Patient export manifest.json is corrupt.")
+        raise ValueError("Patient export manifest.json is corrupt.") from None
     if not manifest.get("name"):
         raise ValueError("Patient export manifest.json has no subject name.")
     return manifest

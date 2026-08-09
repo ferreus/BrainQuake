@@ -209,3 +209,73 @@ verbatim, EI-only fusion still working with HFO absent, a CHARACTERISATION test
 showing what a total mismatch produces (which is why the job now refuses it),
 and a segment-timing test that pins #34 by running two segments at a 600 s
 window offset and asserting absolute event times.
+
+---
+
+## workers/jobs_worker.py + routers + v2/web
+
+Reviewed 2026-08-09. No numerics here, so the findings are about scheduling,
+error handling and diagnosability rather than results.
+
+### high
+
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 40 | **A queued job could be starved indefinitely.** Two dispatch loops share one queue (general and fast-surfer), each taking only jobs matching its own predicate — which depends on `params_json` and so cannot be expressed in SQL. Each polled a single `LIMIT`ed page and filtered in Python, so enough queued jobs belonging to the *other* loop sitting at the head of the queue filled every page and the loop never saw its own jobs at all, for as long as the others stayed queued. Now pages through the queue until capacity is filled or candidates are exhausted. | `_dispatch_loop` | **fixed** |
+
+### medium
+
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 41 | `cleanup_stale_jobs` fails **every** running job at worker startup, with no way to distinguish a crashed worker's zombies from another worker's live work. Safe with today's single worker container; starting a second worker, or scaling the service, would mark healthy in-flight jobs as failed on boot. `host` is recorded but never consulted, and would not settle it anyway since two workers can share a host. Needs a worker identity plus a heartbeat/lease. | `cleanup_stale_jobs` | marked |
+| 42 | Job dispatch was a 12-branch `if/elif` chain, so the set of valid job types existed only as string literals scattered between routers and the worker. A typo in a router produced a job that queued happily and failed only once claimed. Now a `JOB_HANDLERS` registry, with a test that scans the source for every `job_type=` literal the API creates and asserts the worker can dispatch it. | `run_job` | **fixed** |
+| 43 | Both error paths reloaded the job row after `rollback()` and immediately dereferenced it; a row deleted concurrently would raise `AttributeError` *inside* the exception handler, losing the original error. Now guarded and logged. | `run_job` | **fixed** |
+| 44 | `except Exception: pass` around the log-append in both terminal paths silently swallowed write failures. Now narrowed to `OSError` and logged. | `run_job` | **fixed** |
+| 45 | 18 `raise HTTPException(...)` sites inside `except` blocks discarded the original exception, so tracebacks stopped at the handler. All now chain with `from e` (or `from None` where the message fully replaces a lookup failure). | routers, `patient_io`, `fastsurfer_client` | **fixed** |
+
+### v2/web
+
+No findings. Typecheck, lint and production build are clean; there is no `any`,
+no `@ts-ignore`, and no stray console logging. The 3D views pass contact
+coordinates through verbatim, and all three sources (`chn-xyz`, the Slicer
+preview, and the brain mesh) are in FreeSurfer surface RAS, so they agree.
+
+The two web-side defects found in this review were both wiring gaps reported
+under their server modules: the ictal channel deletion never reaching the EI
+job (#2) and the display filter having no mains-frequency control (#28).
+
+### Tests added
+
+`test_every_job_type_the_api_creates_has_a_handler` scans `app/routers/` and
+`app/services/` for `job_type=` literals and asserts each is dispatchable —
+the guard against the typo class that motivated the registry. Plus
+`test_every_handler_is_callable`.
+
+Note: the registry initially bound handler functions directly, which broke the
+concurrency tests' `patch("app.workers.jobs_worker.run_recon_job")` idiom
+(the dict captured the originals at import). Resolving handlers by name through
+`globals()` fixed that but made every handler import look unused to static
+analysis. The tests now substitute handlers with `patch.dict(JOB_HANDLERS, ...)`
+instead, which keeps the production registry direct and statically checkable.
+
+---
+
+## Part 2 summary
+
+| Module | Findings | Fixed | Marked/open |
+|---|---|---|---|
+| ictal + signal_filters | 20 | 11 | 9 |
+| electrodes | 7 | 6 | 1 |
+| edf | 5 | 4 | 1 |
+| soz + interictal | 7 | 6 | 1 |
+| worker + routers + web | 6 | 5 | 1 |
+
+Tests: 50 → 98. `ruff check` clean across `v2/server`; `tsc`, `oxlint` and
+`vite build` clean across `v2/web`.
+
+**Everything still marked is a method-level decision, not a defect**: the four
+EI deviations from the published Bartolomei formulation (#1, #3, #4, #5), the
+energy-window edge effect (#7), auto-exclusion of auxiliary channels (#2b), the
+multi-worker stale-job hazard (#41), and the dead spectral-clustering code
+(#16). None can be resolved by a cleanup pass; each changes results or needs a
+deployment decision.
