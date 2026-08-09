@@ -1636,6 +1636,48 @@ def test_ei_request_rejects_invalid_windows():
         assert r.status_code == 422, f"expected 422 for {bad}, got {r.status_code}"
 
 
+def _run_ei_and_load(sid, artifact_id, **overrides):
+    body = {
+        "baseline_start": 0.0, "baseline_end": 3.0,
+        "target_start": 4.0, "target_end": 9.0,
+        **overrides,
+    }
+    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json=body)
+    assert r.status_code == 200, r.text
+    job_id = r.json()["id"]
+    run_job(job_id)
+    state = client.get(f"/jobs/{job_id}").json()["state"]
+    return job_id, state
+
+
+def test_ei_honours_remain_chns():
+    """Channels deleted in the trace viewer must leave the computation.
+
+    Before this was wired up, the ictal page's channel deletions only filtered
+    the plot: every channel in the file stayed in the EI ranking AND in the
+    common-average reference, so a dropped REF/EKG trace still leaked into
+    every other channel.
+    """
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("EiRemainChns")
+
+    _, state = _run_ei_and_load(sid, artifact_id)
+    assert state == "finished"
+    full = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
+    assert full["chn_names"] == ch_names
+
+    keep = ch_names[:2]
+    _, state = _run_ei_and_load(sid, artifact_id, remain_chns=keep)
+    assert state == "finished"
+    subset = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
+    assert subset["chn_names"] == keep, "the result must only contain the kept channels"
+
+
+def test_ei_rejects_unknown_remain_chns():
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("EiRemainChnsBad")
+    _, state = _run_ei_and_load(sid, artifact_id, remain_chns=[ch_names[0], "NOT_A_CHANNEL"])
+    assert state == "failed", "a typo'd channel name must fail loudly, not be silently ignored"
+
+
 def test_hfo_request_rejects_invalid_window_and_accepts_none():
     sid, artifact_id, _, _ = _create_subject_with_edf("HfoValidateTest")
 

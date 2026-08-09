@@ -14,6 +14,11 @@ interface EiComputeFormProps {
   selection: BaselineTargetSelection;
   /** Recording sample rate, used to keep band high below Nyquist. */
   sfreq?: number;
+  /** Channels still present after deletions in the trace viewer. Sent as
+   * remain_chns: a deleted channel must leave the computation entirely, not
+   * just the plot -- it would otherwise stay in the common-average reference
+   * and leak into every other channel. */
+  remainChannels: string[];
 }
 
 /**
@@ -25,7 +30,7 @@ interface EiComputeFormProps {
  * 500Hz is exactly Nyquist, which scipy's butter() rejects outright. The server
  * clamps it now, but there's no reason to send a value that needs clamping.
  */
-export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq }: EiComputeFormProps) {
+export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, remainChannels }: EiComputeFormProps) {
   const [bandLow, setBandLow] = useState(1.0);
   const [bandHigh, setBandHigh] = useState(300.0);
   // 50Hz Europe/Asia, 60Hz North America. The wrong value notches clean signal
@@ -83,6 +88,7 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq }: Ei
           band_low: bandLow,
           band_high: bandHigh,
           mains_freq: mainsFreq,
+          remain_chns: remainChannels,
         },
       });
       setJobId(j.id);

@@ -411,18 +411,37 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
                 f"{label} window {t0:.3f}-{t1:.3f}s is invalid for a {duration:.3f}s recording"
             )
 
+    # Channels the caller kept in the trace viewer. Applied before anything
+    # else, so a dropped channel is out of the common-average reference too --
+    # not merely absent from the ranking.
+    remain_chns = params.get("remain_chns")
+    if remain_chns:
+        wanted = set(remain_chns)
+        picks = [i for i, n in enumerate(chn_names) if n in wanted]
+        missing = wanted - set(chn_names)
+        if missing:
+            raise ValueError(
+                f"remain_chns names {len(missing)} channel(s) not in this recording: "
+                f"{sorted(missing)}"
+            )
+        if not picks:
+            raise ValueError("remain_chns excluded every channel")
+        dropped = [n for i, n in enumerate(chn_names) if i not in set(picks)]
+        if dropped:
+            logger.info("excluding %d channel(s) at the caller's request: %s", len(dropped), dropped)
+        edf_data.pick(picks)
+        chn_names = edf_data.ch_names
+
     aux = find_non_seeg_channels(chn_names)
     if aux:
-        # FIXME(correctness): these are only reported, not excluded. They are
-        # ranked alongside real contacts (a REF channel placing 6th in the EI
-        # ranking is what prompted docs/bella_ictal_ei_vs_annotation_discrepancy.md)
-        # and they contaminate every channel through the common-average
-        # reference in filter_for_display(). Excluding them changes every EI
-        # value, so it needs a deliberate decision plus a re-run, not a silent
-        # edit -- but it should almost certainly happen.
+        # Still only reported, never auto-excluded: dropping a channel changes
+        # every other channel's value through the common-average reference, so
+        # it stays the caller's decision. This warning is what makes an
+        # overlooked one visible -- a REF channel placing 6th in the EI ranking
+        # is what prompted docs/bella_ictal_ei_vs_annotation_discrepancy.md.
         logger.warning(
-            "%d channel(s) look like non-SEEG auxiliary traces and are being included in "
-            "both the common-average reference and the EI ranking: %s",
+            "%d channel(s) look like non-SEEG auxiliary traces and were NOT excluded; they are "
+            "in both the common-average reference and the EI ranking: %s",
             len(aux), [chn_names[i] for i in aux],
         )
 

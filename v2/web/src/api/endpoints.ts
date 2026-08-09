@@ -302,6 +302,8 @@ export interface EiComputeParams {
   band_high?: number;
   /** Power-line frequency: 50 Europe/Asia, 60 North America. Defaults to 50. */
   mains_freq?: number;
+  /** Channel names to keep; omitted means every channel in the file. */
+  remain_chns?: string[];
 }
 
 export function computeEi(subjectId: number, edfArtifactId: number, params: EiComputeParams): Promise<Job> {

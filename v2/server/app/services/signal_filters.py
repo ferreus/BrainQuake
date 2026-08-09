@@ -5,14 +5,11 @@ from scipy.signal import butter, filtfilt, iirnotch
 
 logger = logging.getLogger(__name__)
 
-# FIXME(correctness): 50 Hz is inherited from the legacy app's hardcoded value.
-# The justification used to be bit-identical reproduction of the S1 golden
-# output, which is no longer a goal (docs/cleanup-plan.md). What remains is a
-# default that is simply wrong for this project's own data -- Bella's recordings
-# are 60 Hz -- and getting it wrong is silent: it notches 50/100/150 Hz of clean
-# signal and leaves the real 60/120/180 Hz interference in place. This should
-# become a required parameter, or be read from the recording's metadata, rather
-# than defaulting to the value that is wrong here.
+# TODO(cleanup): 50 Hz is inherited from the legacy app. Callers that matter
+# set it explicitly (the web UI exposes it, and Bella's 60 Hz recordings are run
+# at 60), so this is a footgun rather than a live bug: leaving it at 50 on a
+# 60 Hz recording notches clean signal, leaves the real interference, and warns
+# about none of it. Worth making required, or reading from the recording.
 DEFAULT_MAINS_FREQ = 50.0
 
 # Fraction of Nyquist that band_high is clamped to. scipy's butter() requires

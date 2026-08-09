@@ -33,6 +33,11 @@ class EiRequest(BaseModel):
     # Grid frequency the data was recorded on: 50 for Europe/Asia, 60 for North
     # America. Wrong value notches clean signal and leaves the interference.
     mains_freq: float = DEFAULT_MAINS_FREQ
+    # Channel names to keep; default (None/empty) is every channel in the file.
+    # Same contract as the interictal HFO endpoint. Channels deleted in the
+    # trace viewer must be sent here -- otherwise they stay in the ranking AND
+    # in the common-average reference, which mixes them into every channel.
+    remain_chns: list[str] | None = None
 
     @model_validator(mode="after")
     def _check_windows(self):

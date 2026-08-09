@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button, FileButton, Group, Loader, NativeSelect, Progress, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
@@ -36,6 +36,12 @@ export function IctalPage({ subjectId }: IctalPageProps) {
   } = useEdfMeta(subjectId, effectiveEdfId);
   const { state, dispatch } = useEegViewerState("ictal");
   const selection = useBaselineTargetSelection();
+  // Channels deleted in the list must leave the EI computation, not just the
+  // plot -- see EiComputeForm's remainChannels prop.
+  const remainChannels = useMemo(
+    () => (meta?.channels ?? []).filter((c) => !state.excludedChannels.has(c)),
+    [meta, state.excludedChannels],
+  );
   const deleteArtifact = useDeleteArtifact(subjectId);
 
   function handleRemoveBadEdf() {
@@ -159,6 +165,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
                 edfArtifactId={effectiveEdfId}
                 selection={selection}
                 sfreq={meta.fs}
+                remainChannels={remainChannels}
               />
             </Stack>
           </Group>
