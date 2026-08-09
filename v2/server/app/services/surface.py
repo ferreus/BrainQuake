@@ -1,8 +1,10 @@
 import os
 import struct
-import numpy as np
+
 import nibabel.freesurfer as fsio
+import numpy as np
 from sqlalchemy.orm import Session
+
 from app.config import settings
 from app.models import Artifact, Job, Subject
 from app.services.recon import register_artifact

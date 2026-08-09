@@ -1,16 +1,18 @@
-import os
 import logging
-import numpy as np
+import os
+
 import mne
-from scipy.signal import spectrogram, convolve2d
+import numpy as np
 from scipy.ndimage import gaussian_filter
-from sklearn.decomposition import PCA
+from scipy.signal import convolve2d, spectrogram
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 from sqlalchemy.orm import Session
-from app.models import Job, Subject, Artifact
-from app.services.recon import register_artifact
-from app.services.job_control import check_cancelled
+
+from app.models import Artifact, Job, Subject
 from app.services.edf_common import resolve_edf_path
+from app.services.job_control import check_cancelled
+from app.services.recon import register_artifact
 from app.services.signal_filters import DEFAULT_MAINS_FREQ, filter_for_display
 
 logger = logging.getLogger(__name__)
@@ -159,7 +161,7 @@ def cal_specs_matrix(raw, sfreq, method='STFT'):
             if i == 0:
                 chan_specs = tmp_specs
             else:
-                chan_specs = np.row_stack((chan_specs, tmp_specs))
+                chan_specs = np.vstack((chan_specs, tmp_specs))
     f_cut = f[:freq_range]
     return chan_specs, hfo_new.shape, t, f_cut
 

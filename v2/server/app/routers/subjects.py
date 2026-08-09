@@ -1,18 +1,19 @@
 import os
 import shutil
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from app.db import get_db
+
 from app.config import settings
-from app.models import Subject, Artifact
-from app.schemas import SubjectCreate, SubjectResponse, ArtifactResponse
+from app.db import get_db
+from app.models import Artifact, Subject
+from app.schemas import ArtifactResponse, SubjectCreate, SubjectResponse
 
 router = APIRouter(prefix="/subjects", tags=["subjects"])
 
 
-@router.get("", response_model=List[SubjectResponse])
+@router.get("", response_model=list[SubjectResponse])
 def list_subjects(db: Session = Depends(get_db)):
     return db.query(Subject).all()
 
@@ -133,10 +134,10 @@ def upload_file(
     return artifact
 
 
-@router.get("/{subject_id}/artifacts", response_model=List[ArtifactResponse])
+@router.get("/{subject_id}/artifacts", response_model=list[ArtifactResponse])
 def list_subject_artifacts(
     subject_id: int,
-    kind: Optional[str] = None,
+    kind: str | None = None,
     db: Session = Depends(get_db)
 ):
     subject = db.query(Subject).filter(Subject.id == subject_id).first()

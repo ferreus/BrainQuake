@@ -9,12 +9,12 @@ os.environ.setdefault("DB_URL", "sqlite:///./data/test_brainquake.db")
 os.environ.setdefault("SUBJECTS_DIR", "./data/test_subjects")
 os.environ.setdefault("DATA_ROOT", "./data/test_data_root")
 
-from app.db import Base, engine, SessionLocal
-from app.config import settings
-from app.models import Job
-from app.workers.jobs_worker import run_job, _is_fastsurfer_job
-
 from test_api import client
+
+from app.config import settings
+from app.db import Base, SessionLocal, engine
+from app.models import Job
+from app.workers.jobs_worker import _is_fastsurfer_job, run_job
 
 
 @pytest.fixture(autouse=True)

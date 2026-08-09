@@ -2,11 +2,14 @@ import os
 import shutil
 import time
 from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
+
 from app.config import settings
-from app.models import Job, Subject, Artifact
-from app.services.job_control import run_and_track_subprocess
+from app.models import Artifact, Job, Subject
 from app.services.fastsurfer_client import _run_fastsurfer_via_sidecar
+from app.services.job_control import run_and_track_subprocess
+
 
 def _run_subprocess_cmd(cmd, job, step_name, db, log_file, use_freesurfer_env=False):
     prefix = ""
@@ -29,7 +32,7 @@ def _run_subprocess_cmd(cmd, job, step_name, db, log_file, use_freesurfer_env=Fa
         log_file.write(f"[{datetime.now(timezone.utc)}] Step '{step_name}' failed with status {res.returncode} after {elapsed:.1f}s\n")
         log_file.flush()
         raise RuntimeError(f"Step '{step_name}' failed with status {res.returncode}")
-        
+
     log_file.write(f"[{datetime.now(timezone.utc)}] Step '{step_name}' completed in {elapsed:.1f}s\n")
     log_file.flush()
 
@@ -49,30 +52,30 @@ def run_recon_job(db: Session, job: Job, log_file):
     subject = db.query(Subject).filter(Subject.id == job.subject_id).first()
     if not subject:
         raise ValueError("Subject not found")
-        
+
     recon_type = (job.params_json or {}).get("recon_type", "recon-all")
     name = subject.name
-    
+
     # 1. Setup paths
     cdir = os.path.join(settings.DATA_ROOT, "recv", name)
     os.makedirs(cdir, exist_ok=True)
-    
+
     # Check if a zip archive was uploaded and unzip it if no T1 file is found
     zip_path = os.path.join(cdir, f"{name}.zip")
     t1_path = os.path.join(cdir, f"{name}T1.nii.gz")
-    
+
     if os.path.exists(zip_path) and not os.path.exists(t1_path):
         job.progress_pct = 5.0
         job.progress_message = "Unzipping uploaded archive"
         db.commit()
-        
+
         cmd_unzip = f"unzip -o {zip_path} -d {cdir}"
         _run_subprocess_cmd(cmd_unzip, job, "unzip", db, log_file)
-        
+
     # Verify T1 file exists
     if not os.path.exists(t1_path):
         raise FileNotFoundError(f"T1 input file not found at {t1_path}. Please upload a T1 scan first.")
-        
+
     # recon-all/fast-surfer/infant_recon_all all treat $SUBJECTS_DIR/<name> merely
     # *existing* (regardless of contents) as "this subject already has a prior run"
     # when given -i, and refuse with "You are trying to re-run an existing subject
@@ -144,11 +147,11 @@ def run_recon_job(db: Session, job: Job, log_file):
     job.progress_pct = 80.0
     job.progress_message = "Converting orig.mgz -> orig.nii.gz"
     db.commit()
-    
+
     mri_dir = os.path.join(settings.SUBJECTS_DIR, name, "mri")
     orig_mgz = os.path.join(mri_dir, "orig.mgz")
     orig_nii = os.path.join(mri_dir, "orig.nii.gz")
-    
+
     # Check if orig.mgz exists (it should after recon-all)
     if os.path.exists(orig_mgz):
         cmd_mri_convert = f"mri_convert {orig_mgz} {orig_nii}"
@@ -156,22 +159,22 @@ def run_recon_job(db: Session, job: Job, log_file):
         register_artifact(db, subject.id, job.id, "orig_nii", orig_nii)
     else:
         log_file.write(f"Warning: orig.mgz not found at {orig_mgz}; skipping convert.\n")
-        
+
     job.progress_pct = 85.0
     job.progress_message = "Binarizing brainmask"
     db.commit()
-    
+
     brainmask_mgz = os.path.join(mri_dir, "brainmask.mgz")
     mask_mgz = os.path.join(mri_dir, "mask.mgz")
     if os.path.exists(brainmask_mgz):
         cmd_mri_binarize = f"mri_binarize --i {brainmask_mgz} --o {mask_mgz} --min 1"
         _run_subprocess_cmd(cmd_mri_binarize, job, "mri_binarize", db, log_file, use_freesurfer_env=True)
         register_artifact(db, subject.id, job.id, "mask_mgz", mask_mgz)
-        
+
     job.progress_pct = 90.0
     job.progress_message = "Converting annotations to labels"
     db.commit()
-    
+
     # Annotation to labels. FastSurfer's fast pipeline never leaves a
     # persistent lh/rh.aparc.annot on disk -- it only writes
     # lh/rh.aparc.DKTatlas.mapped.annot, and briefly symlinks that to
@@ -202,12 +205,12 @@ def run_recon_job(db: Session, job: Job, log_file):
     job.progress_pct = 95.0
     job.progress_message = "Zipping reconstruction results"
     db.commit()
-    
+
     zip_out = os.path.join(settings.SUBJECTS_DIR, f"{name}.zip")
     cmd_zip = f"cd {settings.SUBJECTS_DIR} && zip -rq {zip_out} {name}"
     _run_subprocess_cmd(cmd_zip, job, "zip results", db, log_file)
     register_artifact(db, subject.id, job.id, "recon_zip", zip_out)
-    
+
     # Update subject folder path in subject
     subject.subject_dir = os.path.join(settings.SUBJECTS_DIR, name)
     db.add(subject)

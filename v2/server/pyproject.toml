@@ -27,8 +27,28 @@ test = [
     "pytest>=7.0",
     "httpx2>=2.0",
     "edfio>=0.4",  # writes synthetic EDF fixtures for edf.py/ictal.py/interictal.py tests
+    "ruff>=0.6",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+# E501 (line length) is off: several modules carry long provenance comments that
+# read better unwrapped. NPY002 is off because the ported numeric code uses the
+# legacy np.random API and reproducing its output matters more than the new API.
+select = ["E", "F", "W", "I", "UP", "B", "NPY"]
+ignore = ["E501", "NPY002", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic migrations are generated; app/models/__init__.py re-exports for
+# convenience and both legitimately have "unused" imports.
+"alembic/versions/*" = ["E", "F", "I"]
+"app/models/__init__.py" = ["F401"]
+"app/schemas/__init__.py" = ["F401"]
+"app/routers/__init__.py" = ["F401"]

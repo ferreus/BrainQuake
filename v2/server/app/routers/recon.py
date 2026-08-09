@@ -1,22 +1,21 @@
-import os
-from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
 from app.db import get_db
-from app.models import Subject, Job, Artifact
-from app.schemas import JobResponse, ArtifactResponse
+from app.models import Artifact, Job, Subject
+from app.schemas import ArtifactResponse, JobResponse
 
 router = APIRouter(prefix="/subjects", tags=["recon"])
 
 class ReconRequest(BaseModel):
-    recon_type: Optional[str] = "recon-all"  # recon-all, fast-surfer, infant-surfer
+    recon_type: str | None = "recon-all"  # recon-all, fast-surfer, infant-surfer
     # Required for infant-surfer: age at scan, in months. infant_recon_all picks
     # its age-specific atlas/template from this -- see
     # https://surfer.nmr.mgh.harvard.edu/fswiki/infantFS ("--age" section). The
     # tool will run without it (falling back to volume-based age estimation) but
     # the wiki recommends always passing it explicitly, so we require it here.
-    age_months: Optional[float] = None
+    age_months: float | None = None
 
 @router.post("/{subject_id}/recon", response_model=JobResponse)
 def run_recon(
@@ -70,7 +69,7 @@ def run_recon(
     return job
 
 
-@router.get("/{subject_id}/recon/result", response_model=List[ArtifactResponse])
+@router.get("/{subject_id}/recon/result", response_model=list[ArtifactResponse])
 def get_recon_result(subject_id: int, db: Session = Depends(get_db)):
     subject = db.query(Subject).filter(Subject.id == subject_id).first()
     if not subject:

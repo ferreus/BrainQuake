@@ -1,7 +1,9 @@
 import time
 from datetime import datetime, timezone
-from sqlalchemy.orm import Session
+
 import httpx
+from sqlalchemy.orm import Session
+
 from app.config import settings
 from app.models import Job
 from app.services.job_control import JobCancelledError

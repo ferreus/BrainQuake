@@ -1,4 +1,5 @@
 import os
+
 from app.config import settings
 from app.models import Subject
 

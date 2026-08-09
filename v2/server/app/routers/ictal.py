@@ -1,14 +1,15 @@
 import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, model_validator
-
-from app.services.signal_filters import DEFAULT_MAINS_FREQ
 from sqlalchemy.orm import Session
-from app.db import get_db
+
 from app.config import settings
-from app.models import Subject, Job, Artifact
+from app.db import get_db
+from app.models import Artifact, Job, Subject
 from app.schemas import JobResponse
 from app.services import ictal as ictal_service
+from app.services.signal_filters import DEFAULT_MAINS_FREQ
 
 router = APIRouter(prefix="/subjects", tags=["ictal"])
 

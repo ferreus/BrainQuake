@@ -1,14 +1,14 @@
 import os
-import time
-import subprocess
-import nibabel as nib
-import numpy as np
 from datetime import datetime, timezone
+
+import nibabel as nib
 from scipy.ndimage import binary_erosion
 from sqlalchemy.orm import Session
+
 from app.config import settings
-from app.models import Job, Subject, Artifact
+from app.models import Job, Subject
 from app.services.recon import _run_subprocess_cmd, register_artifact
+
 
 def run_ct_register_job(db: Session, job: Job, log_file):
     subject = db.query(Subject).filter(Subject.id == job.subject_id).first()

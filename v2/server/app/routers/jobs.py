@@ -1,18 +1,19 @@
 import os
-from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+
 from app.db import get_db
 from app.models import Job
 from app.schemas import JobResponse
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-@router.get("", response_model=List[JobResponse])
+@router.get("", response_model=list[JobResponse])
 def list_jobs(
-    subject_id: Optional[int] = None,
-    state: Optional[str] = None,
+    subject_id: int | None = None,
+    state: str | None = None,
     db: Session = Depends(get_db)
 ):
     query = db.query(Job)
@@ -70,13 +71,13 @@ def cancel_job(job_id: int, db: Session = Depends(get_db)):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     if job.state in ["finished", "failed"]:
         raise HTTPException(status_code=400, detail="Cannot cancel a completed job")
-    
+
     # Update job state
     job.state = "cancelled"
-    
+
     # If the job is running, try to terminate its process
     if job.pid:
         try:
@@ -84,10 +85,10 @@ def cancel_job(job_id: int, db: Session = Depends(get_db)):
             os.kill(job.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass  # Process already finished
-        except Exception as e:
+        except Exception:
             # We can log this
             pass
-            
+
     db.commit()
     db.refresh(job)
     return {"message": "Job cancelled", "job": JobResponse.model_validate(job)}

@@ -1,7 +1,10 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, DateTime
+
+from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy.orm import relationship
+
 from app.db import Base
+
 
 class Subject(Base):
     __tablename__ = "subjects"

@@ -1,9 +1,10 @@
-from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+
 from app.db import get_db
-from app.models import Subject, Job
+from app.models import Job, Subject
 from app.schemas import JobResponse
 from app.services import electrodes as electrodes_service
 
@@ -97,7 +98,7 @@ def get_labels_summary(subject_id: int, db: Session = Depends(get_db)):
 
 
 class LabelsUpdateRequest(BaseModel):
-    exclude_labels: Optional[List[int]] = None  # cluster values (1..K) to drop as noise
+    exclude_labels: list[int] | None = None  # cluster values (1..K) to drop as noise
 
 
 class LabelsUpdateResponse(BaseModel):
@@ -156,8 +157,8 @@ class ImportContactsRequest(BaseModel):
     # validated here, so a malformed CSV still produces a real (failed) job
     # with the parse error as its progress_message, rather than a client-side
     # error with no job ever created (the web UI takes this path).
-    contacts: Optional[List[ContactImportItem]] = None
-    csv_text: Optional[str] = None
+    contacts: list[ContactImportItem] | None = None
+    csv_text: str | None = None
 
 
 @router.post("/{subject_id}/electrodes/import", response_model=JobResponse)

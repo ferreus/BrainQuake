@@ -1,28 +1,29 @@
-import os
-import re
 import csv
 import io
-import sys
 import json
 import math
-import time
+import os
+import re
 import shutil
-import zipfile
-import tempfile
 import subprocess
+import tempfile
+import time
 import xml.etree.ElementTree as ET
+import zipfile
 from urllib.parse import unquote
+
 import h5py
-import numpy as np
 import nibabel as nib
+import numpy as np
 from scipy.ndimage import binary_erosion
+from sklearn.linear_model import Lasso, LinearRegression
 from sklearn.mixture import GaussianMixture as GMM
-from sklearn.linear_model import LinearRegression, Lasso
 from sqlalchemy.orm import Session
+
 from app.config import settings
-from app.models import Job, Subject, Artifact
-from app.services.recon import register_artifact
+from app.models import Artifact, Job, Subject
 from app.services.job_control import check_cancelled, run_and_track_subprocess
+from app.services.recon import register_artifact
 
 # Ported from utils/elec_utils.py (git tag legacy-final). Split into two job
 # types: detect() (Preprocess_thread + GenerateLabel_thread -- hough3dlines + GMM
@@ -127,7 +128,7 @@ def generate_labels(patient, ct_dir, intra_file, K, log_file, job=None, db=None)
         intraFile=intra_file, log_file=log_file, thre=0, job=job, db=db)
 
     elec_track = []
-    with open(hough_file, 'r') as f:
+    with open(hough_file) as f:
         for line in f.readlines():
             a = re.findall(r"\d+\.?\d*", line)
             a = [float(x) for x in a]

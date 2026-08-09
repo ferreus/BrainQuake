@@ -1,28 +1,32 @@
-import os
-import sys
-import time
-import socket
 import logging
+import os
+import socket
+import sys
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+
 from sqlalchemy import update
-from sqlalchemy.orm import Session
-from app.db import SessionLocal
+
 from app.config import settings
-from app.models import Job, Subject
-from app.services.recon import run_recon_job
+from app.db import SessionLocal
+from app.models import Job
 from app.services.ct_register import run_ct_register_job
 from app.services.electrodes import (
-    run_elec_detect_job, run_elec_segment_job, run_elec_import_job, run_slicer_mrb_parse_job,
+    run_elec_detect_job,
+    run_elec_import_job,
+    run_elec_segment_job,
+    run_slicer_mrb_parse_job,
 )
 from app.services.ictal import run_ei_compute_job
 from app.services.interictal import run_hfo_compute_job
+from app.services.job_control import JobCancelledError
+from app.services.patient_io import run_export_patient_job, run_import_patient_job
+from app.services.recon import run_recon_job
 from app.services.soz import run_soz_fuse_job
 from app.services.surface import run_surface_export_job
-from app.services.patient_io import run_export_patient_job, run_import_patient_job
-from app.services.job_control import JobCancelledError
 
 POLL_INTERVAL_SECONDS = 2
 
@@ -106,7 +110,7 @@ def run_job(job_id: int):
     job = db.query(Job).filter(Job.id == job_id).first()
 
     logger.info(f"Executing job {job.id} of type '{job.job_type}' for subject ID {job.subject_id}")
-    
+
     try:
         with open(log_path, "w") as log_file:
             log_file.write(f"--- Job {job.id} Started at {job.started_at} ---\n")
@@ -167,14 +171,14 @@ def run_job(job_id: int):
     except Exception as e:
         logger.error(f"Job {job.id} failed with error: {e}")
         logger.error(traceback.format_exc())
-        
+
         # Reload job in case session was closed/messed up
         db.rollback()
         job = db.query(Job).filter(Job.id == job_id).first()
         job.state = "failed"
         job.progress_message = f"Error: {str(e)}"
         job.finished_at = datetime.now(timezone.utc)
-        
+
         # Append error stacktrace to the job log
         try:
             with open(log_path, "a") as log_file:
@@ -182,7 +186,7 @@ def run_job(job_id: int):
                 log_file.write(traceback.format_exc())
         except Exception:
             pass
-            
+
     finally:
         db.commit()
         db.close()

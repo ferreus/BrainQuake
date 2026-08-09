@@ -1,17 +1,19 @@
-import os
 import gc
-import shutil
 import logging
+import os
+import shutil
 from functools import reduce
-import numpy as np
+
 import mne
-from scipy.signal import butter, filtfilt, iirnotch, hilbert
+import numpy as np
 from scipy import fftpack
+from scipy.signal import butter, filtfilt, hilbert, iirnotch
 from sqlalchemy.orm import Session
-from app.models import Job, Subject, Artifact
-from app.services.recon import register_artifact
-from app.services.job_control import check_cancelled
+
+from app.models import Artifact, Job, Subject
 from app.services.edf_common import resolve_edf_path
+from app.services.job_control import check_cancelled
+from app.services.recon import register_artifact
 from app.services.signal_filters import DEFAULT_MAINS_FREQ, clamp_band, mains_harmonics
 
 logger = logging.getLogger(__name__)
@@ -104,7 +106,7 @@ def find_high_enveTimes(raw_enve, chns_names, fs, rel_thresh=3., abs_thresh=3., 
         tmp_highTime = return_timeRanges(tmp_highTime, fs, start_time)
         tmp_highTime = merge_timeRanges(tmp_highTime, min_gap)
         tmp_highEnveLong = [x[1] - x[0] for x in tmp_highTime]
-        further_index = np.where((np.array(tmp_highEnveLong) > min_last * 1e-3))[0]
+        further_index = np.where(np.array(tmp_highEnveLong) > min_last * 1e-3)[0]
         if len(further_index) == 0:
             high_times.append([])
         else:
@@ -182,7 +184,7 @@ def HI_preprocess_file(filename, remain_chns, highpass_freqband, progress_cb,
     time_ranges = np.array(list(zip(time_inter[:-1], time_inter[1:])))
 
     for id, tr in enumerate(time_ranges):
-        logger.info('part {}/{}'.format(id + 1, time_ranges.shape[0]))
+        logger.info(f'part {id + 1}/{time_ranges.shape[0]}')
         start, end = edf_data.time_as_index(tr)
         batch_data = edf_data[valid_chns_index, start:end][0]
         batch_data = batch_data - batch_data.mean(axis=0)
@@ -196,7 +198,7 @@ def HI_preprocess_file(filename, remain_chns, highpass_freqband, progress_cb,
         batch_enve = return_hil_enve_norm(batch_data, fs, highpass_freqband)
         batch_t = np.arange(batch_enve.shape[1]) / fs + tr[0]
 
-        np.savez(os.path.join(fileResultsDir, 'rawEnve_{}.npz'.format(id + 1)), rawEnve=batch_enve, rawTimes=batch_t,
+        np.savez(os.path.join(fileResultsDir, f'rawEnve_{id + 1}.npz'), rawEnve=batch_enve, rawTimes=batch_t,
                  valid_chns_index=valid_chns_index, valid_chns=valid_chns_st, fs=fs)
 
         del batch_data, batch_enve

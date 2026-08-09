@@ -1,12 +1,14 @@
-import os
 import csv
 import math
+import os
+
 import numpy as np
 from sqlalchemy.orm import Session
+
 from app.config import settings
-from app.models import Job, Subject, Artifact
-from app.services.recon import register_artifact
+from app.models import Artifact, Job, Subject
 from app.services.job_control import check_cancelled
+from app.services.recon import register_artifact
 
 # Ported from soz_result.py (git tag legacy-final) -- pure fusion/ranking logic
 # only; the mayavi plot_3d call was dropped (this module only produces the

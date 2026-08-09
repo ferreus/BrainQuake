@@ -1,9 +1,11 @@
 import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from app.db import get_db
+
 from app.config import settings
+from app.db import get_db
 from app.models import Artifact
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])

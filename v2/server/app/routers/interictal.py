@@ -1,15 +1,15 @@
 import os
-from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, model_validator
-
-from app.services.signal_filters import DEFAULT_MAINS_FREQ
 from sqlalchemy.orm import Session
-from app.db import get_db
+
 from app.config import settings
-from app.models import Subject, Job, Artifact
+from app.db import get_db
+from app.models import Artifact, Job, Subject
 from app.schemas import JobResponse
 from app.services import interictal as interictal_service
+from app.services.signal_filters import DEFAULT_MAINS_FREQ
 
 router = APIRouter(prefix="/subjects", tags=["interictal"])
 
@@ -28,15 +28,15 @@ class HfoRequest(BaseModel):
     abs_thresh: float = 2.0  # and abs_thresh * the whole-recording median
     min_gap: float = 20.0  # ms, merge high-envelope segments closer together than this
     min_last: float = 50.0  # ms, minimum event duration to count
-    remain_chns: Optional[List[str]] = None  # channel names to include; default: all
+    remain_chns: list[str] | None = None  # channel names to include; default: all
     # Grid frequency the data was recorded on. This matters more here than for EI:
     # on 60 Hz mains the 180 and 240 Hz harmonics land inside the 80-250 Hz ripple
     # band, and an un-notched harmonic is detected as an HFO.
     mains_freq: float = DEFAULT_MAINS_FREQ
     # Seconds from the start of the edf; None means the whole recording, which is
     # what the legacy code always did.
-    start_time: Optional[float] = None
-    end_time: Optional[float] = None
+    start_time: float | None = None
+    end_time: float | None = None
 
     @model_validator(mode="after")
     def _check(self):

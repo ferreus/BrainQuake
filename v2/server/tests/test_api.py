@@ -6,11 +6,12 @@ import struct
 import subprocess
 import tempfile
 import zipfile
+from unittest.mock import patch
+
 import h5py
-import numpy as np
 import mne
+import numpy as np
 import pytest
-from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 # Setup test DB URL before importing app modules. DATA_ROOT must be isolated
@@ -21,10 +22,10 @@ os.environ["DB_URL"] = "sqlite:///./data/test_brainquake.db"
 os.environ["SUBJECTS_DIR"] = "./data/test_subjects"
 os.environ["DATA_ROOT"] = "./data/test_data_root"
 
-from app.main import app
-from app.db import Base, engine, SessionLocal, get_db
 from app.config import settings
-from app.models import Subject, Job, Artifact
+from app.db import Base, SessionLocal, engine, get_db
+from app.main import app
+from app.models import Artifact, Job
 from app.workers.jobs_worker import run_job
 
 # Use the app's own engine and SessionLocal for tests so that the worker
@@ -1478,6 +1479,7 @@ def test_mains_harmonics_never_reaches_nyquist():
 def test_clamp_band_allows_band_high_at_nyquist():
     """band_high=500 on a 1 kHz recording means 'everything', not an error."""
     from scipy.signal import butter
+
     from app.services.signal_filters import clamp_band
 
     low, high = clamp_band(1.0, 500.0, 1000.0)

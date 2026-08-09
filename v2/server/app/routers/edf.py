@@ -1,6 +1,7 @@
-from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
+
 from app.db import get_db
 from app.models import Subject
 from app.services import edf as edf_service
@@ -30,9 +31,9 @@ def get_edf_window(
     edf_artifact_id: int,
     start: float = Query(..., ge=0),
     end: float = Query(...),
-    channels: Optional[str] = Query(None, description="comma-separated channel names; omit for all"),
-    band_low: Optional[float] = Query(None),
-    band_high: Optional[float] = Query(None),
+    channels: str | None = Query(None, description="comma-separated channel names; omit for all"),
+    band_low: float | None = Query(None),
+    band_high: float | None = Query(None),
     db: Session = Depends(get_db),
 ):
     subject = _get_subject_or_404(subject_id, db)

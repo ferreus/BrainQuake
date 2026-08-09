@@ -1,11 +1,12 @@
 import os
-from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from app.db import get_db
+
 from app.config import settings
-from app.models import Subject, Job, Artifact
+from app.db import get_db
+from app.models import Artifact, Job, Subject
 from app.schemas import JobResponse
 from app.services import soz as soz_service
 
@@ -20,8 +21,8 @@ def _get_subject_or_404(subject_id: int, db: Session) -> Subject:
 
 
 class SozFuseRequest(BaseModel):
-    ei_artifact_id: Optional[int] = None  # defaults to the subject's most recent ei_npz artifact
-    hi_artifact_id: Optional[int] = None  # defaults to the subject's most recent hfo_npz artifact
+    ei_artifact_id: int | None = None  # defaults to the subject's most recent ei_npz artifact
+    hi_artifact_id: int | None = None  # defaults to the subject's most recent hfo_npz artifact
 
 
 @router.post("/{subject_id}/soz/fuse", response_model=JobResponse)
