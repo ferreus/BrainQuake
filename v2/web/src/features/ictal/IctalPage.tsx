@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button, FileButton, Group, Loader, NativeSelect, Progress, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
@@ -43,6 +43,16 @@ export function IctalPage({ subjectId }: IctalPageProps) {
     [meta, state.excludedChannels],
   );
   const deleteArtifact = useDeleteArtifact(subjectId);
+
+  // Auxiliary traces out of the working set as soon as the recording loads.
+  // They are ranked as if they were contacts -- a REF channel placed 6th in the
+  // run behind docs/bella_ictal_ei_vs_annotation_discrepancy.md -- and they sit
+  // in the common-average reference that every remaining channel is measured
+  // against. Restorable from the channel list.
+  useEffect(() => {
+    if (!meta || effectiveEdfId == null) return;
+    dispatch({ type: "AUTO_EXCLUDE_AUX", edfArtifactId: effectiveEdfId, channels: meta.aux_channels ?? [] });
+  }, [meta, effectiveEdfId, dispatch]);
 
   function handleRemoveBadEdf() {
     if (!effectiveEdfId) return;
@@ -159,6 +169,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
                 channels={meta.channels}
                 excludedChannels={state.excludedChannels}
                 onDelete={(chs) => dispatch({ type: "DELETE_CHANNELS", channels: chs })}
+                onRestore={(chs) => dispatch({ type: "RESTORE_CHANNELS", channels: chs })}
               />
               <EiComputeForm
                 subjectId={subjectId}

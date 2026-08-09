@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 
 import mne
 import numpy as np
@@ -11,7 +10,7 @@ from sklearn.decomposition import PCA
 from sqlalchemy.orm import Session
 
 from app.models import Artifact, Job, Subject
-from app.services.edf_common import resolve_edf_path
+from app.services.edf_common import find_non_seeg_channels, resolve_edf_path
 from app.services.job_control import check_cancelled
 from app.services.recon import register_artifact
 from app.services.signal_filters import DEFAULT_MAINS_FREQ, filter_for_display
@@ -329,29 +328,6 @@ def compute_full_band(raw_data, sfreq, ei):
         return spec_pca, pre_labels, np.array([], dtype=int)
     chosen_cluster_ind = np.flatnonzero(np.isin(pre_labels, cluster_ind_ratio))
     return spec_pca, pre_labels, chosen_cluster_ind
-
-
-# An SEEG contact is named for its shaft and its position on it: one letter,
-# optionally primed for the contralateral shaft, then the contact number --
-# A1, D6, X'12, G'10. Anything else in the file is an auxiliary trace.
-#
-# Identifying contacts positively rather than blacklisting known auxiliary
-# names is what makes this reliable: a blacklist has to anticipate every
-# amplifier's naming (REF1, DC01, EKG1, UNUSED248 and a bare E all appear in
-# one Nihon Kohden export), while the contact convention is fixed by the
-# implantation scheme.
-_SEEG_CONTACT_RE = re.compile(r"^[A-Za-z]'?\d+$")
-
-
-def find_non_seeg_channels(chn_names):
-    """Indices of channels that are not SEEG contacts.
-
-    These matter twice over: they are ranked as if they were contacts, and --
-    worse -- filter_for_display() subtracts the mean across every channel it is
-    given, so an EKG or DC trace leaks into every SEEG channel through the
-    common-average reference.
-    """
-    return [i for i, n in enumerate(chn_names) if not _SEEG_CONTACT_RE.match(str(n).strip())]
 
 
 def find_saturated_channels(data, frac_threshold=0.01):

@@ -1331,7 +1331,7 @@ def test_delete_electrode_contacts():
     assert client.get(f"/subjects/{sid}/electrodes/labels-summary").status_code == 404
 
 
-def _make_synthetic_edf(path, n_channels=4, sfreq=1000.0, duration_sec=10.0):
+def _make_synthetic_edf(path, n_channels=4, sfreq=1000.0, duration_sec=10.0, ch_names=None):
     """Writes a real, re-readable EDF file (via mne + edfio) with a
     deterministic per-channel sine wave (distinct frequency per channel), so
     tests can assert on actual sample values, not just response shapes.
@@ -1341,7 +1341,8 @@ def _make_synthetic_edf(path, n_channels=4, sfreq=1000.0, duration_sec=10.0):
     put 150Hz above Nyquist and make iirnotch reject it."""
     n_samples = int(sfreq * duration_sec)
     t = np.arange(n_samples) / sfreq
-    ch_names = [f"CH{i + 1}" for i in range(n_channels)]
+    ch_names = list(ch_names) if ch_names else [f"CH{i + 1}" for i in range(n_channels)]
+    n_channels = len(ch_names)
     data = np.stack([50e-6 * np.sin(2 * np.pi * (2 + i) * t) for i in range(n_channels)])
     info = mne.create_info(ch_names, sfreq=sfreq, ch_types="eeg")
     raw = mne.io.RawArray(data, info, verbose=False)
@@ -1349,11 +1350,11 @@ def _make_synthetic_edf(path, n_channels=4, sfreq=1000.0, duration_sec=10.0):
     return ch_names, sfreq
 
 
-def _create_subject_with_edf(name):
+def _create_subject_with_edf(name, ch_names=None):
     r = client.post("/subjects", json={"name": name})
     sid = r.json()["id"]
     edf_path = f"/tmp/{name}_synth.edf"
-    ch_names, sfreq = _make_synthetic_edf(edf_path)
+    ch_names, sfreq = _make_synthetic_edf(edf_path, ch_names=ch_names)
     with open(edf_path, "rb") as f:
         r = client.post(
             f"/subjects/{sid}/upload?file_type=edf",
@@ -1470,6 +1471,32 @@ def test_edf_meta():
 
     r = client.get(f"/subjects/{sid}/edf/999999/meta")
     assert r.status_code == 404
+
+
+def test_edf_meta_flags_auxiliary_channels():
+    # The web client excludes these from the working set on load: every module
+    # re-references to the mean of the channels it is given, and a Nihon Kohden
+    # DC input (mV) or mark word (unitless, so read raw) arrives orders of
+    # magnitude above a microvolt contact and swamps the average.
+    names = ["A1", "A2", "X'12", "REF1", "DC01", "EKG1", "UNUSED248", "MARK", "E"]
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfMetaAuxTest", ch_names=names)
+
+    meta = client.get(f"/subjects/{sid}/edf/{artifact_id}/meta").json()
+    assert meta["aux_channels"] == ["REF1", "DC01", "EKG1", "UNUSED248", "MARK", "E"]
+
+    # Served from Artifact.meta_json on the second call, where the field is
+    # derived rather than stored -- so it must survive the cache hit.
+    assert client.get(f"/subjects/{sid}/edf/{artifact_id}/meta").json() == meta
+
+
+def test_edf_meta_reports_no_aux_when_no_channel_follows_the_convention():
+    # CH1..CH4 matches no contact name, so the naming rule does not apply to
+    # this recording. Reporting all four would have the client exclude every
+    # channel and analyse nothing.
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfMetaNoConventionTest")
+    meta = client.get(f"/subjects/{sid}/edf/{artifact_id}/meta").json()
+    assert meta["channels"] == ["CH1", "CH2", "CH3", "CH4"]
+    assert meta["aux_channels"] == []
 
 
 def _parse_edf_window_binary(content: bytes) -> dict:

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button, FileButton, Group, Loader, NativeSelect, Progress, Stack, Switch, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
@@ -44,6 +44,17 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
     () => (meta?.channels ?? []).filter((c) => !state.excludedChannels.has(c)),
     [meta, state.excludedChannels],
   );
+
+  // The server classifies channels by the contact-naming convention and reports
+  // the auxiliary ones; drop them from the working set as soon as the recording
+  // loads. Sending them to the HFO job puts them in its common-average
+  // reference, where a mark word (no unit, so read raw) or a DC input (mV
+  // against microvolt contacts) swamps every contact and the detector returns
+  // the same events on all of them. Restorable from the channel list.
+  useEffect(() => {
+    if (!meta || effectiveEdfId == null) return;
+    dispatch({ type: "AUTO_EXCLUDE_AUX", edfArtifactId: effectiveEdfId, channels: meta.aux_channels ?? [] });
+  }, [meta, effectiveEdfId, dispatch]);
 
   // channel name -> detected [start,end] events, consumed by EegCanvas' overlay.
   const eventOverlays = useMemo(() => {
@@ -157,6 +168,7 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
                 channels={meta.channels}
                 excludedChannels={state.excludedChannels}
                 onDelete={(chs) => dispatch({ type: "DELETE_CHANNELS", channels: chs })}
+                onRestore={(chs) => dispatch({ type: "RESTORE_CHANNELS", channels: chs })}
               />
               <HfoComputeForm
                 subjectId={subjectId}

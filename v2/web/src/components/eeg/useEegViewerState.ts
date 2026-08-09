@@ -10,6 +10,10 @@ export interface EegViewerState {
   dispTimeWin: number;
   dispTimeStart: number;
   excludedChannels: Set<string>;
+  /** Which recording the auxiliary-channel exclusion below has been applied
+   * for. Keyed rather than a boolean so switching to another EDF re-runs it
+   * against that file's channel names instead of carrying over this one's. */
+  autoExcludedFor: number | null;
   filterBandLow: number;
   filterBandHigh: number;
   filterEnabled: boolean;
@@ -27,6 +31,8 @@ export type EegViewerAction =
   | { type: "SET_TIME_WIN"; delta: number }
   | { type: "SET_TIME_START"; value: number }
   | { type: "DELETE_CHANNELS"; channels: string[] }
+  | { type: "RESTORE_CHANNELS"; channels: string[] }
+  | { type: "AUTO_EXCLUDE_AUX"; edfArtifactId: number; channels: string[] }
   | { type: "SET_FILTER_BAND"; low: number; high: number }
   | { type: "SET_MAINS_FREQ"; value: number }
   | { type: "TOGGLE_FILTER" };
@@ -53,6 +59,23 @@ function reducer(state: EegViewerState, action: EegViewerAction): EegViewerState
       const next = new Set(state.excludedChannels);
       action.channels.forEach((c) => next.add(c));
       return { ...state, excludedChannels: next };
+    }
+    case "RESTORE_CHANNELS": {
+      const next = new Set(state.excludedChannels);
+      action.channels.forEach((c) => next.delete(c));
+      return { ...state, excludedChannels: next };
+    }
+    case "AUTO_EXCLUDE_AUX": {
+      // Runs once per recording. Re-applying it on every render would undo the
+      // user's restores; running it never would leave the default producing
+      // meaningless output. It replaces the exclusion set rather than adding to
+      // it, since the previous recording's names do not apply to this one.
+      if (state.autoExcludedFor === action.edfArtifactId) return state;
+      return {
+        ...state,
+        excludedChannels: new Set(action.channels),
+        autoExcludedFor: action.edfArtifactId,
+      };
     }
     case "SET_FILTER_BAND":
       return { ...state, filterBandLow: action.low, filterBandHigh: action.high };
@@ -84,6 +107,7 @@ export function useEegViewerState(mode: EegMode): {
     dispTimeWin: 5,
     dispTimeStart: 0,
     excludedChannels: new Set<string>(),
+    autoExcludedFor: null,
     filterBandLow: mode === "ictal" ? 60 : 80,
     filterBandHigh: mode === "ictal" ? 140 : 250,
     filterEnabled: true,

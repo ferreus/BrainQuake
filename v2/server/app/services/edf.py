@@ -7,7 +7,7 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from app.models import Artifact, Subject
-from app.services.edf_common import resolve_edf_path
+from app.services.edf_common import find_non_seeg_channels, resolve_edf_path
 from app.services.signal_filters import DEFAULT_MAINS_FREQ, filter_for_display
 
 # Synchronous (not a job) windowed EDF fetch for the web client's EEG canvas --
@@ -60,7 +60,7 @@ def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
 
     cached = artifact.meta_json
     if cached and "amplitude_range" in cached and all(cached.get(k) == v for k, v in fingerprint.items()):
-        return cached
+        return _with_aux_channels(cached)
 
     # preload=False + chunked scan: the only thing needing every sample is the
     # global min/max, and loading a whole multi-GB recording to compute two
@@ -85,7 +85,29 @@ def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
     }
     artifact.meta_json = meta
     db.commit()
-    return meta
+    return _with_aux_channels(meta)
+
+
+def _with_aux_channels(meta: dict) -> dict:
+    """Annotate a meta payload with the channels that are not SEEG contacts.
+
+    Derived on read rather than stored, so recordings whose meta was cached
+    before this field existed get it without a re-scan, and so the naming rule
+    has exactly one implementation (edf_common.find_non_seeg_channels) rather
+    than a second copy in the web client.
+
+    The client excludes these from the working set on load, so "everything is
+    auxiliary" has to mean "this recording does not follow the convention", not
+    "discard the whole recording": a file labelled CH1..CH64, or in bipolar
+    pairs, matches no contact name at all. In that case say nothing and leave
+    the choice to the user, which is the behaviour from before this field
+    existed.
+    """
+    names = meta.get("channels") or []
+    aux = find_non_seeg_channels(names)
+    if len(aux) == len(names):
+        return {**meta, "aux_channels": []}
+    return {**meta, "aux_channels": [names[i] for i in aux]}
 
 
 def get_edf_window(
