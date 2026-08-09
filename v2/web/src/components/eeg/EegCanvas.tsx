@@ -64,6 +64,7 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
       channels: visibleChannels,
       bandLow: state.filterEnabled ? state.filterBandLow : undefined,
       bandHigh: state.filterEnabled ? state.filterBandHigh : undefined,
+      mainsFreq: state.mainsFreq,
     },
     visibleChannels.length > 0,
   );

@@ -13,6 +13,10 @@ export interface EegViewerState {
   filterBandLow: number;
   filterBandHigh: number;
   filterEnabled: boolean;
+  /** Power-line frequency notched out of the displayed traces, and the value
+   * the EI form submits. 50 Europe/Asia, 60 North America. Shared so the
+   * traces reviewed on screen are filtered the same way as the analysis. */
+  mainsFreq: number;
 }
 
 export type EegViewerAction =
@@ -24,6 +28,7 @@ export type EegViewerAction =
   | { type: "SET_TIME_START"; value: number }
   | { type: "DELETE_CHANNELS"; channels: string[] }
   | { type: "SET_FILTER_BAND"; low: number; high: number }
+  | { type: "SET_MAINS_FREQ"; value: number }
   | { type: "TOGGLE_FILTER" };
 
 function reducer(state: EegViewerState, action: EegViewerAction): EegViewerState {
@@ -51,6 +56,8 @@ function reducer(state: EegViewerState, action: EegViewerAction): EegViewerState
     }
     case "SET_FILTER_BAND":
       return { ...state, filterBandLow: action.low, filterBandHigh: action.high };
+    case "SET_MAINS_FREQ":
+      return { ...state, mainsFreq: action.value };
     case "TOGGLE_FILTER":
       return { ...state, filterEnabled: !state.filterEnabled };
     default:
@@ -80,6 +87,7 @@ export function useEegViewerState(mode: EegMode): {
     filterBandLow: mode === "ictal" ? 60 : 80,
     filterBandHigh: mode === "ictal" ? 140 : 250,
     filterEnabled: true,
+    mainsFreq: 50,
   }));
   return { state, dispatch };
 }

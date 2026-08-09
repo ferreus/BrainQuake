@@ -19,6 +19,10 @@ interface EiComputeFormProps {
    * just the plot -- it would otherwise stay in the common-average reference
    * and leak into every other channel. */
   remainChannels: string[];
+  /** Power-line frequency, owned by the shared EEG viewer state and set from
+   * the canvas toolbar. Shared rather than a second local control so the
+   * traces on screen and the EI computation can never disagree about it. */
+  mainsFreq: number;
 }
 
 /**
@@ -30,12 +34,11 @@ interface EiComputeFormProps {
  * 500Hz is exactly Nyquist, which scipy's butter() rejects outright. The server
  * clamps it now, but there's no reason to send a value that needs clamping.
  */
-export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, remainChannels }: EiComputeFormProps) {
+export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, remainChannels, mainsFreq }: EiComputeFormProps) {
   const [bandLow, setBandLow] = useState(1.0);
   const [bandHigh, setBandHigh] = useState(300.0);
   // 50Hz Europe/Asia, 60Hz North America. The wrong value notches clean signal
   // and leaves the real interference in place.
-  const [mainsFreq, setMainsFreq] = useState(50.0);
   const [jobId, setJobId] = useState<number | undefined>();
 
   const nyquist = sfreq ? sfreq / 2 : undefined;
@@ -188,14 +191,9 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, rema
         <NumberInput label="Band low (Hz)" value={bandLow} onChange={(v) => setBandLow(Number(v) || 0)} size="xs" />
         <NumberInput label="Band high (Hz)" value={bandHigh} onChange={(v) => setBandHigh(Number(v) || 0)} size="xs" />
       </Group>
-      <NumberInput
-        label="Mains (Hz)"
-        description="50 Europe/Asia, 60 North America"
-        value={mainsFreq}
-        onChange={(v) => setMainsFreq(Number(v) || 0)}
-        size="xs"
-        mt={4}
-      />
+      <Text size="xs" c="dimmed" mt={4}>
+        Mains {mainsFreq}Hz &mdash; set on the trace toolbar, shared with the display filter
+      </Text>
       {bandHighTooHigh && (
         <Text size="xs" c="orange" mt={4}>
           Band high must be below Nyquist ({nyquist} Hz); it will be clamped.

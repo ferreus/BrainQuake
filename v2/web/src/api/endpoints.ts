@@ -249,6 +249,8 @@ export interface EdfWindowParams {
   channels?: string[];
   bandLow?: number;
   bandHigh?: number;
+  /** Power-line frequency to notch: 50 Europe/Asia, 60 North America. */
+  mainsFreq?: number;
 }
 
 export interface EdfWindow {
@@ -278,6 +280,7 @@ export async function getEdfWindow(
   if (params.channels?.length) qs.set("channels", params.channels.join(","));
   if (params.bandLow != null) qs.set("band_low", String(params.bandLow));
   if (params.bandHigh != null) qs.set("band_high", String(params.bandHigh));
+  if (params.mainsFreq != null) qs.set("mains_freq", String(params.mainsFreq));
   const buf = await apiGetBinary(`/subjects/${subjectId}/edf/${edfArtifactId}/window?${qs.toString()}`);
   const parsed = parseEdfWindowBinary(buf);
   return {

@@ -166,6 +166,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
                 selection={selection}
                 sfreq={meta.fs}
                 remainChannels={remainChannels}
+                mainsFreq={state.mainsFreq}
               />
             </Stack>
           </Group>

@@ -1,5 +1,5 @@
 import type { Dispatch } from "react";
-import { Button, Divider, Group, Switch, Text } from "@mantine/core";
+import { Button, Divider, Group, SegmentedControl, Switch, Text } from "@mantine/core";
 import type { EegViewerAction, EegViewerState } from "./useEegViewerState";
 
 interface EegToolbarProps {
@@ -72,6 +72,19 @@ export function EegToolbar({ state, dispatch }: EegToolbarProps) {
         checked={state.filterEnabled}
         onChange={() => dispatch({ type: "TOGGLE_FILTER" })}
         label={`Filter ${state.filterBandLow}-${state.filterBandHigh}Hz`}
+      />
+      <Divider orientation="vertical" />
+      {/* Mains frequency belongs next to the filter switch because it *is*
+          part of the display filter: the wrong value notches clean signal out
+          of the traces being reviewed and leaves the real interference in. */}
+      <SegmentedControl
+        size="xs"
+        value={String(state.mainsFreq)}
+        onChange={(v) => dispatch({ type: "SET_MAINS_FREQ", value: Number(v) })}
+        data={[
+          { label: "50Hz", value: "50" },
+          { label: "60Hz", value: "60" },
+        ]}
       />
     </Group>
   );

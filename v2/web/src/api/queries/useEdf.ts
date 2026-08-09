@@ -30,6 +30,7 @@ function edfWindowQueryKey(subjectId: number | undefined, edfArtifactId: number 
     params.channels?.join(",") ?? "*",
     params.bandLow,
     params.bandHigh,
+    params.mainsFreq,
   ] as const;
 }
 
@@ -46,7 +47,7 @@ export function useEdfWindow(
   const stableParams = useMemo(
     () => params,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [params.start, params.end, params.channels, params.bandLow, params.bandHigh],
+    [params.start, params.end, params.channels, params.bandLow, params.bandHigh, params.mainsFreq],
   );
   const [debounced] = useDebouncedValue(stableParams, PAN_DEBOUNCE_MS);
   const queryClient = useQueryClient();

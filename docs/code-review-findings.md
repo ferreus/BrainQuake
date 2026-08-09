@@ -129,7 +129,7 @@ been caught by it. Rebuilt with FreeSurfer's LIA conformed orientation sized so
 hand-computed expectation in those tests is unchanged, but the conversion is
 now genuinely exercised.
 
-### Tests added
+### Tests added (electrodes)
 
 Three regression tests in `tests/test_api.py`:
 `test_itk_transform_is_applied_in_lps_not_in_the_declared_system` (translation
@@ -138,3 +138,35 @@ case — caught via the `transform_used` label),
 heuristic cannot rescue), and
 `test_lps_and_ras_declarations_of_the_same_point_agree` (the same physical
 contact written either way must land in the same place).
+
+---
+
+## services/edf.py + services/edf_common.py + routers/edf.py
+
+Reviewed 2026-08-09. This is the layer every downstream result reads through,
+so its failures are silent by nature.
+
+### high
+
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 28 | **The trace viewer's display filter had no mains-frequency parameter at all.** `get_edf_window` called `filter_for_display` without `mains_freq`, so it always used the 50 Hz default — and neither the route nor the web client could override it. Every trace reviewed on screen was notched at 50/100/150 Hz regardless of the recording. On Bella's 60 Hz data that removed clean signal at 50/100/150 and left the real 60/120/180 interference visible, in exactly the traces used to choose baseline/target windows and judge onset. Now a parameter, exposed as a 50/60 Hz control on the canvas toolbar, and **shared with the EI form** so the displayed signal and the analysed signal cannot disagree. | `get_edf_window`, `EegToolbar`, `EiComputeForm` | **fixed** |
+
+### medium
+
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 29 | `meta_json` was cached on the Artifact row and only recomputed if `amplitude_range` was absent, so a replaced or re-uploaded recording served the previous file's channel list and amplitude range indefinitely. Now keyed on the source file's size and mtime. **This is the most likely explanation for a channel missing from the deletion list.** | `get_edf_meta` | **fixed** |
+| 30 | `get_edf_meta` used `preload=True` and decoded the entire recording to compute two scalars (global min/max). Now scans in 60 s chunks with `preload=False`, bounding peak memory regardless of clip length. | `get_edf_meta` | **fixed** |
+| 31 | Unknown channel names in a window request were silently dropped, so a stale client list returned fewer traces than requested with no indication why. Now a 400. An empty selection is also rejected rather than returning a zero-channel buffer. | `get_edf_window` | **fixed** |
+| 32 | The common-average reference inside `filter_for_display` is taken over whichever channels were *picked*, so a client requesting a subset sees different traces than one requesting all — and different from what the EI job computes over its own set. Inherent to doing CAR per-request; noted so it is not mistaken for a bug later. | `get_edf_window` | marked |
+
+### Tests added (edf)
+
+`test_edf_window_mains_freq_notches_the_frequency_it_is_given` builds a
+recording carrying real 60 Hz interference and asserts the notch removes it
+when told 60 and leaves it when told 50, while the 10 Hz signal of interest
+survives. (A first version only asserted "the output changes", which passed
+vacuously on a synthetic file with no mains content — not a real check.)
+Plus `test_edf_window_rejects_unknown_channel_names` and
+`test_edf_meta_cache_is_invalidated_when_the_file_changes`.

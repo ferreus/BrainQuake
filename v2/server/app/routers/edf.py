@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Subject
 from app.services import edf as edf_service
+from app.services.signal_filters import DEFAULT_MAINS_FREQ
 
 router = APIRouter(prefix="/subjects", tags=["edf"])
 
@@ -22,7 +23,7 @@ def get_edf_meta(subject_id: int, edf_artifact_id: int, db: Session = Depends(ge
     try:
         return edf_service.get_edf_meta(db, subject, edf_artifact_id)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get("/{subject_id}/edf/{edf_artifact_id}/window")
@@ -34,6 +35,10 @@ def get_edf_window(
     channels: str | None = Query(None, description="comma-separated channel names; omit for all"),
     band_low: float | None = Query(None),
     band_high: float | None = Query(None),
+    mains_freq: float = Query(
+        DEFAULT_MAINS_FREQ,
+        description="power-line frequency to notch: 50 Europe/Asia, 60 North America",
+    ),
     db: Session = Depends(get_db),
 ):
     subject = _get_subject_or_404(subject_id, db)
@@ -48,9 +53,10 @@ def get_edf_window(
             channels=channel_list,
             band_low=band_low,
             band_high=band_high,
+            mains_freq=mains_freq,
         )
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return Response(content=edf_service.pack_edf_window(result), media_type="application/octet-stream")

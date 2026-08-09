@@ -1431,6 +1431,80 @@ def test_edf_window_channel_filter_and_limits():
     assert r.status_code == 404
 
 
+def test_edf_window_rejects_unknown_channel_names():
+    """A stale channel list used to silently return fewer traces than requested."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfUnknownChan")
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=1&channels=CH1,NOPE")
+    assert r.status_code == 400
+    assert "NOPE" in r.json()["detail"]
+
+
+def test_edf_window_mains_freq_notches_the_frequency_it_is_given():
+    """The displayed traces must be notched at the recording's mains frequency.
+
+    The endpoint previously had no mains parameter at all, so every trace the
+    operator reviewed was notched at 50/100/150 Hz regardless of where the data
+    was recorded -- removing clean signal and leaving the real interference.
+    """
+    name = "EdfMains"
+    r = client.post("/subjects", json={"name": name})
+    sid = r.json()["id"]
+
+    # A recording that carries real 60 Hz interference on one channel, so the
+    # assertion is about the notch working -- not merely about the output
+    # changing. The other channels stay quiet so the common-average reference
+    # does not cancel it.
+    sfreq, duration = 1000.0, 10.0
+    t = np.arange(int(sfreq * duration)) / sfreq
+    data = np.zeros((4, t.size))
+    data[0] = 50e-6 * np.sin(2 * np.pi * 60 * t) + 50e-6 * np.sin(2 * np.pi * 10 * t)
+    info = mne.create_info([f"CH{i + 1}" for i in range(4)], sfreq=sfreq, ch_types="eeg")
+    edf_path = f"/tmp/{name}_mains.edf"
+    mne.io.RawArray(data, info, verbose=False).export(edf_path, fmt="edf", overwrite=True, verbose=False)
+    with open(edf_path, "rb") as f:
+        artifact_id = client.post(
+            f"/subjects/{sid}/upload?file_type=edf",
+            files={"file": (f"{name}.edf", f.read(), "application/octet-stream")},
+        ).json()["id"]
+    os.remove(edf_path)
+
+    base = f"/subjects/{sid}/edf/{artifact_id}/window?start=2&end=8&band_low=1&band_high=200"
+
+    def power_at(hz, mains):
+        body = _parse_edf_window_binary(client.get(f"{base}&mains_freq={mains}").content)
+        sig = np.asarray(body["data"][0])
+        spec = np.abs(np.fft.rfft(sig))
+        freqs = np.fft.rfftfreq(sig.size, 1.0 / body["fs"])
+        sel = (freqs >= hz - 2) & (freqs <= hz + 2)
+        return float(np.sum(spec[sel] ** 2))
+
+    assert power_at(60, 60) < power_at(60, 50) * 0.05, (
+        "notching at 60Hz must remove the 60Hz interference that notching at 50Hz leaves"
+    )
+    assert power_at(10, 60) > power_at(60, 60) * 100, "the 10Hz signal of interest must survive"
+
+
+def test_edf_meta_cache_is_invalidated_when_the_file_changes():
+    """meta_json was cached forever, so a replaced recording kept serving the
+    previous file's channel list and amplitude range."""
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("EdfMetaCache")
+
+    first = client.get(f"/subjects/{sid}/edf/{artifact_id}/meta").json()
+    assert first["channels"] == ch_names
+
+    # Overwrite the resolved copy with a recording that has different channels.
+    from app.models import Artifact, Subject
+    from app.services.edf_common import resolve_edf_path
+    with SessionLocal() as db:
+        subject = db.query(Subject).filter(Subject.id == sid).first()
+        artifact = db.query(Artifact).filter(Artifact.id == artifact_id).first()
+        resolved = resolve_edf_path(subject, artifact)
+    _make_synthetic_edf(resolved, n_channels=6)
+
+    second = client.get(f"/subjects/{sid}/edf/{artifact_id}/meta").json()
+    assert len(second["channels"]) == 6, "stale cached metadata was served"
+
+
 @patch("subprocess.Popen", side_effect=MockPopen)
 def test_export_import_patient_roundtrip(mock_run):
     # Build a subject with a real on-disk footprint: recon (writes the

@@ -1,4 +1,5 @@
 import json
+import os
 import struct
 
 import mne
@@ -7,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Artifact, Subject
 from app.services.edf_common import resolve_edf_path
-from app.services.signal_filters import filter_for_display
+from app.services.signal_filters import DEFAULT_MAINS_FREQ, filter_for_display
 
 # Synchronous (not a job) windowed EDF fetch for the web client's EEG canvas --
 # closes the gap where EDF files were only ever retrievable whole (raw_edf
@@ -36,25 +37,51 @@ def _get_artifact(db: Session, subject: Subject, edf_artifact_id: int) -> Artifa
     return artifact
 
 
+# Seconds of signal decoded at a time when scanning for the amplitude range.
+# Bounds peak memory to this window rather than the whole recording.
+_META_SCAN_CHUNK_SECONDS = 60.0
+
+
 def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
     """GET .../edf/{id}/meta. The amplitude range needs one full decode pass,
     so it's computed once and cached into Artifact.meta_json rather than
     repeated on every call -- this is also what the web client's EEG canvas
     uses for its fixed row pitch (dr = 0.7 * (max-min)), matching the legacy
-    disp_press formula in client_ictal.py/client_inter.py."""
-    artifact = _get_artifact(db, subject, edf_artifact_id)
-    if artifact.meta_json and "amplitude_range" in artifact.meta_json:
-        return artifact.meta_json
+    disp_press formula in client_ictal.py/client_inter.py.
 
+    The cache is keyed on the source file's size and mtime: without that, a
+    replaced or re-uploaded recording kept serving the previous file's channel
+    list and amplitude range forever.
+    """
+    artifact = _get_artifact(db, subject, edf_artifact_id)
     edf_path = resolve_edf_path(subject, artifact)
-    raw = mne.io.read_raw_edf(edf_path, preload=True, stim_channel=None)
-    data, _ = raw[:]
+    stat = os.stat(edf_path)
+    fingerprint = {"source_size": stat.st_size, "source_mtime": int(stat.st_mtime)}
+
+    cached = artifact.meta_json
+    if cached and "amplitude_range" in cached and all(cached.get(k) == v for k, v in fingerprint.items()):
+        return cached
+
+    # preload=False + chunked scan: the only thing needing every sample is the
+    # global min/max, and loading a whole multi-GB recording to compute two
+    # scalars pushed the API process into swap on long clips.
+    raw = mne.io.read_raw_edf(edf_path, preload=False, stim_channel=None)
+    fs = raw.info["sfreq"]
+    n_samples = int(raw.n_times)
+    chunk = max(1, int(fs * _META_SCAN_CHUNK_SECONDS))
+    lo, hi = np.inf, -np.inf
+    for i0 in range(0, n_samples, chunk):
+        block, _ = raw[:, i0:min(n_samples, i0 + chunk)]
+        lo = min(lo, float(np.min(block)))
+        hi = max(hi, float(np.max(block)))
+
     meta = {
-        "fs": raw.info["sfreq"],
-        "n_samples": int(data.shape[1]),
+        "fs": fs,
+        "n_samples": n_samples,
         "duration_sec": float(raw.times[-1]),
         "channels": raw.ch_names,
-        "amplitude_range": {"min": float(np.min(data)), "max": float(np.max(data))},
+        "amplitude_range": {"min": lo, "max": hi},
+        **fingerprint,
     }
     artifact.meta_json = meta
     db.commit()
@@ -71,6 +98,7 @@ def get_edf_window(
     band_low=None,
     band_high=None,
     pad: float = 2.0,
+    mains_freq: float = DEFAULT_MAINS_FREQ,
 ):
     """GET .../edf/{id}/window. When filtering, the requested range is padded
     by `pad` seconds (clamped to the recording) before running the zero-phase
@@ -94,8 +122,15 @@ def get_edf_window(
     if channels:
         wanted = set(channels)
         picks = [i for i, name in enumerate(raw.ch_names) if name in wanted]
+        missing = wanted - set(raw.ch_names)
+        if missing:
+            # Previously these were dropped silently, so a stale channel list in
+            # the client returned fewer traces than it asked for with no clue why.
+            raise ValueError(f"unknown channel(s) for this recording: {sorted(missing)}")
     else:
         picks = list(range(len(raw.ch_names)))
+    if not picks:
+        raise ValueError("no channels selected")
 
     filtering = band_low is not None and band_high is not None
     pad_start = max(0.0, start - pad) if filtering else start
@@ -105,7 +140,11 @@ def get_edf_window(
     data, _ = raw[picks, i0:i1]
 
     if filtering:
-        data = filter_for_display(data, fs, band_low, band_high)
+        # NOTE: the common-average reference inside filter_for_display is taken
+        # over the *picked* channels, so a client requesting a subset sees
+        # slightly different traces than one requesting all of them -- and than
+        # what the EI job computes over its own channel set.
+        data = filter_for_display(data, fs, band_low, band_high, mains_freq=mains_freq)
         trim0 = int(round((start - pad_start) * fs))
         trim1 = trim0 + int(round((end - start) * fs))
         data = data[:, trim0:trim1]
