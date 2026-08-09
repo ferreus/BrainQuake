@@ -5,9 +5,14 @@ from scipy.signal import butter, filtfilt, iirnotch
 
 logger = logging.getLogger(__name__)
 
-# Mains frequency defaults to 50 Hz -- the value the legacy app hardcoded, kept
-# as the default so the S1 golden-output comparison stays bit-identical. North
-# American recordings (e.g. the Cleveland Clinic SEEG) must pass 60.
+# FIXME(correctness): 50 Hz is inherited from the legacy app's hardcoded value.
+# The justification used to be bit-identical reproduction of the S1 golden
+# output, which is no longer a goal (docs/cleanup-plan.md). What remains is a
+# default that is simply wrong for this project's own data -- Bella's recordings
+# are 60 Hz -- and getting it wrong is silent: it notches 50/100/150 Hz of clean
+# signal and leaves the real 60/120/180 Hz interference in place. This should
+# become a required parameter, or be read from the recording's metadata, rather
+# than defaulting to the value that is wrong here.
 DEFAULT_MAINS_FREQ = 50.0
 
 # Fraction of Nyquist that band_high is clamped to. scipy's butter() requires
@@ -72,9 +77,15 @@ def filter_for_display(data, fs, band_low, band_high, mains_freq=DEFAULT_MAINS_F
     HFO output.
     """
     band_low, band_high = clamp_band(band_low, band_high, fs, "filter_for_display")
+    # FIXME(correctness): this common-average reference averages over EVERY
+    # channel in the file, including EKG/REF/DC auxiliary traces, so non-brain
+    # signal is subtracted into every SEEG channel. See find_non_seeg_channels()
+    # in services/ictal.py, which reports them but does not exclude them.
     data = data - np.mean(data, axis=0)
-    # Legacy notched 50/100/150 only; keep that reach (3 harmonics) rather than
-    # sweeping to Nyquist, so the 50 Hz default reproduces the old output exactly.
+    # NOTE(v1-quirk): the legacy app notched 50/100/150 Hz only, and this keeps
+    # that reach (3 harmonics) rather than sweeping to Nyquist. Harmonics above
+    # the 3rd are left in the signal; whether that matters depends on how much
+    # mains interference the recording actually carries.
     for nf in mains_harmonics(mains_freq, fs, up_to=mains_freq * 3.5):
         tb, ta = iirnotch(nf / (fs / 2), 30)
         data = filtfilt(tb, ta, data, axis=-1)
