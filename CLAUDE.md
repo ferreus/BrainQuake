@@ -75,7 +75,7 @@ pytest tests/test_api.py::test_subject_crud
 - `models/` — SQLAlchemy ORM: `Subject`, `Job`, `Artifact`
 - `schemas/` — Pydantic request/response models
 - `routers/` — one file per resource group; each job-creating endpoint inserts a `queued` row and returns it
-- `services/` — ported numeric modules: `recon.py`, `ct_register.py`, `electrodes.py`, `ictal.py`, `interictal.py`, `soz.py`, `edf.py`/`edf_common.py`, `signal_filters.py`, `freebrowse.py`, `fastsurfer_client.py`, `job_control.py`
+- `services/` — ported numeric modules: `recon.py`, `ct_register.py`, `electrodes.py`, `anatomy.py` (names the FreeSurfer structure each contact sits in), `ictal.py`, `interictal.py`, `soz.py`, `edf.py`/`edf_common.py`, `signal_filters.py`, `freebrowse.py`, `fastsurfer_client.py`, `job_control.py`
 - `workers/jobs_worker.py` — polls `jobs` table for `queued` rows, claims one, runs it, writes a per-job log file to `DATA_ROOT/logs/job_{id}.log`. On startup, fails any stale `running` rows from a previous crash.
 
 **Job state machine**: `queued → running → finished | failed | cancelled`

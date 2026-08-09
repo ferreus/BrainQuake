@@ -88,6 +88,7 @@ export function useDeleteElectrodeContacts(subjectId: number) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
       queryClient.invalidateQueries({ queryKey: ["chn-xyz", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["contact-anatomy", subjectId] });
       queryClient.invalidateQueries({ queryKey: ["labels-summary", subjectId] });
       queryClient.invalidateQueries({ queryKey: ["slicer-mrb-preview", subjectId] });
     },
@@ -118,6 +119,7 @@ export function useApproveSlicerMrbPreview(subjectId: number) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
       queryClient.invalidateQueries({ queryKey: ["chn-xyz", subjectId] });
+      queryClient.invalidateQueries({ queryKey: ["contact-anatomy", subjectId] });
       queryClient.invalidateQueries({ queryKey: ["slicer-mrb-preview", subjectId] });
     },
   });

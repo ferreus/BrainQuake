@@ -231,11 +231,61 @@ export function getContacts(subjectId: number, label: string): Promise<number[][
   return apiGet<number[][]>(`/subjects/${subjectId}/electrodes/contacts/${encodeURIComponent(label)}`);
 }
 
+export interface AnatomyLabel {
+  label_id: number;
+  label_name: string;
+}
+
+export interface ContactAnatomy {
+  electrode: string;
+  contact_index: number;
+  /** `${electrode}${contact_index}`, e.g. "K'7" -- the key the 3D view and the
+   * table both select on, so neither depends on the other's ordering. */
+  name: string;
+  x: number;
+  y: number;
+  z: number;
+  voxel: [number, number, number];
+  /** Label of the single voxel the contact centre falls in. null only when
+   * out_of_volume. */
+  label_id: number | null;
+  label_name: string | null;
+  /** Closest grey-matter structure within radius_mm, with its distance. null
+   * when there is none that close -- i.e. the contact really is in white
+   * matter, not just near a boundary. */
+  nearest_structure: (AnatomyLabel & { distance_mm: number }) | null;
+  /** Every label within radius_mm by volume fraction, biggest first. */
+  neighborhood: (AnatomyLabel & { fraction: number })[];
+  /** Present (true) only when the contact falls outside the segmentation --
+   * a coordinate-space error rather than an anatomical finding. */
+  out_of_volume?: boolean;
+}
+
+export interface ContactAnatomyResult {
+  /** Which segmentation the labels came from, e.g. "mri/aparc+aseg.mgz".
+   * aseg.mgz alone has no cortical parcellation, so it is worth showing. */
+  segmentation: string;
+  radius_mm: number;
+  contacts: ContactAnatomy[];
+}
+
+/** Names the anatomical structure each contact sits in. Computed server-side
+ * on demand from chnXyzDict + the subject's FreeSurfer segmentation, so it is
+ * never stale after a re-import. */
+export function getContactAnatomy(subjectId: number, radiusMm?: number): Promise<ContactAnatomyResult> {
+  const qs = radiusMm != null ? `?radius_mm=${radiusMm}` : "";
+  return apiGet<ContactAnatomyResult>(`/subjects/${subjectId}/electrodes/anatomy${qs}`);
+}
+
 export interface EdfMeta {
   fs: number;
   n_samples: number;
   duration_sec: number;
   channels: string[];
+  /** Subset of `channels` whose names are not SEEG contacts (REF1, DC01, EKG1,
+   * MARK, ...), classified server-side by the contact-naming convention so the
+   * rule has one implementation. Excluded from the working set on load. */
+  aux_channels: string[];
   amplitude_range: { min: number; max: number };
 }
 

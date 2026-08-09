@@ -1,11 +1,12 @@
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Job, Subject
 from app.schemas import JobResponse
+from app.services import anatomy as anatomy_service
 from app.services import electrodes as electrodes_service
 
 router = APIRouter(prefix="/subjects", tags=["electrodes"])
@@ -272,6 +273,27 @@ def delete_electrode_contacts(subject_id: int, db: Session = Depends(get_db)):
         _reject_if_active_job(subject_id, job_type, db)
     electrodes_service.clear_contacts(db, subject)
     return {"message": "Contacts and cluster data cleared"}
+
+
+@router.get("/{subject_id}/electrodes/anatomy")
+def get_contact_anatomy(
+    subject_id: int,
+    radius_mm: float = Query(3.0, gt=0, le=20),
+    db: Session = Depends(get_db),
+):
+    """Names the anatomical structure each contact sits in, by sampling this
+    subject's FreeSurfer segmentation -- see services/anatomy.py for why the
+    answer is three fields (exact voxel, nearest structure within radius_mm,
+    and the neighbourhood breakdown) rather than one label.
+
+    Computed on demand rather than written as an artifact: it is a pure
+    function of contacts + segmentation, both already on disk, and a stored
+    copy would silently outlive the next re-import or re-run of recon."""
+    subject = _get_subject_or_404(subject_id, db)
+    try:
+        return anatomy_service.label_contacts(subject, radius_mm=radius_mm)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get("/{subject_id}/electrodes/chn-xyz")

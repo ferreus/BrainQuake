@@ -92,46 +92,52 @@ def read_blocks(eeg_path, first=17403):
     return blocks
 
 
-_RUN14 = re.compile(rb"(?<!\d)(\d{14})(?!\d)")
-_RUN6 = re.compile(rb"(?<!\d)(\d{6})(?!\d)")
+# An entry's timestamp field: "EEEEEE(YYMMDDhhmmss)" -- elapsed, then absolute.
+_STAMP = re.compile(rb"(\d{6})\((\d{12})\)")
 
 
 def _parse_stamp(buf):
-    """Best-effort timestamp from a log entry's trailing bytes.
+    """(absolute datetime, elapsed seconds) from an entry's timestamp field.
 
-    Returns a datetime (full YYYYMMDDhhmmss), a time (bare hhmmss, whose date
-    the caller resolves against the clip), or None. Scans for digit runs rather
-    than assuming a fixed offset, because the entry layout is the one part of
-    this format not verified byte-exact -- see read_log().
+    The field is exactly 20 bytes, "EEEEEE(YYMMDDhhmmss)":
+
+      EEEEEE          the viewer's *elapsed* counter, as HHMMSS. This is
+                      cumulative recorded time across every clip in the study,
+                      NOT time within a clip -- it is what the Nihon Kohden
+                      viewer displays, which is why an event shown at "29:38"
+                      is not 29:38 into any file.
+      YYMMDDhhmmss    absolute wall clock, 2-digit year.
+
+    Only the absolute value can be mapped onto a clip; the elapsed value is
+    returned for diagnostics (--dump-log) so the two can be cross-checked.
     """
-    m = _RUN14.search(buf)
-    if m:
-        try:
-            return dt.datetime.strptime(m.group(1).decode(), "%Y%m%d%H%M%S")
-        except ValueError:
-            pass
-    for m in _RUN6.finditer(buf):
-        try:
-            return dt.datetime.strptime(m.group(1).decode(), "%H%M%S").time()
-        except ValueError:
-            continue
-    return None
+    m = _STAMP.search(buf)
+    if not m:
+        return None, None
+    try:
+        when = dt.datetime.strptime(m.group(2).decode(), "%y%m%d%H%M%S")
+    except ValueError:
+        return None, None
+    e = m.group(1).decode()
+    elapsed = int(e[:2]) * 3600 + int(e[2:4]) * 60 + int(e[4:6])
+    return when, elapsed
 
 
 def read_log(log_path):
-    """Parse a Nihon Kohden .LOG into [{'when': datetime|time, 'text': str}].
+    """Parse a Nihon Kohden .LOG into [{'when', 'elapsed', 'text'}] entries.
 
-    UNVERIFIED. Unlike the .EEG datablock chain -- which is self-checking, since
-    walking it has to land exactly on EOF -- this layout has no such invariant
-    and was not confirmed against a reference file. Treat the output as a
-    proposal: run `nk2edf.py INPUT.EEG --dump-log` and check the events against
-    what the Nihon Kohden viewer shows before trusting any converted file.
+    Verified against DA6465AU.LOG (EEG-1200A): recovers all 406 entries, and the
+    block/entry arithmetic is self-consistent -- block 0 declares 255 entries and
+    the 11495 bytes to block 1 hold exactly 255 * 45.
 
-    Assumed layout:
-      0x92            u8    number of log blocks
-      0x93 + i*20     u32   address of log block i
+    Layout (same block-table shape as the .EEG control block):
+      0x91            u8    number of log blocks
+      0x92 + i*20     u32   address of log block i, then a 16-byte name
       <block> + 0x12  u8    number of entries in the block
-      <block> + 0x14  45 B  per entry: 20 bytes of text, then a timestamp
+      <block> + 0x14  45 B  per entry: 20 bytes text, 20 bytes timestamp, 5 pad
+
+    The block count sits at 0x91, not 0x92; reading it one byte late yields 0
+    and silently produces no events at all.
     """
     with open(log_path, "rb") as fh:
         data = fh.read()
@@ -139,9 +145,9 @@ def read_log(log_path):
         raise ValueError(f"{log_path} is too short to be a Nihon Kohden log")
 
     events = []
-    n_blocks = data[0x92]
+    n_blocks = data[0x91]
     for i in range(n_blocks):
-        off = 0x93 + i * 20
+        off = 0x92 + i * 20
         if off + 4 > len(data):
             break
         (addr,) = struct.unpack_from("<I", data, off)
@@ -153,10 +159,14 @@ def read_log(log_path):
             rec = data[lo : lo + 45]
             if len(rec) < 45:
                 break
-            text = rec[:20].decode("latin-1").replace("\x00", " ").strip()
-            when = _parse_stamp(rec[20:])
+            # The text field carries stray control bytes (record flags bleeding
+            # in from the preceding entry); keep printable ASCII only.
+            text = "".join(
+                c for c in rec[:20].decode("latin-1") if 0x20 <= ord(c) < 0x7F
+            ).strip()
+            when, elapsed = _parse_stamp(rec[20:])
             if text and when is not None:
-                events.append({"when": when, "text": text})
+                events.append({"when": when, "elapsed": elapsed, "text": text})
     return events
 
 

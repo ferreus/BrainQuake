@@ -780,6 +780,153 @@ def test_electrodes_import_requires_contacts_or_csv_text():
 
 
 # ---------------------------------------------------------------------------
+# Anatomical labeling of contacts (services/anatomy.py)
+# ---------------------------------------------------------------------------
+
+def _write_synthetic_segmentation(name, shape=(60, 60, 60)):
+    """An aparc+aseg.mgz with hand-placed structures, in the same LIA conformed
+    geometry as _make_synthetic_recon_subject -- so tkreg RAS and voxel indices
+    are related by exactly (i, j, k) = (30 - x, 30 - z, y + 30) for a 60^3
+    volume, and every expected label below is checkable by hand.
+
+    Layout: a 20:40 cube of white matter (2), a 28:32 cube of hippocampus (17)
+    inside it, and a 38:40 slab of entorhinal cortex (1006). Everything else is
+    background (0)."""
+    import nibabel as nib
+    import nibabel.freesurfer.mghformat as mghf
+
+    nx, ny, nz = shape
+    affine = np.array([
+        [-1, 0, 0, nx / 2],
+        [0, 0, 1, -nz / 2],
+        [0, -1, 0, ny / 2],
+        [0, 0, 0, 1],
+    ], dtype=float)
+
+    data = np.zeros(shape, dtype=np.int32)
+    data[20:40, 20:40, 20:40] = 2      # Left-Cerebral-White-Matter
+    data[28:32, 28:32, 28:32] = 17     # Left-Hippocampus
+    data[38:40, 28:32, 28:32] = 1006   # ctx-lh-entorhinal
+
+    mri_dir = os.path.join(settings.SUBJECTS_DIR, name, "mri")
+    os.makedirs(mri_dir, exist_ok=True)
+    seg_path = os.path.join(mri_dir, "aparc+aseg.mgz")
+    nib.save(mghf.MGHImage(data, affine), seg_path)
+    return seg_path
+
+
+def _subject_with_contacts(name, contacts):
+    r = client.post("/subjects", json={"name": name})
+    sid = r.json()["id"]
+    r = client.post(f"/subjects/{sid}/electrodes/import", json={"contacts": contacts})
+    job_id = r.json()["id"]
+    run_job(job_id)
+    assert client.get(f"/jobs/{job_id}").json()["state"] == "finished"
+    return sid
+
+
+def test_contact_anatomy_labels_each_contact():
+    # Voxel -> tkreg RAS for this geometry: x = 30 - i, y = k - 30, z = 30 - j.
+    contacts = [
+        # A1: voxel (30,30,30), dead centre of the hippocampus cube.
+        {"electrode": "A", "contact_index": 1, "x": 0.0, "y": 0.0, "z": 0.0},
+        # A2: voxel (33,30,30) -- white matter, 2 mm from the hippocampus cube's
+        # i=31 face. The case the whole nearest_structure field exists for.
+        {"electrode": "A", "contact_index": 2, "x": -3.0, "y": 0.0, "z": 0.0},
+        # A3: voxel (22,22,22) -- deep white matter, >10 mm from any structure.
+        {"electrode": "A", "contact_index": 3, "x": 8.0, "y": -8.0, "z": 8.0},
+        # A4: voxel (38,30,30) -- entorhinal cortex, i.e. an aparc parcel and
+        # not just an aseg one.
+        {"electrode": "A", "contact_index": 4, "x": -8.0, "y": 0.0, "z": 0.0},
+        # A5: voxel (-70,30,30) -- outside the segmentation entirely.
+        {"electrode": "A", "contact_index": 5, "x": 100.0, "y": 0.0, "z": 0.0},
+    ]
+    sid = _subject_with_contacts("AnatomyTest", contacts)
+    _write_synthetic_segmentation("AnatomyTest")
+
+    r = client.get(f"/subjects/{sid}/electrodes/anatomy")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["segmentation"] == "mri/aparc+aseg.mgz"
+    assert data["radius_mm"] == 3.0
+
+    by_name = {c["name"]: c for c in data["contacts"]}
+    assert list(by_name) == ["A1", "A2", "A3", "A4", "A5"]
+
+    assert by_name["A1"]["voxel"] == [30, 30, 30]
+    assert by_name["A1"]["label_name"] == "Left-Hippocampus"
+    assert by_name["A1"]["nearest_structure"]["label_name"] == "Left-Hippocampus"
+    assert by_name["A1"]["nearest_structure"]["distance_mm"] == 0.0
+
+    assert by_name["A2"]["label_name"] == "Left-Cerebral-White-Matter"
+    assert by_name["A2"]["nearest_structure"]["label_name"] == "Left-Hippocampus"
+    assert by_name["A2"]["nearest_structure"]["distance_mm"] == 2.0
+
+    assert by_name["A3"]["label_name"] == "Left-Cerebral-White-Matter"
+    assert by_name["A3"]["nearest_structure"] is None  # nothing grey within 3 mm
+
+    assert by_name["A4"]["label_name"] == "ctx-lh-entorhinal"
+
+    assert by_name["A5"]["out_of_volume"] is True
+    assert by_name["A5"]["label_id"] is None
+
+
+def test_contact_anatomy_neighborhood_reports_boundary_contacts():
+    # Voxel (31,30,30) is the last hippocampus voxel before white matter, so a
+    # 3 mm sphere around it straddles both -- the case a single exact-voxel
+    # label silently resolves one way and hides.
+    contacts = [{"electrode": "A", "contact_index": 1, "x": -1.0, "y": 0.0, "z": 0.0}]
+    sid = _subject_with_contacts("AnatomyBoundaryTest", contacts)
+    _write_synthetic_segmentation("AnatomyBoundaryTest")
+
+    r = client.get(f"/subjects/{sid}/electrodes/anatomy")
+    contact = r.json()["contacts"][0]
+    assert contact["label_name"] == "Left-Hippocampus"
+
+    fractions = {n["label_name"]: n["fraction"] for n in contact["neighborhood"]}
+    assert set(fractions) == {"Left-Hippocampus", "Left-Cerebral-White-Matter"}
+    assert 0 < fractions["Left-Hippocampus"] < 1
+    assert abs(sum(fractions.values()) - 1.0) < 1e-6
+
+    # A larger radius reaches entorhinal cortex (i=38, 7 mm away) too.
+    r = client.get(f"/subjects/{sid}/electrodes/anatomy", params={"radius_mm": 8})
+    contact = r.json()["contacts"][0]
+    assert "ctx-lh-entorhinal" in {n["label_name"] for n in contact["neighborhood"]}
+
+
+def test_contact_anatomy_prefers_installed_freesurfer_lut():
+    # The built-in table is a fallback for machines without FreeSurfer; a real
+    # install's LUT must win, since it is the one that matches the version that
+    # produced the segmentation.
+    contacts = [{"electrode": "A", "contact_index": 1, "x": 0.0, "y": 0.0, "z": 0.0}]
+    sid = _subject_with_contacts("AnatomyLutTest", contacts)
+    _write_synthetic_segmentation("AnatomyLutTest")
+
+    with tempfile.TemporaryDirectory() as fs_home:
+        with open(os.path.join(fs_home, "FreeSurferColorLUT.txt"), "w") as f:
+            f.write("# id name R G B A\n")
+            f.write("17  Left-Hippocampus-Renamed  220 216 20 0\n")
+        with patch.object(settings, "FREESURFER_HOME", fs_home):
+            r = client.get(f"/subjects/{sid}/electrodes/anatomy")
+    assert r.json()["contacts"][0]["label_name"] == "Left-Hippocampus-Renamed"
+
+
+def test_contact_anatomy_404s_without_contacts_or_segmentation():
+    # No contacts at all.
+    sid = client.post("/subjects", json={"name": "AnatomyNoContacts"}).json()["id"]
+    _write_synthetic_segmentation("AnatomyNoContacts")
+    r = client.get(f"/subjects/{sid}/electrodes/anatomy")
+    assert r.status_code == 404
+
+    # Contacts, but no recon output to label them against.
+    contacts = [{"electrode": "A", "contact_index": 1, "x": 0.0, "y": 0.0, "z": 0.0}]
+    sid = _subject_with_contacts("AnatomyNoSeg", contacts)
+    r = client.get(f"/subjects/{sid}/electrodes/anatomy")
+    assert r.status_code == 404
+    assert "segmentation" in r.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
 # 3D Slicer .mrb import (preview/approve/reject) -- see
 # docs/seeg_slicer_contact_import_plan.md and services/electrodes.parse_mrb.
 # ---------------------------------------------------------------------------

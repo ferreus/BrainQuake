@@ -14,6 +14,7 @@ import { ClusterCentroids } from "../../components/three/ClusterCentroids";
 import { ElectrodeContacts } from "../../components/three/ElectrodeContacts";
 import { SceneCanvas } from "../../components/three/SceneCanvas";
 import { SlicerContactsPreview } from "../../components/three/SlicerContactsPreview";
+import { ContactAnatomyPanel } from "./ContactAnatomyPanel";
 import { DetectForm } from "./DetectForm";
 import { ImportSlicerForm } from "./ImportSlicerForm";
 import { LabelReviewPanel } from "./LabelReviewPanel";
@@ -296,6 +297,10 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
   const segmented = kinds.has("chnXyzDict");
   const hasPendingSlicerPreview = kinds.has("slicer_contacts_preview");
   const [excludedClusters, setExcludedClusters] = useState<Set<number>>(new Set());
+  // Contact name (e.g. "K'7"), shared by the 3D view and the anatomy table so
+  // selecting in one highlights the other. Names, not indices -- the two get
+  // their contacts from different endpoints with different orderings.
+  const [selectedContact, setSelectedContact] = useState<string | null>(null);
 
   // ct_register registers ct_reg_nii midway through, so that artifact alone
   // does not mean the pipeline finished (the masking and legacy-copy steps that
@@ -364,7 +369,7 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
           {hasPendingSlicerPreview ? (
             <SlicerContactsPreview subjectId={subjectId} />
           ) : segmented ? (
-            <ElectrodeContacts subjectId={subjectId} />
+            <ElectrodeContacts subjectId={subjectId} selected={selectedContact} onSelect={setSelectedContact} />
           ) : (
             detected && <ClusterCentroids subjectId={subjectId} excluded={excludedClusters} />
           )}
@@ -388,6 +393,9 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
           <LabelReviewPanel subjectId={subjectId} excluded={excludedClusters} onExcludedChange={setExcludedClusters} />
         )}
         <SegmentForm subjectId={subjectId} disabled={!detected} segmented={segmented} />
+        {segmented && (
+          <ContactAnatomyPanel subjectId={subjectId} selected={selectedContact} onSelect={setSelectedContact} />
+        )}
         <DeleteContactsButton subjectId={subjectId} disabled={!detected && !segmented} />
       </Stack>
     </Group>

@@ -39,6 +39,7 @@ export function SegmentForm({ subjectId, disabled, segmented }: SegmentFormProps
   const { data: job } = useJobPolling(jobId, (finishedJob) => {
     queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
     queryClient.invalidateQueries({ queryKey: ["chn-xyz", subjectId] });
+    queryClient.invalidateQueries({ queryKey: ["contact-anatomy", subjectId] });
     if (finishedJob.state === "failed") {
       notifications.show({
         color: "red",
