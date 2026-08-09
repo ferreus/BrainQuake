@@ -83,3 +83,57 @@ flat channels not misreported as clipped.
 Four are explicitly labelled CHARACTERISATION: they assert current, deviant
 behaviour so that fixing findings 1, 3, 5 or 6 fails loudly instead of
 silently changing every result.
+
+---
+
+## services/electrodes.py
+
+Reviewed 2026-08-09. Ported from `utils/elec_utils.py` at tag `legacy-final`,
+plus the newer 3D Slicer `.mrb` import path.
+
+### high
+
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 21 | **ITK transforms were applied in the wrong coordinate convention.** An ITK `.h5` transform is defined in LPS regardless of what the markups node declares, but the LPS→RAS flip was applied *after* the affine. Correct for an LPS-declared node; for a RAS-declared node it applied an LPS affine straight to RAS coordinates. Now converts to LPS before the transform and back to RAS after. | `parse_mrb` | **fixed** |
+| 22 | Hardcoded `inv_vox2ras_tkr` for a conformed 256³ 1 mm volume, with no check that the CT is conformed — silently wrong coordinates on any other geometry. Now derived from the volume via a new `vox2ras_tkr()` helper (verified identical to the hardcoded matrix for a conformed volume). | `ElectrodeSeg.__init__` | **fixed** |
+| 23 | `_surface_ras` converted scanner RAS → tkreg RAS by subtracting `Pxyz_c`, which holds only for conformed volumes. Now goes through the volume's own `vox2ras_tkr @ inv(vox2ras)`. Verified against the real Bella `orig.mgz`: max difference 5.5e-5 mm. | `_surface_ras` | **fixed** |
+
+**How #21 was masked.** `parse_mrb` tries the transform both forwards and
+backwards and keeps whichever puts more contacts inside the brain mask. For a
+pure *translation* that heuristic silently compensates — it picks the opposite
+direction and lands on the right coordinates, only mislabelling
+`transform_used`. For a transform containing a **rotation** it does not: the
+LPS and RAS interpretations differ by the sign of the rotation angle, both land
+inside the brain, and nothing downstream flags it. Real CT-to-MRI registrations
+rotate, so this was live for actual imports. Regression tests cover both cases.
+
+### medium
+
+| # | Finding | Where | Status |
+|---|---|---|---|
+| 24 | `Labels = np.zeros((256, 256, 256))` assumed a conformed CT; anything larger would raise `IndexError`, anything smaller would silently pad. Now sized from the CT. | `generate_labels` | **fixed** |
+| 25 | GMM electrode clustering ran with `random_state=None`, so re-running detection could relabel electrodes. Seeded. (`means_init` already made initialisation deterministic, so this removes drift rather than changing current output.) | `generate_labels` | **fixed** |
+| 26 | Contact centroid convergence set a `flag_convergence` variable that was never read, so a contact that failed to converge in 5 iterations was indistinguishable from one that converged. Now logged with the electrode name and final position. | `ElectrodeSeg.contactPoint` | **fixed** |
+| 27 | Electrodes detected by the CT pipeline are named by alphabet position (A, B, C…, skipping I), which cannot match the clinical implantation labels. This is the reason the 3D Slicer import path exists; the CT-only naming remains misleading if used directly. | `ElectrodeSeg.__init__` | open |
+
+### Test fixture correction
+
+`_make_synthetic_recon_subject` built its `orig.mgz` with an **identity-direction
+affine**, which is not a geometry FreeSurfer ever produces. Its `Pxyz_c` was
+`[0,0,0]`, which made the old `- c_ras` shortcut a no-op — so the fixture never
+exercised the scanner→tkreg conversion at all, and finding #23 could not have
+been caught by it. Rebuilt with FreeSurfer's LIA conformed orientation sized so
+`Pxyz_c` is still `[0,0,0]`: scanner and surface RAS still coincide, so every
+hand-computed expectation in those tests is unchanged, but the conversion is
+now genuinely exercised.
+
+### Tests added
+
+Three regression tests in `tests/test_api.py`:
+`test_itk_transform_is_applied_in_lps_not_in_the_declared_system` (translation
+case — caught via the `transform_used` label),
+`test_rotation_is_interpreted_in_lps` (rotation case — the one the in-brain
+heuristic cannot rescue), and
+`test_lps_and_ras_declarations_of_the_same_point_agree` (the same physical
+contact written either way must land in the same place).

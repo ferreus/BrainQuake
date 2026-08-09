@@ -1,6 +1,7 @@
 import csv
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -24,6 +25,8 @@ from app.config import settings
 from app.models import Artifact, Job, Subject
 from app.services.job_control import check_cancelled, run_and_track_subprocess
 from app.services.recon import register_artifact
+
+logger = logging.getLogger(__name__)
 
 # Ported from utils/elec_utils.py (git tag legacy-final). Split into two job
 # types: detect() (Preprocess_thread + GenerateLabel_thread -- hough3dlines + GMM
@@ -60,6 +63,19 @@ def _run_hough3dlines(cmd, log_file=None, job=None, db=None):
         log_file.write(f"Finished in {elapsed:.1f}s with return code {result.returncode}\n")
         log_file.flush()
     return result
+
+
+def vox2ras_tkr(img):
+    """FreeSurfer's tkreg vox2ras for any volume, from its dims and voxel sizes.
+    Equals nibabel's MGHHeader.get_vox2ras_tkr(), which NIfTI headers lack."""
+    dx, dy, dz = img.header.get_zooms()[:3]
+    nx, ny, nz = img.shape[:3]
+    return np.array([
+        [-dx, 0, 0, dx * nx / 2],
+        [0, 0, dz, -dz * nz / 2],
+        [0, -dy, 0, dy * ny / 2],
+        [0, 0, 0, 1],
+    ], dtype=float)
 
 
 def dataExtraction(intraFile, thre=0.2):
@@ -147,10 +163,15 @@ def generate_labels(patient, ct_dir, intra_file, K, log_file, job=None, db=None)
     best_order = np.argsort(-elec_track[:, 0])[:K]
     centroids = np.array(elec_track[best_order, 1:4])
     X = np.transpose(np.vstack((xs, ys, zs)))
-    gmm = GMM(n_components=K, covariance_type='full', means_init=centroids, random_state=None).fit(X)
+    # Seeded so a re-run of detection reproduces the same electrode labelling.
+    # means_init already makes the initialisation deterministic, so this mainly
+    # removes the possibility of drift rather than changing today's output.
+    gmm = GMM(n_components=K, covariance_type='full', means_init=centroids, random_state=0).fit(X)
     labels = gmm.predict(X)
 
-    Labels = np.zeros((256, 256, 256))
+    # Sized from the CT itself rather than assuming a conformed 256^3 volume,
+    # which would raise IndexError (or silently truncate) on anything else.
+    Labels = np.zeros(nib.load(intra_file).shape[:3])
     for i in range(K):
         ind = np.where(labels == i)
         Labels[xs[ind], ys[ind], zs[ind]] = i + 1
@@ -275,8 +296,11 @@ class ElectrodeSeg:
         self.spacing = spacing
         self.gap = gap
 
-        self.affine = nib.load(self.rawDataPath).affine
-        self.inv_vox2ras_tkr = np.array([[-1, 0, 0, 128], [0, 0, -1, 128], [0, 1, 0, 128], [0, 0, 0, 1]], dtype=np.float32)
+        img = nib.load(self.rawDataPath)
+        self.affine = img.affine
+        # Was hardcoded for a conformed 256^3 1 mm volume; derived here so a
+        # differently-shaped CT does not silently produce wrong coordinates.
+        self.inv_vox2ras_tkr = np.linalg.inv(vox2ras_tkr(img))
 
         self.labelValues = np.unique(self.labels)
         self.numElecs = len(self.labelValues) - 1
@@ -317,7 +341,7 @@ class ElectrodeSeg:
         self.startPoint()
         self.contactPoint(1)
         self.regression()
-        for j in np.arange(self.numMax - 1):
+        for _j in np.arange(self.numMax - 1):
             if int(self.elecPos[-1, 0]) == int(self.elecPos[-2, 0]) and \
                int(self.elecPos[-1, 1]) == int(self.elecPos[-2, 1]) and \
                int(self.elecPos[-1, 2]) == int(self.elecPos[-2, 2]):
@@ -430,7 +454,6 @@ class ElectrodeSeg:
             self.rawData_local[self.xs[ind_diffs], self.ys[ind_diffs], self.zs[ind_diffs]] * 2
         (x1, y1, z1) = self.converge(x, y, z)
         itr = 1
-        flag_convergence = 0
         while not ((x == int(round(x1))) and (y == int(round(y1))) and (z == int(round(z1)))):
             x = int(round(x1))
             y = int(round(y1))
@@ -438,7 +461,14 @@ class ElectrodeSeg:
             (x1, y1, z1) = self.converge(x, y, z)
             itr = itr + 1
             if itr > 5:
-                flag_convergence = 1
+                # The legacy code recorded this in a flag it then never read, so
+                # a contact that never settled was indistinguishable from one
+                # that did. Say so instead.
+                logger.warning(
+                    "electrode %s: contact centroid did not converge within 5 iterations, "
+                    "using the last position (%.1f, %.1f, %.1f)",
+                    self.nameLabel, x1, y1, z1,
+                )
                 break
 
         self.flag_step_stop = 0
@@ -488,7 +518,7 @@ def savenpy(ct_dir, patient):
     <label>.txt file under <ct_dir>/<patient>_result/."""
     result_dir = os.path.join(ct_dir, f"{patient}_result")
     elec_dict = {}
-    for root, dirs, files in os.walk(result_dir, topdown=True):
+    for root, _dirs, files in os.walk(result_dir, topdown=True):
         if '.DS_Store' in files:
             files.remove('.DS_Store')
         if 'chnXyzDict.npy' in files:
@@ -576,7 +606,7 @@ def parse_contacts_csv(csv_text: str):
                 "z": float(row["surfS"]),
             })
         except (TypeError, ValueError, AttributeError) as e:
-            raise ValueError(f"row {i}: could not parse {row!r} ({e})")
+            raise ValueError(f"row {i}: could not parse {row!r} ({e})") from e
 
     if not contacts:
         raise ValueError("CSV has no data rows")
@@ -785,10 +815,17 @@ def _in_brain_fraction(ras_points, mri_dir):
 
 def _surface_ras(ras_points, mri_dir):
     """scanner RAS -> FreeSurfer surface (tkreg) RAS, the space chn-xyz/contacts/
-    soz.py expect -- see docs/seeg_slicer_contact_import_plan.md Step 4."""
+    soz.py expect -- see docs/seeg_slicer_contact_import_plan.md Step 4.
+
+    Goes through the volume's own vox2ras/vox2ras_tkr rather than subtracting
+    Pxyz_c. The two agree exactly for a conformed 256^3 1 mm volume, which is
+    what recon-all and infant_recon_all produce, but the general form does not
+    quietly return wrong coordinates if a non-conformed volume ever reaches it.
+    """
     orig = nib.load(os.path.join(mri_dir, "orig.mgz"))
-    c_ras = np.asarray(orig.header.get("Pxyz_c"))
-    return ras_points - c_ras
+    scanner_to_tkr = orig.header.get_vox2ras_tkr() @ np.linalg.inv(orig.affine)
+    homo = np.column_stack([ras_points, np.ones(len(ras_points))])
+    return (scanner_to_tkr @ homo.T).T[:, :3]
 
 
 SLICER_PREVIEW_ARTIFACT_KIND = "slicer_contacts_preview"
@@ -828,13 +865,24 @@ def parse_mrb(mrb_path, subject: Subject):
 
         raw = np.array([cp["position"] for cp in chosen["control_points"]], dtype=float)
         labels = [cp["label"] for cp in chosen["control_points"]]
-        coord_sign = np.array([-1.0, -1.0, 1.0]) if chosen["coordinate_system"].upper() == "LPS" else np.ones(3)
+
+        # ITK stores transforms in LPS regardless of what the markups node
+        # declares, so the points must be in LPS *before* the affine is applied
+        # and flipped back to RAS afterwards. Previously the flip happened only
+        # after the transform, which was correct for an LPS node but applied an
+        # LPS-defined affine to RAS coordinates when the node declared RAS.
+        is_lps = chosen["coordinate_system"].upper() == "LPS"
+        LPS_RAS_FLIP = np.array([-1.0, -1.0, 1.0])
+        lps_points = raw if is_lps else raw * LPS_RAS_FLIP
 
         h5_path = _resolve_transform_h5(nodes_by_id, mrb_dir, chosen["transform_id"])
         if h5_path:
             A, t, c = _load_itk_linear_transform(h5_path)
-            fwd_ras = _apply_affine(A, t, c, raw) * coord_sign
-            inv_ras = _apply_affine_inverse(A, t, c, raw) * coord_sign
+            # The .mrb does not record which direction Slicer applied the
+            # transform in, so try both and keep whichever puts more contacts
+            # inside the brain mask.
+            fwd_ras = _apply_affine(A, t, c, lps_points) * LPS_RAS_FLIP
+            inv_ras = _apply_affine_inverse(A, t, c, lps_points) * LPS_RAS_FLIP
             fwd_frac = _in_brain_fraction(fwd_ras, mri_dir)
             inv_frac = _in_brain_fraction(inv_ras, mri_dir)
             if fwd_frac >= inv_frac:
@@ -842,14 +890,14 @@ def parse_mrb(mrb_path, subject: Subject):
             else:
                 ras_points, in_brain_fraction, transform_used = inv_ras, inv_frac, "inverse"
         else:
-            ras_points = raw * coord_sign
+            ras_points = lps_points * LPS_RAS_FLIP
             in_brain_fraction = _in_brain_fraction(ras_points, mri_dir)
             transform_used = "none"
 
         surf_points = _surface_ras(ras_points, mri_dir)
 
         contacts = []
-        for label, xyz in zip(labels, surf_points):
+        for label, xyz in zip(labels, surf_points, strict=True):
             m = _CONTACT_LABEL_RE.match(label)
             contacts.append({
                 "electrode": m.group(1), "contact_index": int(m.group(2)),

@@ -786,9 +786,16 @@ def test_electrodes_import_requires_contacts_or_csv_text():
 def _make_synthetic_recon_subject(name, brain_radius=20.0, shape=(60, 60, 60)):
     """Writes a real, loadable orig.mgz + brainmask.mgz (not the plain-text
     mocks _apply_command_side_effects uses for recon-all, which parse_mrb's
-    nib.load calls can't read) -- identity-direction affine translated so the
-    volume's center voxel is RAS (0,0,0) and Pxyz_c ends up [0,0,0], which
-    keeps every coordinate in these tests easy to reason about by hand.
+    nib.load calls can't read).
+
+    Uses FreeSurfer's LIA conformed orientation, the same one recon-all and
+    infant_recon_all emit, sized so Pxyz_c is [0,0,0]. That makes scanner RAS
+    and surface (tkreg) RAS exactly coincide, so every coordinate in these
+    tests stays hand-checkable -- while still exercising _surface_ras through a
+    realistic volume. An identity-direction affine would also give Pxyz_c
+    [0,0,0], but it is not a geometry FreeSurfer ever produces and it made the
+    scanner->tkr conversion vacuous.
+
     brainmask is 1 inside a `brain_radius`-mm sphere around the origin."""
     import nibabel as nib
     import nibabel.freesurfer.mghformat as mghf
@@ -796,8 +803,14 @@ def _make_synthetic_recon_subject(name, brain_radius=20.0, shape=(60, 60, 60)):
     mri_dir = os.path.join(settings.SUBJECTS_DIR, name, "mri")
     os.makedirs(mri_dir, exist_ok=True)
 
-    affine = np.eye(4)
-    affine[:3, 3] = [-shape[0] / 2, -shape[1] / 2, -shape[2] / 2]
+    dx, dy, dz = 1.0, 1.0, 1.0
+    nx, ny, nz = shape
+    affine = np.array([
+        [-dx, 0, 0, dx * nx / 2],
+        [0, 0, dz, -dz * nz / 2],
+        [0, -dy, 0, dy * ny / 2],
+        [0, 0, 0, 1],
+    ], dtype=float)
 
     orig = mghf.MGHImage(np.zeros(shape, dtype=np.float32), affine)
     nib.save(orig, os.path.join(mri_dir, "orig.mgz"))
@@ -934,6 +947,82 @@ def test_parse_mrb_picks_correct_transform_direction():
     by_index = {c["contact_index"]: (c["x"], c["y"], c["z"]) for c in contacts}
     assert by_index[1] == pytest.approx((0.0, 0.0, 0.0))
     assert by_index[2] == pytest.approx((3.0, 0.0, 0.0))
+
+
+def _parse_single_contact_mrb(subject_name, coordinate_system, position, transform):
+    """Runs parse_mrb over one contact and returns its (x, y, z)."""
+    from app.services.electrodes import parse_mrb
+
+    mrb_path = os.path.join(tempfile.gettempdir(), f"{subject_name}.mrb")
+    _make_synthetic_mrb(mrb_path, [
+        {"name": "Contacts", "coordinate_system": coordinate_system,
+         "points": [("A1", list(position))], "transform": transform},
+    ])
+    try:
+        contacts, diagnostics = parse_mrb(mrb_path, _NamedSubject(subject_name))
+    finally:
+        os.remove(mrb_path)
+    c = contacts[0]
+    return (c["x"], c["y"], c["z"]), diagnostics
+
+
+def test_itk_transform_is_applied_in_lps_not_in_the_declared_system():
+    """An ITK .h5 transform is always defined in LPS, whatever the markups node
+    declares. A translation along x therefore has to move a RAS point the
+    opposite way -- applying it directly to RAS coordinates flips the sign of
+    the correction.
+    """
+    _make_synthetic_recon_subject("SlicerLpsRas")
+    # +20 mm along LPS x == -20 mm along RAS x, so a contact at RAS x=+10
+    # must end up at RAS x=-10 (still inside the 20 mm brain sphere, so the
+    # forward direction wins the in-brain heuristic).
+    transform = (np.eye(3), np.array([20.0, 0.0, 0.0]), np.zeros(3))
+
+    xyz, diagnostics = _parse_single_contact_mrb(
+        "SlicerLpsRas", "RAS", [10.0, 0.0, 0.0], transform)
+
+    assert diagnostics["transform_used"] == "forward"
+    assert xyz == pytest.approx((-10.0, 0.0, 0.0)), (
+        "applying the LPS-defined transform straight to RAS coordinates would "
+        "give +30 here"
+    )
+
+
+def test_rotation_is_interpreted_in_lps():
+    """A rotation about x is the case the direction heuristic cannot rescue.
+
+    For a pure translation, trying both directions happens to recover the right
+    coordinates even if the transform is applied in the wrong convention. A
+    rotation is not symmetric that way -- LPS and RAS interpretations differ by
+    the sign of the rotation angle, and both land inside the brain, so nothing
+    downstream flags it. Real CT-to-MRI registrations rotate.
+    """
+    _make_synthetic_recon_subject("SlicerLpsRot")
+    rx90 = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+    transform = (rx90, np.zeros(3), np.zeros(3))
+
+    xyz, _ = _parse_single_contact_mrb(
+        "SlicerLpsRot", "RAS", [0.0, 10.0, 0.0], transform)
+
+    assert xyz == pytest.approx((0.0, 0.0, -10.0)), (
+        "interpreting the rotation in RAS would give (0, 0, +10); both are "
+        "inside the brain mask, so only this assertion catches it"
+    )
+
+
+def test_lps_and_ras_declarations_of_the_same_point_agree():
+    """The same physical contact, expressed in either convention, must land in
+    the same place after the same transform."""
+    _make_synthetic_recon_subject("SlicerLpsRasPair")
+    transform = (np.eye(3), np.array([20.0, 0.0, 0.0]), np.zeros(3))
+
+    as_ras, _ = _parse_single_contact_mrb(
+        "SlicerLpsRasPair", "RAS", [10.0, 0.0, 0.0], transform)
+    # The same point written in LPS has both x and y negated.
+    as_lps, _ = _parse_single_contact_mrb(
+        "SlicerLpsRasPair", "LPS", [-10.0, 0.0, 0.0], transform)
+
+    assert as_ras == pytest.approx(as_lps)
 
 
 def test_slicer_import_preview_approve_flow():
