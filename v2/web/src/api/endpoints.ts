@@ -403,8 +403,9 @@ export function retryJob(job: Job): Promise<Job> {
 export interface EiResult {
   chn_names: string[];
   ei: number[];
+  ei_raw: number[];
   hfer: number[];
-  onset_rank: number[];
+  time_coef: number[];
 }
 
 export function getEiResult(subjectId: number, edfArtifactId: number): Promise<EiResult> {

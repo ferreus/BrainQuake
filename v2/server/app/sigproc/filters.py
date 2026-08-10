@@ -74,10 +74,9 @@ def filter_for_display(data, fs, band_low, band_high, mains_freq=DEFAULT_MAINS_F
     HFO output.
     """
     band_low, band_high = clamp_band(band_low, band_high, fs, "filter_for_display")
-    # FIXME(correctness): this common-average reference averages over EVERY
-    # channel in the file, including EKG/REF/DC auxiliary traces, so non-brain
-    # signal is subtracted into every SEEG channel. See find_non_seeg_channels()
-    # in services/ictal.py, which reports them but does not exclude them.
+    # Common-average reference over whatever the caller passed. The numeric
+    # callers pass contacts only (edf_common.load_seeg); the viewer passes what
+    # the user selected.
     data = data - np.mean(data, axis=0)
     # NOTE(v1-quirk): the legacy app notched 50/100/150 Hz only, and this keeps
     # that reach (3 harmonics) rather than sweeping to Nyquist. Harmonics above

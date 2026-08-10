@@ -29,7 +29,7 @@ import numpy as np
 # Kept as its own copy rather than imported from the server package: this
 # script needs only mne + numpy, while app.services.edf_common pulls in
 # pydantic-settings and SQLAlchemy. The canonical definition is
-# v2/server/app/services/edf_common.py:find_non_seeg_channels -- change both.
+# v2/server/app/services/edf_common.py:seeg_contacts -- change both.
 _SEEG_CONTACT_RE = re.compile(r"^[A-Za-z]'?\d+$")
 
 

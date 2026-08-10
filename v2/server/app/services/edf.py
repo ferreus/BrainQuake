@@ -7,8 +7,9 @@ import numpy as np
 from sqlalchemy.orm import Session
 
 from app.models import Artifact, Subject
-from app.services.edf_common import find_non_seeg_channels, resolve_edf_path
-from app.services.signal_filters import DEFAULT_MAINS_FREQ, filter_for_display
+from app.services.edf_common import resolve_edf_path
+from app.sigproc.channels import seeg_contacts
+from app.sigproc.filters import DEFAULT_MAINS_FREQ, filter_for_display
 
 # Synchronous (not a job) windowed EDF fetch for the web client's EEG canvas --
 # closes the gap where EDF files were only ever retrievable whole (raw_edf
@@ -91,23 +92,13 @@ def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
 def _with_aux_channels(meta: dict) -> dict:
     """Annotate a meta payload with the channels that are not SEEG contacts.
 
-    Derived on read rather than stored, so recordings whose meta was cached
-    before this field existed get it without a re-scan, and so the naming rule
-    has exactly one implementation (edf_common.find_non_seeg_channels) rather
-    than a second copy in the web client.
-
-    The client excludes these from the working set on load, so "everything is
-    auxiliary" has to mean "this recording does not follow the convention", not
-    "discard the whole recording": a file labelled CH1..CH64, or in bipolar
-    pairs, matches no contact name at all. In that case say nothing and leave
-    the choice to the user, which is the behaviour from before this field
-    existed.
+    The viewer still shows every channel and excludes these from its working set
+    on load -- unlike the numeric paths, which drop them at load (load_seeg).
+    Derived on read, so meta cached before this field existed gets it too.
     """
     names = meta.get("channels") or []
-    aux = find_non_seeg_channels(names)
-    if len(aux) == len(names):
-        return {**meta, "aux_channels": []}
-    return {**meta, "aux_channels": [names[i] for i in aux]}
+    contacts = set(seeg_contacts(names))
+    return {**meta, "aux_channels": [n for n in names if n not in contacts]}
 
 
 def get_edf_window(

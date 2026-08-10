@@ -11,10 +11,11 @@ from scipy.signal import butter, filtfilt, hilbert, iirnotch
 from sqlalchemy.orm import Session
 
 from app.models import Artifact, Job, Subject
-from app.services.edf_common import find_non_seeg_channels, resolve_edf_path
+from app.services.edf_common import resolve_edf_path
 from app.services.job_control import check_cancelled
 from app.services.recon import register_artifact
-from app.services.signal_filters import DEFAULT_MAINS_FREQ, clamp_band, mains_harmonics
+from app.sigproc.channels import load_seeg, seeg_contacts
+from app.sigproc.filters import DEFAULT_MAINS_FREQ, clamp_band, mains_harmonics
 
 logger = logging.getLogger(__name__)
 
@@ -256,25 +257,10 @@ def run_hfo_compute_job(db: Session, job: Job, log_file):
     db.commit()
 
     edf_path = resolve_edf_path(subject, artifact)
+    # HI_preprocess_file's common-average subtraction runs over exactly this
+    # list, so aux traces have to be out of it before they reach the detector.
     remain_chns = params.get("remain_chns")
-    if not remain_chns:
-        header = mne.io.read_raw_edf(edf_path, preload=False, stim_channel=None)
-        remain_chns = header.ch_names
-
-    # Same warning run_ei_compute_job emits, and it matters more here: the
-    # common-average subtraction in HI_preprocess_file runs over exactly this
-    # channel set, and a Nihon Kohden mark word (no unit, so read raw) or DC
-    # input (mV against microvolt contacts) is orders of magnitude larger than
-    # the signal, so leaving one in buries every contact under a shared trace
-    # and the detector reports the same events on all of them. Reported, never
-    # auto-excluded -- dropping a channel changes every other channel's values.
-    aux = find_non_seeg_channels(remain_chns)
-    if aux:
-        logger.warning(
-            "%d channel(s) look like non-SEEG auxiliary traces and were NOT excluded; they are in "
-            "the common-average reference and in the event ranking: %s",
-            len(aux), [remain_chns[i] for i in aux],
-        )
+    remain_chns = seeg_contacts(remain_chns) if remain_chns else load_seeg(edf_path).ch_names
 
     def progress_cb(pct):
         # HI_preprocess_file drives 0-90%, event detection below finishes the rest.

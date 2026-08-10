@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Subject
 from app.services import edf as edf_service
-from app.services.signal_filters import DEFAULT_MAINS_FREQ
+from app.sigproc.filters import DEFAULT_MAINS_FREQ
 
 router = APIRouter(prefix="/subjects", tags=["edf"])
 

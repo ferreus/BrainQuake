@@ -9,7 +9,7 @@ from app.db import get_db
 from app.models import Artifact, Job, Subject
 from app.schemas import JobResponse
 from app.services import ictal as ictal_service
-from app.services.signal_filters import DEFAULT_MAINS_FREQ
+from app.sigproc.filters import DEFAULT_MAINS_FREQ
 
 router = APIRouter(prefix="/subjects", tags=["ictal"])
 

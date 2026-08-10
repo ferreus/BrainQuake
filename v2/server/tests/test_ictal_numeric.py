@@ -15,14 +15,14 @@ corresponding FIXME in app/services/ictal.py.
 import numpy as np
 import pytest
 
-from app.services.ictal import (
+from app.sigproc.channels import seeg_contacts
+from app.sigproc.ei import (
     compute_ei_index,
     compute_hfer,
     determine_threshold_onset,
-    find_non_seeg_channels,
     find_saturated_channels,
 )
-from app.services.signal_filters import filter_for_display
+from app.sigproc.filters import filter_for_display
 
 FS = 1000.0
 N_CH = 20
@@ -67,7 +67,7 @@ def _make_seizure(onset_channel=5, onset_time=1.0, second_channel=10, second_tim
 def test_ei_ranks_the_injected_onset_channel_first():
     target, base = _make_seizure()
     norm_t, norm_b = compute_hfer(target, base, FS)
-    ei, _hfer, _rank = compute_ei_index(norm_t, norm_b, FS)
+    ei, _ei_raw, _hfer, _tc = compute_ei_index(norm_t, norm_b, FS)
 
     assert ei.shape == (N_CH,)
     assert int(np.argmax(ei)) == 5, f"expected channel 5 to rank first, got {np.argmax(ei)}"
@@ -78,7 +78,7 @@ def test_moving_the_onset_moves_the_winner():
     """The ranking must follow the injected signal, not a fixed channel index."""
     target, base = _make_seizure(onset_channel=17)
     norm_t, norm_b = compute_hfer(target, base, FS)
-    ei, _, _ = compute_ei_index(norm_t, norm_b, FS)
+    ei, _, _, _ = compute_ei_index(norm_t, norm_b, FS)
     assert int(np.argmax(ei)) == 17
 
 
@@ -87,7 +87,7 @@ def test_quiet_recording_yields_no_ei():
     base = _noise(N_CH, int(10 * FS), seed=3)
     target = _noise(N_CH, int(10 * FS), seed=4)
     norm_t, norm_b = compute_hfer(target, base, FS)
-    ei, _, _ = compute_ei_index(norm_t, norm_b, FS)
+    ei, _, _, _ = compute_ei_index(norm_t, norm_b, FS)
     assert np.all(np.isfinite(ei))
     assert np.all(ei >= 0)
 
@@ -98,7 +98,7 @@ def test_dead_channel_gets_zero_ei_not_nan():
     base[0] = 0.0
     target[0] = 0.0
     norm_t, norm_b = compute_hfer(target, base, FS)
-    ei, _, _ = compute_ei_index(norm_t, norm_b, FS)
+    ei, _, _, _ = compute_ei_index(norm_t, norm_b, FS)
     assert np.all(np.isfinite(ei))
     assert ei[0] == 0.0
 
@@ -123,11 +123,11 @@ def test_channels_that_never_cross_are_placed_at_the_end():
     assert np.all(onsets[quiet] == norm_t.shape[1])
 
 
-def test_baseline_artifact_hides_a_real_onset():
-    """CHARACTERISATION -- FIXME(correctness) in determine_threshold_onset.
+def test_baseline_artifact_no_longer_hides_a_real_onset():
+    """A single baseline pop must not suppress the channel's real onset.
 
-    The threshold is baseline max + 20*sigma, so one artifact in the baseline
-    raises a channel's bar out of reach and its real onset is never detected.
+    Regression on the old max + 20*sigma threshold, which one artifact put out
+    of reach for the whole seizure.
     """
     target, base = _make_seizure(onset_channel=5)
     norm_t, norm_b = compute_hfer(target, base, FS)
@@ -137,36 +137,63 @@ def test_baseline_artifact_hides_a_real_onset():
     base_with_pop = base.copy()
     base_with_pop[5, int(2 * FS)] += 5000.0  # a single-sample electrode pop
     norm_t2, norm_b2 = compute_hfer(target, base_with_pop, FS)
-    hidden_onset = determine_threshold_onset(norm_t2, norm_b2)[5]
-    assert hidden_onset == norm_t2.shape[1], (
-        "one baseline artifact should suppress this channel entirely -- if this "
-        "fails, the thresholding was changed and every EI value moved with it"
-    )
+    popped_onset = determine_threshold_onset(norm_t2, norm_b2)[5]
+    assert popped_onset < norm_t2.shape[1], "the pop must not suppress the channel"
+    assert popped_onset == pytest.approx(clean_onset, abs=0.05 * FS)
 
 
-def test_ranking_of_a_late_channel_comes_entirely_from_the_rank_term():
-    """CHARACTERISATION -- the NOTE(v1-quirk) and the 1/rank FIXME in
-    compute_ei_index, interacting.
-
-    A channel that starts discharging 2 s after the first one has its energy
-    measured in the fixed 0.25 s window anchored to the FIRST channel's onset,
-    while it is still quiet. Its energy term is therefore indistinguishable from
-    a channel that never seizes at all. It still ranks second -- on the 1/rank
-    weighting alone. That is the whole ranking mechanism laid bare: ordinal
-    position decides the result, measured signal strength does not.
-    """
+def test_late_channel_energy_is_measured_at_its_own_onset():
+    """The energy term must see a late channel's discharge, not the quiet signal
+    at the first channel's onset."""
     target, base = _make_seizure(onset_channel=5, onset_time=1.0,
                                  second_channel=10, second_time=3.0)
     norm_t, norm_b = compute_hfer(target, base, FS)
-    ei, hfer, rank = compute_ei_index(norm_t, norm_b, FS)
+    ei, _ei_raw, hfer, _tc = compute_ei_index(norm_t, norm_b, FS)
     quiet = [i for i in range(N_CH) if i not in (5, 10)]
 
-    # The energy term cannot tell the late seizing channel from a quiet one.
-    assert hfer[10] == pytest.approx(np.median(hfer[quiet]), rel=0.2)
-    # The rank term can, and by a wide margin.
-    assert rank[10] > np.median(rank[quiet]) * 3
-    # So it places second on rank alone.
+    assert hfer[10] > np.median(hfer[quiet]) * 10, (
+        "a channel that discharges 2 s late must show real energy in its own window"
+    )
     assert list(np.argsort(-ei)[:2]) == [5, 10]
+
+
+def test_near_simultaneous_channels_are_not_split_by_ordinal_rank():
+    """Two channels 10 ms apart must score comparably.
+
+    Regression on the 1/ordinal_rank time term, which divided the second channel
+    by 2 regardless of how close in time it actually was.
+    """
+    target, base = _make_seizure(onset_channel=5, onset_time=1.0,
+                                 second_channel=10, second_time=1.01)
+    norm_t, norm_b = compute_hfer(target, base, FS)
+    _ei, _ei_raw, _hfer, time_coef = compute_ei_index(norm_t, norm_b, FS)
+    assert time_coef[10] > time_coef[5] * 0.95
+
+
+def test_raw_ei_is_returned_unnormalised():
+    """`ei` is scaled so the top channel is 1.0; `ei_raw` must not be."""
+    target, base = _make_seizure()
+    norm_t, norm_b = compute_hfer(target, base, FS)
+    ei, ei_raw, _hfer, _tc = compute_ei_index(norm_t, norm_b, FS)
+    assert ei.max() == pytest.approx(1.0)
+    assert ei_raw.max() != pytest.approx(1.0)
+    assert ei == pytest.approx(ei_raw / ei_raw.max())
+
+
+def test_energy_is_not_suppressed_at_the_window_edges():
+    """A burst at the very start of the target window must register as strongly
+    as the same burst in the middle -- regression on the zero-padded convolution.
+    """
+    n = int(10 * FS)
+    base = _noise(N_CH, n, seed=11)
+    early = _noise(N_CH, n, seed=12)
+    early[0] += _burst(n, 0, dur=1.0)
+    middle = _noise(N_CH, n, seed=12)
+    middle[0] += _burst(n, int(5 * FS), dur=1.0)
+
+    norm_early, _ = compute_hfer(early, base, FS)
+    norm_middle, _ = compute_hfer(middle, base, FS)
+    assert norm_early[0].max() == pytest.approx(norm_middle[0].max(), rel=0.1)
 
 
 # --------------------------------------------------------------------------
@@ -227,13 +254,19 @@ def test_bandpass_rejects_outside_the_band():
     ["EKG1", "EKG2", "ecg", "REF1", "REF2", "DC01", "DC10", "UNUSED248", "E",
      "EMG-L", "Annotations", "SpO2"],
 )
-def test_auxiliary_channel_names_are_recognised(name):
-    assert find_non_seeg_channels([name]) == [0]
+def test_auxiliary_channel_names_are_excluded(name):
+    assert seeg_contacts(["A1", name, "B2"]) == ["A1", "B2"]
 
 
 @pytest.mark.parametrize("name", ["A1", "X'12", "L'8", "D6", "M10", "G'3", "Q6", "K'12"])
-def test_seeg_contact_names_are_not_flagged(name):
-    assert find_non_seeg_channels([name]) == []
+def test_seeg_contact_names_are_kept(name):
+    assert seeg_contacts([name]) == [name]
+
+
+def test_file_matching_no_contact_name_keeps_every_channel():
+    # A recording on another naming convention must not be emptied out.
+    names = ["CH1", "CH2", "Fp1-F7", "SpO2"]
+    assert seeg_contacts(names) == names
 
 
 def test_saturated_channel_is_detected():

@@ -93,7 +93,7 @@ Two files per seizure, and the contract between them is positional:
 
 The contact-naming rule is duplicated here on purpose — this script needs only
 mne + numpy, while importing the server's copy would pull in pydantic-settings
-and SQLAlchemy. The canonical definition is `find_non_seeg_channels` in
+and SQLAlchemy. The canonical definition is `seeg_contacts` in
 [v2/server/app/services/edf_common.py](../../server/app/services/edf_common.py).
 Change both.
 

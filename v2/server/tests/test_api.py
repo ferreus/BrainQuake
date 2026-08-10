@@ -1549,7 +1549,7 @@ def test_edf_window_unfiltered_matches_raw_samples():
 
 
 def test_edf_window_filtered_matches_filter_for_display():
-    from app.services.signal_filters import filter_for_display
+    from app.sigproc.filters import filter_for_display
 
     sid, artifact_id, ch_names, sfreq = _create_subject_with_edf("EdfFilterTest")
 
@@ -1785,7 +1785,7 @@ def test_export_import_patient_roundtrip(mock_run):
 def test_mains_harmonics_50hz_matches_legacy_series():
     """The 50 Hz default must reproduce the legacy notch exactly, so the
     already-verified S1 HFO/EI output does not drift."""
-    from app.services.signal_filters import mains_harmonics
+    from app.sigproc.filters import mains_harmonics
 
     # filter_for_display's legacy series was np.arange(50, 151, 50)
     np.testing.assert_array_equal(
@@ -1798,7 +1798,7 @@ def test_mains_harmonics_50hz_matches_legacy_series():
 
 
 def test_mains_harmonics_60hz_covers_ripple_band():
-    from app.services.signal_filters import mains_harmonics
+    from app.sigproc.filters import mains_harmonics
 
     h = mains_harmonics(60.0, 1000.0, up_to=250.0 + 12.0)
     np.testing.assert_array_equal(h, [60, 120, 180, 240])
@@ -1807,7 +1807,7 @@ def test_mains_harmonics_60hz_covers_ripple_band():
 def test_mains_harmonics_never_reaches_nyquist():
     """iirnotch needs 0 < w < 1; the legacy 250 Hz harmonic on a 500 Hz
     recording would have been exactly Nyquist and raised."""
-    from app.services.signal_filters import mains_harmonics
+    from app.sigproc.filters import mains_harmonics
 
     h = mains_harmonics(50.0, 500.0, up_to=260.0)
     assert len(h) > 0
@@ -1818,7 +1818,7 @@ def test_clamp_band_allows_band_high_at_nyquist():
     """band_high=500 on a 1 kHz recording means 'everything', not an error."""
     from scipy.signal import butter
 
-    from app.services.signal_filters import clamp_band
+    from app.sigproc.filters import clamp_band
 
     low, high = clamp_band(1.0, 500.0, 1000.0)
     assert high < 500.0
@@ -1831,7 +1831,7 @@ def test_clamp_band_allows_band_high_at_nyquist():
 
 
 def test_filter_for_display_band_high_at_nyquist_does_not_raise():
-    from app.services.signal_filters import filter_for_display
+    from app.sigproc.filters import filter_for_display
 
     fs = 1000.0
     data = np.random.RandomState(0).randn(4, 4000)
@@ -1844,7 +1844,7 @@ def test_notch_removes_the_selected_mains_harmonics_only():
     """A 60 Hz recording filtered with mains=50 keeps its 180 Hz interference;
     with mains=60 it loses it. 180 Hz sits inside the HFO ripple band."""
     from app.services.interictal import notch_filt
-    from app.services.signal_filters import mains_harmonics
+    from app.sigproc.filters import mains_harmonics
 
     fs = 1000.0
     t = np.arange(0, 10, 1 / fs)
