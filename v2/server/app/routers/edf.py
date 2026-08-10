@@ -26,6 +26,21 @@ def get_edf_meta(subject_id: int, edf_artifact_id: int, db: Session = Depends(ge
         raise HTTPException(status_code=404, detail=str(e)) from e
 
 
+@router.delete("/{subject_id}/edf/{edf_artifact_id}")
+def delete_edf(subject_id: int, edf_artifact_id: int, db: Session = Depends(get_db)):
+    """Removes the recording plus everything derived from it -- see
+    services/edf.delete_edf_recording."""
+    subject = _get_subject_or_404(subject_id, db)
+    try:
+        return edf_service.delete_edf_recording(db, subject, edf_artifact_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except edf_service.EdfRecordingInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @router.get("/{subject_id}/edf/{edf_artifact_id}/window")
 def get_edf_window(
     subject_id: int,

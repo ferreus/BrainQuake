@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef } from "react";
-import { Modal, Stack, Text } from "@mantine/core";
+import { useEffect, useMemo, useState } from "react";
+import { Loader, Modal, Stack, Text } from "@mantine/core";
+import { ApiError } from "../../api/client";
 import { useEdfWindow } from "../../api/queries/useEdf";
 import { hotColor } from "../../lib/colormap";
 import { computeSpectrogram } from "../../lib/spectrogram";
@@ -19,43 +20,52 @@ interface SpectrogramModalProps {
 const VMIN = -0.8;
 const VMAX = 2;
 
+// The window endpoint refuses anything longer (services/edf.py's
+// MAX_WINDOW_SECONDS), and seizure target windows regularly exceed it.
+const MAX_WINDOW_SECONDS = 60;
+
 /** Per-channel drill-down: raw target-window trace + STFT spectrogram,
  * mirroring client_ictal.py's ei_press_func popup (left-click a bar in the
  * EI chart). */
 export function SpectrogramModal({ subjectId, edfArtifactId, channel, range, bandLow, bandHigh, onClose }: SpectrogramModalProps) {
   const enabled = channel != null && range != null;
-  const { data } = useEdfWindow(
+  const start = range?.[0] ?? 0;
+  const end = Math.min(range?.[1] ?? 0, start + MAX_WINDOW_SECONDS);
+  const truncated = (range?.[1] ?? 0) > end;
+
+  const { data, isFetching, error } = useEdfWindow(
     subjectId,
     edfArtifactId,
-    {
-      start: range?.[0] ?? 0,
-      end: range?.[1] ?? 0,
-      channels: channel ? [channel] : undefined,
-      bandLow,
-      bandHigh,
-    },
+    { start, end, channels: channel ? [channel] : undefined, bandLow, bandHigh },
     enabled,
+    0,
   );
 
-  const traceRef = useRef<HTMLCanvasElement>(null);
-  const specRef = useRef<HTMLCanvasElement>(null);
+  // Element in state, not a ref: the canvases mount a commit later than the
+  // modal opens (Mantine's Transition), so a ref-only effect would draw into
+  // nothing and never re-run once the element finally attached.
+  const [traceCanvas, setTraceCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [specCanvas, setSpecCanvas] = useState<HTMLCanvasElement | null>(null);
+
   const samples = data?.data?.[0];
   const fs = data?.fs;
 
   const spectrogram = useMemo(() => {
-    if (!samples || !fs) return null;
+    if (!samples?.length || !fs) return null;
     return computeSpectrogram(samples, fs, { maxFreqHz: 300 });
   }, [samples, fs]);
 
   useEffect(() => {
-    const canvas = traceRef.current;
-    if (!canvas || !samples) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const { width, height } = canvas;
+    const ctx = traceCanvas?.getContext("2d");
+    if (!ctx || !traceCanvas || !samples?.length) return;
+    const { width, height } = traceCanvas;
     ctx.clearRect(0, 0, width, height);
-    const min = Math.min(...samples);
-    const max = Math.max(...samples);
+    let min = Infinity;
+    let max = -Infinity;
+    for (const v of samples) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
     const span = max - min || 1;
     ctx.strokeStyle = "#2a78d6";
     ctx.lineWidth = 1;
@@ -67,43 +77,67 @@ export function SpectrogramModal({ subjectId, edfArtifactId, channel, range, ban
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
-  }, [samples]);
+  }, [samples, traceCanvas]);
 
   useEffect(() => {
-    const canvas = specRef.current;
-    if (!canvas || !spectrogram) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const ctx = specCanvas?.getContext("2d");
+    if (!ctx || !specCanvas || !spectrogram) return;
     const { times, freqs, values } = spectrogram;
+    ctx.clearRect(0, 0, specCanvas.width, specCanvas.height);
     if (times.length === 0 || freqs.length === 0) return;
-    const cellW = canvas.width / times.length;
-    const cellH = canvas.height / freqs.length;
+    const cellW = specCanvas.width / times.length;
+    const cellH = specCanvas.height / freqs.length;
     for (let f = 0; f < freqs.length; f++) {
-      const y = canvas.height - (f + 1) * cellH;
+      const y = specCanvas.height - (f + 1) * cellH;
       for (let t = 0; t < times.length; t++) {
-        const v = values[f][t];
-        const norm = (v - VMIN) / (VMAX - VMIN);
+        const norm = (values[f][t] - VMIN) / (VMAX - VMIN);
         ctx.fillStyle = hotColor(norm);
         ctx.fillRect(t * cellW, y, cellW + 1, cellH + 1);
       }
     }
-  }, [spectrogram]);
+  }, [spectrogram, specCanvas]);
+
+  const status = (() => {
+    if (error) return error instanceof ApiError ? error.message : String(error);
+    if (isFetching && !samples) return null; // spinner below
+    if (samples && samples.length === 0) return "The server returned no samples for this window.";
+    if (samples && spectrogram && spectrogram.times.length === 0) {
+      return "Window is too short for a spectrogram (needs at least half a second).";
+    }
+    return null;
+  })();
 
   return (
     <Modal opened={channel != null} onClose={onClose} title={channel ? `Channel ${channel}` : ""} size="lg">
       <Stack>
-        <div>
-          <Text size="xs" c="dimmed">
-            Raw signal (target window)
+        <Text size="xs" c="dimmed">
+          {truncated
+            ? `Target window ${start.toFixed(1)}-${(range?.[1] ?? 0).toFixed(1)}s, showing the first ${MAX_WINDOW_SECONDS}s`
+            : `Target window ${start.toFixed(1)}-${end.toFixed(1)}s`}
+          {` · filtered ${bandLow}-${bandHigh}Hz`}
+        </Text>
+        {isFetching && !samples && <Loader size="sm" />}
+        {status && (
+          <Text size="xs" c="red">
+            {status}
           </Text>
-          <canvas ref={traceRef} width={560} height={100} style={{ width: "100%", height: 100 }} />
-        </div>
-        <div>
-          <Text size="xs" c="dimmed">
-            Spectrogram (0-300Hz)
-          </Text>
-          <canvas ref={specRef} width={560} height={160} style={{ width: "100%", height: 160 }} />
-        </div>
+        )}
+        {samples && samples.length > 0 && (
+          <>
+            <div>
+              <Text size="xs" c="dimmed">
+                Raw signal
+              </Text>
+              <canvas ref={setTraceCanvas} width={560} height={100} style={{ width: "100%", height: 100 }} />
+            </div>
+            <div>
+              <Text size="xs" c="dimmed">
+                Spectrogram (0-300Hz)
+              </Text>
+              <canvas ref={setSpecCanvas} width={560} height={160} style={{ width: "100%", height: 160 }} />
+            </div>
+          </>
+        )}
       </Stack>
     </Modal>
   );

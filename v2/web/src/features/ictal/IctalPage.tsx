@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { Button, FileButton, Group, Loader, NativeSelect, Progress, Stack, Text } from "@mantine/core";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Group, Loader, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { useQueryClient } from "@tanstack/react-query";
-import { ApiError, uploadFileWithProgress } from "../../api/client";
-import { useArtifacts, useDeleteArtifact } from "../../api/queries/useElectrodes";
-import { useEdfMeta } from "../../api/queries/useEdf";
+import { ApiError } from "../../api/client";
+import { useArtifacts } from "../../api/queries/useElectrodes";
+import { useDeleteEdfRecording, useEdfMeta } from "../../api/queries/useEdf";
 import { EdfLoadErrorPanel } from "../../components/eeg/EdfLoadErrorPanel";
+import { EdfRecordingBar } from "../../components/eeg/EdfRecordingBar";
 import { EegCanvas } from "../../components/eeg/EegCanvas";
 import { EegChannelList } from "../../components/eeg/EegChannelList";
 import { EegToolbar } from "../../components/eeg/EegToolbar";
@@ -22,10 +22,8 @@ export function IctalPage({ subjectId }: IctalPageProps) {
   const { data: artifacts } = useArtifacts(subjectId);
   const edfArtifacts = (artifacts ?? []).filter((a) => a.kind === "raw_edf");
   const [selectedEdfId, setSelectedEdfId] = useState<number | undefined>();
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const queryClient = useQueryClient();
 
-  const effectiveEdfId = selectedEdfId ?? edfArtifacts[0]?.id;
+  const effectiveEdfId = edfArtifacts.some((a) => a.id === selectedEdfId) ? selectedEdfId : edfArtifacts[0]?.id;
 
   const {
     data: meta,
@@ -42,7 +40,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
     () => (meta?.channels ?? []).filter((c) => !state.excludedChannels.has(c)),
     [meta, state.excludedChannels],
   );
-  const deleteArtifact = useDeleteArtifact(subjectId);
+  const deleteRecording = useDeleteEdfRecording(subjectId);
 
   // Auxiliary traces out of the working set as soon as the recording loads.
   // They are ranked as if they were contacts -- a REF channel placed 6th in the
@@ -51,12 +49,23 @@ export function IctalPage({ subjectId }: IctalPageProps) {
   // against. Restorable from the channel list.
   useEffect(() => {
     if (!meta || effectiveEdfId == null) return;
-    dispatch({ type: "AUTO_EXCLUDE_AUX", edfArtifactId: effectiveEdfId, channels: meta.aux_channels ?? [] });
+    dispatch({ type: "LOAD_RECORDING", edfArtifactId: effectiveEdfId, auxChannels: meta.aux_channels ?? [] });
   }, [meta, effectiveEdfId, dispatch]);
+
+  // Baseline/target are times into one specific recording, so they must not
+  // survive a switch to another one -- carried over, they stay drawn on the new
+  // trace and are what Compute EI would submit for it.
+  const selectionEdfId = useRef(effectiveEdfId);
+  const resetSelection = selection.reset;
+  useEffect(() => {
+    if (selectionEdfId.current === effectiveEdfId) return;
+    selectionEdfId.current = effectiveEdfId;
+    resetSelection();
+  }, [effectiveEdfId, resetSelection]);
 
   function handleRemoveBadEdf() {
     if (!effectiveEdfId) return;
-    deleteArtifact.mutate(effectiveEdfId, {
+    deleteRecording.mutate(effectiveEdfId, {
       onSuccess: () => setSelectedEdfId(undefined),
       onError: (err) => {
         notifications.show({
@@ -66,30 +75,6 @@ export function IctalPage({ subjectId }: IctalPageProps) {
         });
       },
     });
-  }
-
-  async function handleUpload(file: File | null) {
-    if (!file) return;
-    setUploadProgress(0);
-    try {
-      const artifact = await uploadFileWithProgress<{ id: number }>(
-        `/subjects/${subjectId}/upload`,
-        file,
-        "edf",
-        setUploadProgress,
-      ).promise;
-      queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] });
-      setSelectedEdfId(artifact.id);
-      selection.reset();
-    } catch (err) {
-      notifications.show({
-        color: "red",
-        title: "Failed to upload EDF",
-        message: err instanceof ApiError ? err.message : String(err),
-      });
-    } finally {
-      setUploadProgress(null);
-    }
   }
 
   const markers = [
@@ -114,26 +99,15 @@ export function IctalPage({ subjectId }: IctalPageProps) {
   return (
     <Stack h="100%" gap="sm" mt="md">
       <Group align="flex-end" gap="md" wrap="wrap">
-        <NativeSelect
-          label="EDF recording"
-          data={edfArtifacts.map((a) => ({
-            value: String(a.id),
-            label: (a.meta_json?.original_filename as string) ?? `#${a.id}`,
-          }))}
-          value={effectiveEdfId ? String(effectiveEdfId) : ""}
-          onChange={(e) => setSelectedEdfId(Number(e.currentTarget.value))}
-          disabled={edfArtifacts.length === 0}
+        <EdfRecordingBar
+          subjectId={subjectId}
+          recordings={edfArtifacts}
+          value={effectiveEdfId}
+          onChange={setSelectedEdfId}
+          onUploaded={() => selection.reset()}
         />
-        <FileButton onChange={handleUpload} accept=".edf">
-          {(props) => (
-            <Button size="xs" variant="default" {...props}>
-              Import .edf
-            </Button>
-          )}
-        </FileButton>
         {effectiveEdfId && meta && <EegToolbar state={state} dispatch={dispatch} />}
       </Group>
-      {uploadProgress != null && <Progress value={uploadProgress * 100} size="sm" animated />}
 
       {!effectiveEdfId && <Text c="dimmed">Import an ictal EDF recording to get started.</Text>}
 
@@ -149,7 +123,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
           error={metaError}
           onRetry={() => refetchMeta()}
           onRemove={handleRemoveBadEdf}
-          removing={deleteArtifact.isPending}
+          removing={deleteRecording.isPending}
         />
       )}
 
@@ -181,13 +155,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
               />
             </Stack>
           </Group>
-          <EiResultPanel
-            subjectId={subjectId}
-            edfArtifactId={effectiveEdfId}
-            targetRange={selection.targetRange}
-            bandLow={state.filterBandLow}
-            bandHigh={state.filterBandHigh}
-          />
+          <EiResultPanel subjectId={subjectId} edfArtifactId={effectiveEdfId} />
         </>
       )}
     </Stack>

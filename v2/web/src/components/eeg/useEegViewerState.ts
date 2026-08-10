@@ -10,10 +10,10 @@ export interface EegViewerState {
   dispTimeWin: number;
   dispTimeStart: number;
   excludedChannels: Set<string>;
-  /** Which recording the auxiliary-channel exclusion below has been applied
-   * for. Keyed rather than a boolean so switching to another EDF re-runs it
-   * against that file's channel names instead of carrying over this one's. */
-  autoExcludedFor: number | null;
+  /** Which recording LOAD_RECORDING has run for. Keyed rather than a boolean so
+   * switching to another EDF re-runs it against that file's channel names
+   * instead of carrying over this one's. */
+  loadedEdfId: number | null;
   filterBandLow: number;
   filterBandHigh: number;
   filterEnabled: boolean;
@@ -32,7 +32,7 @@ export type EegViewerAction =
   | { type: "SET_TIME_START"; value: number }
   | { type: "DELETE_CHANNELS"; channels: string[] }
   | { type: "RESTORE_CHANNELS"; channels: string[] }
-  | { type: "AUTO_EXCLUDE_AUX"; edfArtifactId: number; channels: string[] }
+  | { type: "LOAD_RECORDING"; edfArtifactId: number; auxChannels: string[] }
   | { type: "SET_FILTER_BAND"; low: number; high: number }
   | { type: "SET_MAINS_FREQ"; value: number }
   | { type: "TOGGLE_FILTER" };
@@ -65,16 +65,21 @@ function reducer(state: EegViewerState, action: EegViewerAction): EegViewerState
       action.channels.forEach((c) => next.delete(c));
       return { ...state, excludedChannels: next };
     }
-    case "AUTO_EXCLUDE_AUX": {
+    case "LOAD_RECORDING": {
       // Runs once per recording. Re-applying it on every render would undo the
       // user's restores; running it never would leave the default producing
-      // meaningless output. It replaces the exclusion set rather than adding to
-      // it, since the previous recording's names do not apply to this one.
-      if (state.autoExcludedFor === action.edfArtifactId) return state;
+      // meaningless output. Exclusions are replaced rather than added to, since
+      // the previous recording's names do not apply to this one -- and the
+      // scroll position goes back to the start, since a position valid in the
+      // previous file can be past the end of this one (which requests an
+      // out-of-range window and draws nothing).
+      if (state.loadedEdfId === action.edfArtifactId) return state;
       return {
         ...state,
-        excludedChannels: new Set(action.channels),
-        autoExcludedFor: action.edfArtifactId,
+        excludedChannels: new Set(action.auxChannels),
+        loadedEdfId: action.edfArtifactId,
+        dispTimeStart: 0,
+        dispChansStart: 0,
       };
     }
     case "SET_FILTER_BAND":
@@ -107,7 +112,7 @@ export function useEegViewerState(mode: EegMode): {
     dispTimeWin: 5,
     dispTimeStart: 0,
     excludedChannels: new Set<string>(),
-    autoExcludedFor: null,
+    loadedEdfId: null,
     filterBandLow: mode === "ictal" ? 60 : 80,
     filterBandHigh: mode === "ictal" ? 140 : 250,
     filterEnabled: true,

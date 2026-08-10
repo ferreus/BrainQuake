@@ -13,7 +13,7 @@ interface EegChannelListProps {
  * not destructive to the uploaded EDF.
  *
  * Excluded channels stay listed rather than disappearing: auxiliary traces are
- * removed automatically when a recording loads (see the AUTO_EXCLUDE_AUX
+ * removed automatically when a recording loads (see the LOAD_RECORDING
  * dispatch in IctalPage/InterictalPage), and an automatic decision the user
  * cannot see or undo is worse than the trap it avoids. */
 export function EegChannelList({ channels, excludedChannels, onDelete, onRestore }: EegChannelListProps) {

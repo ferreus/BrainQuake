@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useDebouncedValue } from "@mantine/hooks";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getEdfMeta, getEdfWindow } from "../endpoints";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { deleteEdfRecording, getEdfMeta, getEdfWindow } from "../endpoints";
 import type { EdfWindowParams } from "../endpoints";
 
 // Wheel-scrolling the EEG canvas dispatches PAN_TIME on every tick; without
@@ -17,6 +17,30 @@ export function useEdfMeta(subjectId: number | undefined, edfArtifactId: number 
     enabled: subjectId != null && edfArtifactId != null,
     staleTime: Infinity,
     retry: false,
+  });
+}
+
+export function useDeleteEdfRecording(subjectId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (edfArtifactId: number) => deleteEdfRecording(subjectId, edfArtifactId),
+    onSuccess: (_result, edfArtifactId) => {
+      // Drop (not just invalidate) everything keyed on the deleted recording:
+      // refetching those would only 404.
+      for (const key of ["edf-meta", "ei-result", "hfo-result"]) {
+        queryClient.removeQueries({ queryKey: [key, subjectId, edfArtifactId] });
+      }
+      queryClient.removeQueries({
+        predicate: (q) =>
+          q.queryKey[0] === "edf-window" && q.queryKey[1] === subjectId && q.queryKey[2] === edfArtifactId,
+      });
+      // Returned so the caller's own onSuccess (which clears the selection)
+      // only runs once the recording list no longer holds the deleted row.
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["artifacts", subjectId] }),
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+      ]);
+    },
   });
 }
 
@@ -39,6 +63,9 @@ export function useEdfWindow(
   edfArtifactId: number | undefined,
   params: EdfWindowParams,
   enabled = true,
+  /** 0 for one-shot fetches (the spectrogram drill-down): debouncing there
+   * only means the first request goes out with the previous params. */
+  debounceMs = PAN_DEBOUNCE_MS,
 ) {
   // Reuse the same object reference across renders whenever the actual
   // params are unchanged -- useDebouncedValue resets its timer on every
@@ -49,7 +76,8 @@ export function useEdfWindow(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [params.start, params.end, params.channels, params.bandLow, params.bandHigh, params.mainsFreq],
   );
-  const [debounced] = useDebouncedValue(stableParams, PAN_DEBOUNCE_MS);
+  const [settled] = useDebouncedValue(stableParams, debounceMs);
+  const debounced = debounceMs === 0 ? stableParams : settled;
   const queryClient = useQueryClient();
   const active = enabled && subjectId != null && edfArtifactId != null;
 

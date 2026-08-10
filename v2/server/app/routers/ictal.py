@@ -114,4 +114,9 @@ def get_ei_result(subject_id: int, edf_artifact_id: int, db: Session = Depends(g
         raise HTTPException(status_code=404, detail="EI result artifact not found")
 
     abs_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
-    return ictal_service.load_ei_result(abs_path)
+    result = ictal_service.load_ei_result(abs_path)
+    # The windows and bands the result was computed over. Without these the
+    # client can only offer its per-channel drill-down while the selection that
+    # produced the result is still in memory -- i.e. never after a reload.
+    result["params"] = job.params_json or {}
+    return result

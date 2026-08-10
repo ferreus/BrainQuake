@@ -6,9 +6,6 @@ import { SpectrogramModal } from "./SpectrogramModal";
 interface EiResultPanelProps {
   subjectId: number;
   edfArtifactId: number;
-  targetRange: [number, number] | null;
-  bandLow: number;
-  bandHigh: number;
 }
 
 // Validated pair (see dataviz skill's validator): categorical blue for normal
@@ -24,11 +21,19 @@ const COLORS = {
  * raw-signal + spectrogram drill-down (ei_press_func). Threshold is fixed
  * (mean+std) rather than the legacy's interactive right-click-drag -- a
  * disclosed simplification for this phase. */
-export function EiResultPanel({ subjectId, edfArtifactId, targetRange, bandLow, bandHigh }: EiResultPanelProps) {
+export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) {
   const { data, isLoading, isError } = useEiResult(subjectId, edfArtifactId, true);
   const scheme = useComputedColorScheme("light");
   const colors = COLORS[scheme];
   const [drillDownChannel, setDrillDownChannel] = useState<string | null>(null);
+
+  // The window this result was computed over, from the job itself -- taking it
+  // from the live baseline/target selection instead made the drill-down dead
+  // after a reload or a switch to another recording.
+  const params = data?.params;
+  const targetRange: [number, number] | null = params
+    ? [params.target_start, params.target_end]
+    : null;
 
   const stats = useMemo(() => {
     if (!data || data.ei.length === 0) return null;
@@ -111,9 +116,7 @@ export function EiResultPanel({ subjectId, edfArtifactId, targetRange, bandLow, 
         </svg>
       </ScrollArea>
       <Text size="xs" c="dimmed" mt={4}>
-        {targetRange
-          ? "Click a bar to view that channel's raw signal + spectrogram."
-          : "Set a target range again this session to enable per-channel drill-down."}
+        Click a bar to view that channel's raw signal + spectrogram.
       </Text>
 
       <SpectrogramModal
@@ -121,8 +124,8 @@ export function EiResultPanel({ subjectId, edfArtifactId, targetRange, bandLow, 
         edfArtifactId={edfArtifactId}
         channel={drillDownChannel}
         range={targetRange}
-        bandLow={bandLow}
-        bandHigh={bandHigh}
+        bandLow={params?.band_low ?? 1}
+        bandHigh={params?.band_high ?? 300}
         onClose={() => setDrillDownChannel(null)}
       />
     </Paper>

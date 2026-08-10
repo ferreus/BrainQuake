@@ -1,12 +1,14 @@
 import json
 import os
+import shutil
 import struct
 
 import mne
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.models import Artifact, Subject
+from app.config import settings
+from app.models import Artifact, Job, Subject
 from app.services.edf_common import resolve_edf_path
 from app.sigproc.channels import seeg_contacts
 from app.sigproc.filters import DEFAULT_MAINS_FREQ, filter_for_display
@@ -25,6 +27,10 @@ MAX_WINDOW_SECONDS = 60.0
 # (channel names), then a raw channel-major float32 sample buffer. See
 # v2/web/src/lib/parseEdfWindowBinary.ts for the matching reader.
 WINDOW_MAGIC = b"BQEDFW01"
+
+
+class EdfRecordingInUse(Exception):
+    """A delete would pull a recording out from under a queued/running job."""
 
 
 def _get_artifact(db: Session, subject: Subject, edf_artifact_id: int) -> Artifact:
@@ -61,7 +67,7 @@ def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
 
     cached = artifact.meta_json
     if cached and "amplitude_range" in cached and all(cached.get(k) == v for k, v in fingerprint.items()):
-        return _with_aux_channels(cached)
+        return _meta_response(cached)
 
     # preload=False + chunked scan: the only thing needing every sample is the
     # global min/max, and loading a whole multi-GB recording to compute two
@@ -84,18 +90,25 @@ def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
         "amplitude_range": {"min": lo, "max": hi},
         **fingerprint,
     }
-    artifact.meta_json = meta
+    # Merge rather than replace: the upload records original_filename in the
+    # same column, and overwriting it wholesale left the UI with only "#<id>"
+    # to name the recording by.
+    artifact.meta_json = {**(artifact.meta_json or {}), **meta}
     db.commit()
-    return _with_aux_channels(meta)
+    return _meta_response(meta)
 
 
-def _with_aux_channels(meta: dict) -> dict:
-    """Annotate a meta payload with the channels that are not SEEG contacts.
+def _meta_response(stored: dict) -> dict:
+    """Shape a stored meta_json into the endpoint's payload: drop the upload
+    bookkeeping that shares the column, and annotate the channels that are not
+    SEEG contacts.
 
-    The viewer still shows every channel and excludes these from its working set
-    on load -- unlike the numeric paths, which drop them at load (load_seeg).
-    Derived on read, so meta cached before this field existed gets it too.
+    The viewer still shows every channel and excludes the aux ones from its
+    working set on load -- unlike the numeric paths, which drop them at load
+    (load_seeg). Derived on read, so meta cached before this field existed gets
+    it too.
     """
+    meta = {k: v for k, v in stored.items() if k != "original_filename"}
     names = meta.get("channels") or []
     contacts = set(seeg_contacts(names))
     return {**meta, "aux_channels": [n for n in names if n not in contacts]}
@@ -172,6 +185,64 @@ def get_edf_window(
         "band_high": band_high,
         "data": data,
     }
+
+
+def _remove_file(path: str):
+    try:
+        os.remove(path)
+    except OSError:
+        pass  # already gone / never written -- deleting is best-effort
+
+
+def delete_edf_recording(db: Session, subject: Subject, edf_artifact_id: int) -> dict:
+    """Delete a recording and everything derived from it: the upload under
+    recv/, the working copy under <subject>/edf/ (resolve_edf_path), the EI/HFO
+    jobs that ran on it with their result artifacts and logs, and the
+    EIdets/HFOdets output keyed off the file's stem."""
+    artifact = _get_artifact(db, subject, edf_artifact_id)
+    if artifact.kind != "raw_edf":
+        raise ValueError(f"artifact {edf_artifact_id} is not an EDF recording (kind={artifact.kind!r})")
+
+    active = db.query(Job).filter(
+        Job.subject_id == subject.id, Job.state.in_(["queued", "running"])
+    ).count()
+    if active:
+        raise EdfRecordingInUse(
+            f"{active} job(s) are queued or running for this patient -- wait for them "
+            f"to finish or cancel them first"
+        )
+
+    # Which edf a job used is only recorded in params_json, so this filters in
+    # Python rather than in SQL.
+    jobs = [
+        j for j in db.query(Job).filter(Job.subject_id == subject.id).all()
+        if (j.params_json or {}).get("edf_artifact_id") == edf_artifact_id
+    ]
+
+    n_artifacts = 1  # the raw_edf row itself
+    for job in jobs:
+        for derived in db.query(Artifact).filter(Artifact.job_id == job.id).all():
+            _remove_file(os.path.join(settings.DATA_ROOT, derived.rel_path))
+            db.delete(derived)
+            n_artifacts += 1
+        if job.log_path:
+            _remove_file(job.log_path)
+        db.delete(job)
+
+    basename = os.path.basename(artifact.rel_path)
+    stem = basename.split(".")[0]
+    edf_dir = os.path.join(settings.SUBJECTS_DIR, subject.name, "edf")
+    _remove_file(os.path.join(edf_dir, basename))
+    _remove_file(os.path.join(edf_dir, "EIdets", f"{stem}_ei.npz"))
+    _remove_file(os.path.join(edf_dir, "HFOdets", f"{stem}_events.npz"))
+    # Per-segment envelope dir, left behind only by an HFO job that died between
+    # HI_preprocess_file and HI_count_highEvents_chns.
+    shutil.rmtree(os.path.join(edf_dir, "HFOdets", stem), ignore_errors=True)
+
+    _remove_file(os.path.join(settings.DATA_ROOT, artifact.rel_path))
+    db.delete(artifact)
+    db.commit()
+    return {"deleted_artifacts": n_artifacts, "deleted_jobs": len(jobs)}
 
 
 def pack_edf_window(result: dict) -> bytes:

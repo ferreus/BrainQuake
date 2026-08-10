@@ -1921,10 +1921,96 @@ def test_ei_honours_remain_chns():
     assert subset["chn_names"] == keep, "the result must only contain the kept channels"
 
 
+def test_ei_result_reports_the_windows_it_was_computed_over():
+    """The web drill-down (raw trace + spectrogram per channel) needs the target
+    window; reading it from the page's live selection meant the chart's bars
+    went dead after a reload."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("EiResultParams")
+    _, state = _run_ei_and_load(sid, artifact_id, band_low=2.0, band_high=200.0)
+    assert state == "finished"
+
+    params = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()["params"]
+    assert (params["target_start"], params["target_end"]) == (4.0, 9.0)
+    assert (params["baseline_start"], params["baseline_end"]) == (0.0, 3.0)
+    assert (params["band_low"], params["band_high"]) == (2.0, 200.0)
+
+
 def test_ei_rejects_unknown_remain_chns():
     sid, artifact_id, ch_names, _ = _create_subject_with_edf("EiRemainChnsBad")
     _, state = _run_ei_and_load(sid, artifact_id, remain_chns=[ch_names[0], "NOT_A_CHANNEL"])
     assert state == "failed", "a typo'd channel name must fail loudly, not be silently ignored"
+
+
+def test_edf_meta_cache_keeps_the_uploaded_filename():
+    """The meta cache used to overwrite meta_json wholesale, erasing the
+    filename recorded at upload -- the web recording picker then had nothing to
+    label the entry with but its artifact id."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfNameTest")
+    assert client.get(f"/subjects/{sid}/edf/{artifact_id}/meta").status_code == 200
+
+    artifact = next(a for a in client.get(f"/subjects/{sid}/artifacts").json() if a["id"] == artifact_id)
+    assert artifact["meta_json"]["original_filename"] == "EdfNameTest.edf"
+
+
+def test_delete_edf_recording_removes_derived_results():
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfDeleteTest")
+    job_id, state = _run_ei_and_load(sid, artifact_id)
+    assert state == "finished"
+
+    db = SessionLocal()
+    try:
+        ei_path = os.path.join(settings.DATA_ROOT, db.query(Artifact).filter(
+            Artifact.job_id == job_id, Artifact.kind == "ei_npz").first().rel_path)
+        raw_path = os.path.join(settings.DATA_ROOT, db.query(Artifact).filter(
+            Artifact.id == artifact_id).first().rel_path)
+    finally:
+        db.close()
+    working_copy = os.path.join(settings.SUBJECTS_DIR, "EdfDeleteTest", "edf", os.path.basename(raw_path))
+    assert os.path.exists(ei_path) and os.path.exists(raw_path) and os.path.exists(working_copy)
+
+    r = client.delete(f"/subjects/{sid}/edf/{artifact_id}")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"deleted_artifacts": 2, "deleted_jobs": 1}
+
+    for path in (ei_path, raw_path, working_copy):
+        assert not os.path.exists(path), f"{path} survived the delete"
+    assert client.get(f"/subjects/{sid}/artifacts").json() == []
+    assert client.get(f"/jobs/{job_id}").status_code == 404
+    assert client.get(f"/subjects/{sid}/edf/{artifact_id}/meta").status_code == 404
+
+
+def test_delete_edf_refused_while_a_job_is_active():
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfDeleteBusy")
+    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json={
+        "baseline_start": 0.0, "baseline_end": 3.0, "target_start": 4.0, "target_end": 9.0,
+    })
+    assert r.status_code == 200  # queued, deliberately never run
+
+    r = client.delete(f"/subjects/{sid}/edf/{artifact_id}")
+    assert r.status_code == 409
+    assert client.get(f"/subjects/{sid}/edf/{artifact_id}/meta").status_code == 200
+
+
+def test_upload_edf_rejects_duplicate_name_unless_overwrite():
+    """Same name == same path on disk, so a second artifact row would share the
+    first one's file."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfDupTest")
+    edf_path = "/tmp/EdfDupTest_second.edf"
+    _make_synthetic_edf(edf_path)
+    with open(edf_path, "rb") as f:
+        payload = f.read()
+    os.remove(edf_path)
+    upload = {"files": {"file": ("EdfDupTest.edf", payload, "application/octet-stream")}}
+
+    r = client.post(f"/subjects/{sid}/upload?file_type=edf", **upload)
+    assert r.status_code == 409
+    assert [a["id"] for a in client.get(f"/subjects/{sid}/artifacts").json()] == [artifact_id]
+
+    r = client.post(f"/subjects/{sid}/upload?file_type=edf&overwrite=true", **upload)
+    assert r.status_code == 200, r.text
+    # Exactly one recording, the replacement -- not two rows sharing one file.
+    artifacts = client.get(f"/subjects/{sid}/artifacts").json()
+    assert [a["id"] for a in artifacts] == [r.json()["id"]]
 
 
 def test_hfo_request_rejects_invalid_window_and_accepts_none():

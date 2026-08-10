@@ -293,6 +293,29 @@ export function getEdfMeta(subjectId: number, edfArtifactId: number): Promise<Ed
   return apiGet<EdfMeta>(`/subjects/${subjectId}/edf/${edfArtifactId}/meta`);
 }
 
+/** Uploads an ictal/interictal recording. The server rejects (409) a filename
+ * this patient already has unless `overwrite`, which replaces the old
+ * recording and everything derived from it. */
+export function uploadEdf(
+  subjectId: number,
+  file: File,
+  options?: { overwrite?: boolean },
+  onProgress?: (fraction: number) => void,
+): { promise: Promise<Artifact>; cancel: () => void } {
+  const qs = `?file_type=edf${options?.overwrite ? "&overwrite=true" : ""}`;
+  return uploadFileWithProgress<Artifact>(`/subjects/${subjectId}/upload${qs}`, file, null, onProgress);
+}
+
+export interface DeleteEdfResult {
+  deleted_artifacts: number;
+  deleted_jobs: number;
+}
+
+/** Deletes the recording plus its derived EI/HFO jobs, results and files. */
+export function deleteEdfRecording(subjectId: number, edfArtifactId: number): Promise<DeleteEdfResult> {
+  return apiDelete<DeleteEdfResult>(`/subjects/${subjectId}/edf/${edfArtifactId}`);
+}
+
 export interface EdfWindowParams {
   start: number;
   end: number;
@@ -406,6 +429,17 @@ export interface EiResult {
   ei_raw: number[];
   hfer: number[];
   time_coef: number[];
+  /** The job's own params -- the windows and bands this result was computed
+   * over. Session state can't supply them after a reload. */
+  params: {
+    baseline_start: number;
+    baseline_end: number;
+    target_start: number;
+    target_end: number;
+    band_low?: number;
+    band_high?: number;
+    mains_freq?: number;
+  };
 }
 
 export function getEiResult(subjectId: number, edfArtifactId: number): Promise<EiResult> {

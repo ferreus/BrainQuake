@@ -9,6 +9,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import Artifact, Subject
 from app.schemas import ArtifactResponse, SubjectCreate, SubjectResponse
+from app.services import edf as edf_service
 
 router = APIRouter(prefix="/subjects", tags=["subjects"])
 
@@ -88,6 +89,7 @@ def delete_subject(subject_id: int, db: Session = Depends(get_db)):
 def upload_file(
     subject_id: int,
     file_type: str = Query(..., description="Type of file: 't1', 'ct', 'edf', 'zip', 'mrb'"),
+    overwrite: bool = Query(False, description="edf only: replace a recording of the same name"),
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
@@ -105,13 +107,37 @@ def upload_file(
         filename = f"{subject.name}.zip"
         kind = "archive"
     elif file_type == "edf":
-        filename = file.filename
+        filename = os.path.basename(file.filename or "")
         kind = "raw_edf"
     elif file_type == "mrb":
-        filename = file.filename
+        filename = os.path.basename(file.filename or "")
         kind = "raw_mrb"
     else:
         raise HTTPException(status_code=400, detail="Invalid file_type")
+
+    if not filename:
+        raise HTTPException(status_code=400, detail="Uploaded file has no filename")
+
+    # An edf of the same name lands on the same path on disk, so registering a
+    # second artifact for it would leave two rows sharing one file. Replace the
+    # old recording outright (with its derived results) or refuse.
+    if kind == "raw_edf":
+        existing = next(
+            (a for a in db.query(Artifact).filter(
+                Artifact.subject_id == subject.id, Artifact.kind == "raw_edf").all()
+             if os.path.basename(a.rel_path).lower() == filename.lower()),
+            None,
+        )
+        if existing and not overwrite:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A recording named '{filename}' already exists for this patient",
+            )
+        if existing:
+            try:
+                edf_service.delete_edf_recording(db, subject, existing.id)
+            except edf_service.EdfRecordingInUse as e:
+                raise HTTPException(status_code=409, detail=str(e)) from e
 
     recv_dir = os.path.join(settings.DATA_ROOT, "recv", subject.name)
     os.makedirs(recv_dir, exist_ok=True)
