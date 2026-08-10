@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Loader, Modal, Stack, Text } from "@mantine/core";
 import { ApiError } from "../../api/client";
 import { useEdfWindow } from "../../api/queries/useEdf";
-import { hotColor } from "../../lib/colormap";
+import { hotColorRgb } from "../../lib/colormap";
 import { computeSpectrogram } from "../../lib/spectrogram";
 
 interface SpectrogramModalProps {
@@ -83,18 +83,27 @@ export function SpectrogramModal({ subjectId, edfArtifactId, channel, range, ban
     const ctx = specCanvas?.getContext("2d");
     if (!ctx || !specCanvas || !spectrogram) return;
     const { times, freqs, values } = spectrogram;
-    ctx.clearRect(0, 0, specCanvas.width, specCanvas.height);
+    const { width, height } = specCanvas;
+    ctx.clearRect(0, 0, width, height);
     if (times.length === 0 || freqs.length === 0) return;
-    const cellW = specCanvas.width / times.length;
-    const cellH = specCanvas.height / freqs.length;
-    for (let f = 0; f < freqs.length; f++) {
-      const y = specCanvas.height - (f + 1) * cellH;
-      for (let t = 0; t < times.length; t++) {
-        const norm = (values[f][t] - VMIN) / (VMAX - VMIN);
-        ctx.fillStyle = hotColor(norm);
-        ctx.fillRect(t * cellW, y, cellW + 1, cellH + 1);
+
+    // Per-pixel, not per cell: a 60s window is ~1200 time bins x 513 frequency
+    // rows, and one fillRect per cell is 600k calls into a 560x160 canvas.
+    const image = ctx.createImageData(width, height);
+    for (let py = 0; py < height; py++) {
+      const f = Math.min(freqs.length - 1, Math.floor(((height - 1 - py) / height) * freqs.length));
+      const row = values[f];
+      for (let px = 0; px < width; px++) {
+        const t = Math.min(times.length - 1, Math.floor((px / width) * times.length));
+        const [r, g, b] = hotColorRgb((row[t] - VMIN) / (VMAX - VMIN));
+        const i = (py * width + px) * 4;
+        image.data[i] = r;
+        image.data[i + 1] = g;
+        image.data[i + 2] = b;
+        image.data[i + 3] = 255;
       }
     }
+    ctx.putImageData(image, 0, 0);
   }, [spectrogram, specCanvas]);
 
   const status = (() => {
@@ -114,7 +123,7 @@ export function SpectrogramModal({ subjectId, edfArtifactId, channel, range, ban
           {truncated
             ? `Target window ${start.toFixed(1)}-${(range?.[1] ?? 0).toFixed(1)}s, showing the first ${MAX_WINDOW_SECONDS}s`
             : `Target window ${start.toFixed(1)}-${end.toFixed(1)}s`}
-          {` · filtered ${bandLow}-${bandHigh}Hz`}
+          {` · filtered ${bandLow}-${bandHigh}Hz, single channel so no common-average reference`}
         </Text>
         {isFetching && !samples && <Loader size="sm" />}
         {status && (

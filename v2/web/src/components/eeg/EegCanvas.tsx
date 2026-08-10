@@ -69,7 +69,25 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
     visibleChannels.length > 0,
   );
 
-  const dr = meta ? 0.7 * (meta.amplitude_range.max - meta.amplitude_range.min) || 1 : 1;
+  // Row pitch from the traces actually on screen, not the recording's global
+  // range: a 60-140Hz display filter leaves ~1% of the unfiltered amplitude, so
+  // a pitch fixed to the unfiltered range drew every filtered trace flat.
+  // Median RMS over the visible channels rather than a peak, so one saturated
+  // contact can't shrink the other nineteen.
+  const dr = useMemo(() => {
+    const rows = windowData?.data ?? [];
+    const rms = rows
+      .filter((s) => s.length > 0)
+      .map((s) => {
+        let sum = 0;
+        for (const v of s) sum += v * v;
+        return Math.sqrt(sum / s.length);
+      })
+      .sort((a, b) => a - b);
+    const median = rms.length ? rms[Math.floor(rms.length / 2)] : 0;
+    if (median > 0) return 6 * median; // ~+/-3 sigma per row
+    return meta ? 0.7 * (meta.amplitude_range.max - meta.amplitude_range.min) || 1 : 1;
+  }, [windowData, meta]);
 
   useEffect(() => {
     const canvas = canvasRef.current;

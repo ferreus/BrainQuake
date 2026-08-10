@@ -48,6 +48,11 @@ def _get_artifact(db: Session, subject: Subject, edf_artifact_id: int) -> Artifa
 # Bounds peak memory to this window rather than the whole recording.
 _META_SCAN_CHUNK_SECONDS = 60.0
 
+# Bumped whenever the cached fields are computed differently, so meta stored by
+# an older version is recomputed instead of served forever (the file itself is
+# unchanged, so the size/mtime fingerprint alone would keep the stale value).
+_META_VERSION = 2
+
 
 def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
     """GET .../edf/{id}/meta. The amplitude range needs one full decode pass,
@@ -63,7 +68,11 @@ def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
     artifact = _get_artifact(db, subject, edf_artifact_id)
     edf_path = resolve_edf_path(subject, artifact)
     stat = os.stat(edf_path)
-    fingerprint = {"source_size": stat.st_size, "source_mtime": int(stat.st_mtime)}
+    fingerprint = {
+        "source_size": stat.st_size,
+        "source_mtime": int(stat.st_mtime),
+        "meta_version": _META_VERSION,
+    }
 
     cached = artifact.meta_json
     if cached and "amplitude_range" in cached and all(cached.get(k) == v for k, v in fingerprint.items()):
@@ -76,9 +85,15 @@ def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
     fs = raw.info["sfreq"]
     n_samples = int(raw.n_times)
     chunk = max(1, int(fs * _META_SCAN_CHUNK_SECONDS))
+    # Contacts only. A mark word or DC input reads several orders of magnitude
+    # above a microvolt contact (5.4e4 vs 1e-4 on Bella's recordings), and the
+    # viewer derives its row pitch from this range -- scanning every channel
+    # scaled the traces down to flat lines.
+    contacts = set(seeg_contacts(raw.ch_names))
+    picks = [i for i, n in enumerate(raw.ch_names) if n in contacts]
     lo, hi = np.inf, -np.inf
     for i0 in range(0, n_samples, chunk):
-        block, _ = raw[:, i0:min(n_samples, i0 + chunk)]
+        block, _ = raw[picks, i0:min(n_samples, i0 + chunk)]
         lo = min(lo, float(np.min(block)))
         hi = max(hi, float(np.max(block)))
 

@@ -1864,6 +1864,65 @@ def test_notch_removes_the_selected_mains_harmonics_only():
     assert power_at(removed, 180) < before * 0.01  # 60 Hz series kills it
 
 
+def test_filter_for_display_keeps_a_single_channel_intact():
+    """The common average of one channel is that channel, so subtracting it
+    returned exactly zero -- which is what the EI chart's per-channel
+    drill-down (one channel per request) plotted, for every channel."""
+    from app.sigproc.filters import filter_for_display
+
+    fs = 1000.0
+    t = np.arange(0, 2, 1 / fs)
+    sig = (50e-6 * np.sin(2 * np.pi * 10 * t))[None, :]
+
+    out = filter_for_display(sig, fs, 1.0, 300.0, mains_freq=60.0)
+    assert np.abs(out).max() > 1e-6, "a single-channel window must not be zeroed"
+
+    # Two channels still get the common-average reference.
+    pair = np.vstack([sig[0], -sig[0]])
+    out2 = filter_for_display(pair, fs, 1.0, 300.0, mains_freq=60.0)
+    assert np.abs(out2).max() > 1e-6
+
+
+def test_edf_window_single_channel_is_not_zeroed():
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("EdfWindowSingleChn")
+    r = client.get(
+        f"/subjects/{sid}/edf/{artifact_id}/window",
+        params={"start": 1, "end": 3, "channels": ch_names[0], "band_low": 1, "band_high": 300},
+    )
+    assert r.status_code == 200
+    parsed = _parse_edf_window_binary(r.content)
+    assert np.abs(parsed["data"]).max() > 0
+
+
+def test_edf_meta_amplitude_range_ignores_auxiliary_channels():
+    """A mark word or DC input reads orders of magnitude above a contact (5.4e4
+    vs 1e-4 on a real Nihon Kohden export). The viewer derives its row pitch
+    from this range, so including them drew every trace as a flat line."""
+    r = client.post("/subjects", json={"name": "EdfMetaRangeAux"})
+    sid = r.json()["id"]
+
+    fs = 1000.0
+    t = np.arange(int(fs * 5.0)) / fs
+    data = np.vstack([
+        50e-6 * np.sin(2 * np.pi * 10 * t),   # A1 -- a contact, microvolts
+        50e-6 * np.sin(2 * np.pi * 12 * t),   # A2
+        5.0 * np.sin(2 * np.pi * 1 * t),      # MARK -- 1e5x either contact
+    ])
+    info = mne.create_info(["A1", "A2", "MARK"], sfreq=fs, ch_types="eeg")
+    path = "/tmp/EdfMetaRangeAux.edf"
+    mne.io.RawArray(data, info, verbose=False).export(path, fmt="edf", overwrite=True, verbose=False)
+    with open(path, "rb") as f:
+        r = client.post(
+            f"/subjects/{sid}/upload?file_type=edf",
+            files={"file": ("EdfMetaRangeAux.edf", f.read(), "application/octet-stream")},
+        )
+    os.remove(path)
+
+    meta = client.get(f"/subjects/{sid}/edf/{r.json()['id']}/meta").json()
+    assert meta["aux_channels"] == ["MARK"]
+    assert meta["amplitude_range"]["max"] < 1e-3, "MARK must not set the display range"
+
+
 def test_ei_request_rejects_invalid_windows():
     sid, artifact_id, _, _ = _create_subject_with_edf("EiValidateTest")
     base = {

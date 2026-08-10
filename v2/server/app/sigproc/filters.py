@@ -76,8 +76,13 @@ def filter_for_display(data, fs, band_low, band_high, mains_freq=DEFAULT_MAINS_F
     band_low, band_high = clamp_band(band_low, band_high, fs, "filter_for_display")
     # Common-average reference over whatever the caller passed. The numeric
     # callers pass contacts only (edf_common.load_seeg); the viewer passes what
-    # the user selected.
-    data = data - np.mean(data, axis=0)
+    # the user selected. Skipped below two channels: the average of one channel
+    # is that channel, so subtracting it returns exactly zero -- which is what
+    # the web client's single-channel drill-down was plotting.
+    if np.ndim(data) > 1 and np.shape(data)[0] > 1:
+        data = data - np.mean(data, axis=0)
+    else:
+        logger.info("single channel: returning it unreferenced (a common average of one is itself)")
     # NOTE(v1-quirk): the legacy app notched 50/100/150 Hz only, and this keeps
     # that reach (3 harmonics) rather than sweeping to Nyquist. Harmonics above
     # the 3rd are left in the signal; whether that matters depends on how much

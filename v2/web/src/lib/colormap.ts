@@ -21,12 +21,13 @@ function blueChannel(t: number): number {
   return lerp(0, 1, (t - 0.746032) / (1 - 0.746032));
 }
 
-/** Maps a normalized value in [0, 1] to a matplotlib-"hot" CSS color. Values
- * outside [0, 1] are clamped, matching pcolormesh's vmin/vmax clipping. */
-export function hotColor(t: number): string {
+/** Maps a normalized value in [0, 1] to matplotlib-"hot" as [r, g, b] bytes.
+ * Values outside [0, 1] are clamped, matching pcolormesh's vmin/vmax clipping. */
+export function hotColorRgb(t: number): [number, number, number] {
   const clamped = Math.min(1, Math.max(0, t));
-  const r = Math.round(redChannel(clamped) * 255);
-  const g = Math.round(greenChannel(clamped) * 255);
-  const b = Math.round(blueChannel(clamped) * 255);
-  return `rgb(${r}, ${g}, ${b})`;
+  return [
+    Math.round(redChannel(clamped) * 255),
+    Math.round(greenChannel(clamped) * 255),
+    Math.round(blueChannel(clamped) * 255),
+  ];
 }
