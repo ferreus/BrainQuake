@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch } from "react";
 import { Group, Loader, Stack, Text } from "@mantine/core";
 import { ApiError } from "../../api/client";
@@ -25,8 +25,8 @@ interface EegCanvasProps {
   onCanvasClick?: (time: number) => void;
 }
 
-const CANVAS_HEIGHT = 480;
-const CANVAS_WIDTH = 900;
+const MIN_CANVAS_HEIGHT = 320;
+const FALLBACK_CANVAS_SIZE = { width: 900, height: 480 };
 
 /**
  * Stacked multi-channel trace viewer -- Canvas2D, not WebGL (redraws are
@@ -40,6 +40,26 @@ const CANVAS_WIDTH = 900;
 export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers = [], eventOverlays, onCanvasClick }: EegCanvasProps) {
   const { data: meta, isError: metaIsError, error: metaError, refetch: refetchMeta } = useEdfMeta(subjectId, edfArtifactId);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Sized off the container rather than a fixed constant, so the canvas fills
+  // whatever vertical space the surrounding layout actually gives it instead
+  // of leaving a blank gap below a fixed-height buffer.
+  const [canvasSize, setCanvasSize] = useState(FALLBACK_CANVAS_SIZE);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (!rect) return;
+      setCanvasSize({
+        width: Math.max(1, Math.round(rect.width)),
+        height: Math.max(MIN_CANVAS_HEIGHT, Math.round(rect.height)),
+      });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const allChannels = useMemo(() => meta?.channels ?? [], [meta]);
   const remainingChannels = useMemo(
@@ -164,7 +184,7 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
       ctx.lineTo(x, height);
       ctx.stroke();
     });
-  }, [windowData, state.dispChansNum, state.dispWaveMul, state.dispTimeStart, state.dispTimeWin, dr, markers, eventOverlays]);
+  }, [windowData, state.dispChansNum, state.dispWaveMul, state.dispTimeStart, state.dispTimeWin, dr, markers, eventOverlays, canvasSize]);
 
   function handleWheel(e: React.WheelEvent<HTMLCanvasElement>) {
     e.preventDefault();
@@ -191,20 +211,23 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
   }
 
   return (
-    <Stack gap={4} style={{ flex: 1, minWidth: 0 }}>
-      <canvas
-        ref={canvasRef}
-        width={CANVAS_WIDTH}
-        height={CANVAS_HEIGHT}
-        style={{
-          width: "100%",
-          height: CANVAS_HEIGHT,
-          background: "#fafafa",
-          cursor: onCanvasClick ? "crosshair" : "default",
-        }}
-        onWheel={handleWheel}
-        onClick={handleClick}
-      />
+    <Stack gap={4} style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+      <div ref={containerRef} style={{ flex: 1, minHeight: MIN_CANVAS_HEIGHT }}>
+        <canvas
+          ref={canvasRef}
+          width={canvasSize.width}
+          height={canvasSize.height}
+          style={{
+            display: "block",
+            width: "100%",
+            height: "100%",
+            background: "#fafafa",
+            cursor: onCanvasClick ? "crosshair" : "default",
+          }}
+          onWheel={handleWheel}
+          onClick={handleClick}
+        />
+      </div>
       {windowIsError ? (
         <Text size="xs" c="red">
           Failed to load this window: {windowError instanceof ApiError ? windowError.message : String(windowError)}

@@ -108,7 +108,7 @@ export function useEegViewerState(mode: EegMode): {
   const [state, dispatch] = useReducer(reducer, undefined, () => ({
     dispChansNum: 20,
     dispChansStart: 0,
-    dispWaveMul: 10,
+    dispWaveMul: 1,
     dispTimeWin: 5,
     dispTimeStart: 0,
     excludedChannels: new Set<string>(),

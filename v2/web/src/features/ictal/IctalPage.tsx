@@ -154,7 +154,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
 
       {effectiveEdfId && meta && (
         <>
-          <Group align="flex-start" gap="md" wrap="nowrap">
+          <Group align="stretch" gap="md" wrap="nowrap" style={{ flex: 1, minHeight: 0 }}>
             <EegCanvas
               subjectId={subjectId}
               edfArtifactId={effectiveEdfId}
@@ -163,7 +163,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
               markers={markers}
               onCanvasClick={selection.awaitingClick ? selection.handleClick : undefined}
             />
-            <Stack w={300} gap="sm">
+            <Stack w={300} gap="sm" style={{ alignSelf: "flex-start" }}>
               <EegChannelList
                 channels={meta.channels}
                 excludedChannels={state.excludedChannels}
