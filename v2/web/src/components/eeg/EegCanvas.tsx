@@ -49,16 +49,25 @@ export function EegCanvas({ subjectId, edfArtifactId, state, dispatch, markers =
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    let timer: number | undefined;
+    // Trailing debounce + same-size bail-out: panel toggles and window drags
+    // fire bursts of resize events, and a full multi-channel redraw per event
+    // blocks the main thread for seconds.
     const observer = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
-      setCanvasSize({
-        width: Math.max(1, Math.round(rect.width)),
-        height: Math.max(MIN_CANVAS_HEIGHT, Math.round(rect.height)),
-      });
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const width = Math.max(1, Math.round(rect.width));
+        const height = Math.max(MIN_CANVAS_HEIGHT, Math.round(rect.height));
+        setCanvasSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+      }, 100);
     });
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      window.clearTimeout(timer);
+      observer.disconnect();
+    };
   }, []);
 
   const allChannels = useMemo(() => meta?.channels ?? [], [meta]);

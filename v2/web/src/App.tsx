@@ -18,7 +18,8 @@ const queryClient = new QueryClient();
 const JOBS_FOOTER_HEIGHT = 180;
 
 const ACTIVITY_BAR_WIDTH = 48;
-const SUBJECTS_PANEL_WIDTH = 260;
+// Wide enough for the header row's "Import" + "New Subject" buttons.
+const SUBJECTS_PANEL_WIDTH = 300;
 
 function Layout() {
   const [jobsCollapsed, setJobsCollapsed] = useState(false);
@@ -30,6 +31,9 @@ function Layout() {
       navbar={{ width: ACTIVITY_BAR_WIDTH + (subjectsOpen ? SUBJECTS_PANEL_WIDTH : 0), breakpoint: "sm" }}
       footer={{ height: JOBS_FOOTER_HEIGHT, collapsed: jobsCollapsed }}
       padding={0}
+      // No width animation: each animation frame resizes every mounted view
+      // (EEG canvases, iframe, r3f), which janks the panel toggle badly.
+      transitionDuration={0}
       // Definite height + flex on <main> so every page below can use h="100%"
       // instead of the old 70vh workarounds (Mantine's default is only a
       // min-height, which percentage heights can't resolve against).

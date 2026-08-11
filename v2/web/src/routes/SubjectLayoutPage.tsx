@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { CSSProperties } from "react";
 import { useParams } from "react-router-dom";
 import { Alert, Loader, Stack, Text, Title } from "@mantine/core";
@@ -22,6 +23,22 @@ export function SubjectLayoutPage() {
     queryFn: () => getSubject(id),
     enabled: Number.isFinite(id),
   });
+
+  // Views mount on first visit and stay mounted after, reset per subject.
+  // Mounting all five at once froze the UI for 10+ seconds on subject switch:
+  // the FreeBrowse iframe alone gunzips three MGZ volumes on the shared main
+  // thread, plus two EDF viewers fetching/drawing and two 3D pages parsing
+  // surfaces -- all for views not being looked at.
+  const [visited, setVisited] = useState<{ id: number; views: Set<SubjectView> }>(() => ({
+    id,
+    views: new Set([activeView]),
+  }));
+  if (visited.id !== id) {
+    setVisited({ id, views: new Set([activeView]) });
+  } else if (!visited.views.has(activeView)) {
+    setVisited({ id, views: new Set(visited.views).add(activeView) });
+  }
+  const isVisited = (v: SubjectView) => visited.id === id && visited.views.has(v);
 
   if (isLoading) {
     return (
@@ -66,25 +83,26 @@ export function SubjectLayoutPage() {
           most visibly the job ids the step forms poll on. */}
       <div style={{ flex: 1, minHeight: 0 }}>
         <div style={viewStyle("electrodes")}>
-          {subject.subject_dir ? (
-            <ElectrodesPage key={id} subjectId={id} active={activeView === "electrodes"} />
-          ) : (
-            <Alert color="gray" variant="light" mt="md">
-              Run reconstruction first (see the subject's upload step) before working on electrodes.
-            </Alert>
-          )}
+          {isVisited("electrodes") &&
+            (subject.subject_dir ? (
+              <ElectrodesPage key={id} subjectId={id} active={activeView === "electrodes"} />
+            ) : (
+              <Alert color="gray" variant="light" mt="md">
+                Run reconstruction first (see the subject's upload step) before working on electrodes.
+              </Alert>
+            ))}
         </div>
         <div style={viewStyle("ictal")}>
-          <IctalPage key={id} subjectId={id} />
+          {isVisited("ictal") && <IctalPage key={id} subjectId={id} />}
         </div>
         <div style={viewStyle("interictal")}>
-          <InterictalPage key={id} subjectId={id} />
+          {isVisited("interictal") && <InterictalPage key={id} subjectId={id} />}
         </div>
         <div style={viewStyle("soz")}>
-          <SozPage key={id} subjectId={id} active={activeView === "soz"} />
+          {isVisited("soz") && <SozPage key={id} subjectId={id} active={activeView === "soz"} />}
         </div>
         <div style={viewStyle("freebrowse")}>
-          <FreeBrowsePage key={id} subjectId={id} />
+          {isVisited("freebrowse") && <FreeBrowsePage key={id} subjectId={id} />}
         </div>
       </div>
     </Stack>

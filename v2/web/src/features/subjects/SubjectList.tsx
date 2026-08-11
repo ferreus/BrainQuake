@@ -65,7 +65,7 @@ export function SubjectList() {
   const { data: subjects, isLoading } = useSubjects();
   const deleteSubject = useDeleteSubject();
   const navigate = useNavigate();
-  const { subjectId } = useParams();
+  const { subjectId, view } = useParams();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
@@ -109,7 +109,9 @@ export function SubjectList() {
             key={subject.id}
             subject={subject}
             active={String(subject.id) === subjectId}
-            onSelect={() => navigate(`/subjects/${subject.id}`)}
+            // Keep the view you were on -- switching subject to compare the
+            // same view is the common case.
+            onSelect={() => navigate(`/subjects/${subject.id}${view ? `/${view}` : ""}`)}
             onDelete={() => handleDelete(subject)}
           />
         ))}
