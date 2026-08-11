@@ -1,9 +1,9 @@
-import type { ReactNode } from "react";
-import { Canvas } from "@react-three/fiber";
-import { Bounds, OrbitControls } from "@react-three/drei";
+import type { CSSProperties, ReactNode } from "react";
+import { Bounds, OrbitControls, PerspectiveCamera, View } from "@react-three/drei";
 
-interface SceneCanvasProps {
+interface SceneViewProps {
   children: ReactNode;
+  style?: CSSProperties;
 }
 
 /**
@@ -14,10 +14,16 @@ interface SceneCanvasProps {
  * <Bounds fit clip observe> auto-frames the camera on whatever geometry is
  * loaded instead of a hardcoded position, since subject head/brain scale
  * varies.
+ *
+ * A <View>, not its own <Canvas>: the single canvas lives in App.tsx and
+ * outlives every route, so switching subject or view no longer tears down and
+ * rebuilds the WebGL context. This element reserves the layout box and the
+ * scene is drawn into it, scissored to its bounds.
  */
-export function SceneCanvas({ children }: SceneCanvasProps) {
+export function SceneView({ children, style }: SceneViewProps) {
   return (
-    <Canvas camera={{ position: [0, 0, 200], fov: 50, near: 0.1, far: 5000 }} style={{ background: "#1a1b1e" }}>
+    <View style={{ background: "#1a1b1e", ...style }}>
+      <PerspectiveCamera makeDefault position={[0, 0, 200]} fov={50} near={0.1} far={5000} />
       <ambientLight intensity={0.6} />
       <directionalLight position={[100, 200, 100]} intensity={0.8} />
       <directionalLight position={[-100, -100, -100]} intensity={0.3} />
@@ -25,6 +31,6 @@ export function SceneCanvas({ children }: SceneCanvasProps) {
         {children}
       </Bounds>
       <OrbitControls makeDefault />
-    </Canvas>
+    </View>
   );
 }

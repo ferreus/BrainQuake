@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import * as THREE from "three";
 import { useSurfaceMesh } from "../../api/queries/useSurfaceMesh";
 
@@ -18,6 +18,11 @@ function HemisphereMesh({ subjectId, hemi }: HemisphereMeshProps) {
     geom.computeVertexNormals();
     return geom;
   }, [data]);
+
+  // Built by hand rather than from JSX, so r3f won't dispose it for us. The
+  // canvas now outlives the scene, so skipping this leaks a mesh's worth of
+  // GPU buffers per subject switch.
+  useEffect(() => () => geometry?.dispose(), [geometry]);
 
   if (!geometry) return null;
 

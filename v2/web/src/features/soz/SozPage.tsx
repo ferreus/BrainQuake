@@ -10,7 +10,7 @@ import { useFuseSoz, useSozResult } from "../../api/queries/useSoz";
 import { useSurfaceMesh } from "../../api/queries/useSurfaceMesh";
 import { TERMINAL_JOB_STATES } from "../../api/types";
 import { BrainMesh } from "../../components/three/BrainMesh";
-import { SceneCanvas } from "../../components/three/SceneCanvas";
+import { SceneView } from "../../components/three/SceneView";
 import { SozContacts } from "../../components/three/SozContacts";
 import { SozResultTable } from "./SozResultTable";
 
@@ -88,10 +88,10 @@ export function SozPage({ subjectId, active }: SozPageProps) {
     <Group align="stretch" wrap="nowrap" gap="md" mt="md" style={{ flex: 1, minHeight: 0 }}>
       <div style={{ flex: 1, height: "100%", position: "relative" }}>
         {active && (
-          <SceneCanvas>
+          <SceneView style={{ width: "100%", height: "100%" }}>
             <BrainMesh subjectId={subjectId} />
             {rows && rows.length > 0 && <SozContacts rows={rows} topN={topN} />}
-          </SceneCanvas>
+          </SceneView>
         )}
         {surfaceMissing && (
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>

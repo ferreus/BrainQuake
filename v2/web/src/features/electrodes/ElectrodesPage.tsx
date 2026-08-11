@@ -12,7 +12,7 @@ import type { Artifact, Job } from "../../api/types";
 import { BrainMesh } from "../../components/three/BrainMesh";
 import { ClusterCentroids } from "../../components/three/ClusterCentroids";
 import { ElectrodeContacts } from "../../components/three/ElectrodeContacts";
-import { SceneCanvas } from "../../components/three/SceneCanvas";
+import { SceneView } from "../../components/three/SceneView";
 import { SlicerContactsPreview } from "../../components/three/SlicerContactsPreview";
 import { ContactAnatomyPanel } from "./ContactAnatomyPanel";
 import { DetectForm } from "./DetectForm";
@@ -359,7 +359,7 @@ export function ElectrodesPage({ subjectId, active }: ElectrodesPageProps) {
     <Group align="stretch" wrap="nowrap" gap="md" mt="md" style={{ flex: 1, minHeight: 0 }}>
       <div style={{ flex: 1, height: "100%", position: "relative" }}>
         {active && (
-          <SceneCanvas>
+          <SceneView style={{ width: "100%", height: "100%" }}>
             <BrainMesh subjectId={subjectId} />
             {hasPendingSlicerPreview ? (
               <SlicerContactsPreview subjectId={subjectId} />
@@ -368,7 +368,7 @@ export function ElectrodesPage({ subjectId, active }: ElectrodesPageProps) {
             ) : (
               detected && <ClusterCentroids subjectId={subjectId} excluded={excludedClusters} />
             )}
-          </SceneCanvas>
+          </SceneView>
         )}
         {surfaceMissing && <SurfaceRebuildBanner subjectId={subjectId} activeRecon={activeRecon} />}
       </div>

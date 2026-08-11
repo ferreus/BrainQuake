@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppShell, Badge, Group, MantineProvider, Title } from "@mantine/core";
 import { Notifications } from "@mantine/notifications";
+import { Canvas } from "@react-three/fiber";
+import { View } from "@react-three/drei";
 import { ActivityBar } from "./components/ActivityBar";
 import { JobsDrawer } from "./features/jobs/JobsDrawer";
 import { SubjectList } from "./features/subjects/SubjectList";
@@ -24,6 +26,7 @@ const SUBJECTS_PANEL_WIDTH = 300;
 function Layout() {
   const [jobsCollapsed, setJobsCollapsed] = useState(false);
   const [subjectsOpen, setSubjectsOpen] = useState(true);
+  const mainRef = useRef<HTMLElement>(null);
 
   return (
     <AppShell
@@ -70,9 +73,25 @@ function Layout() {
         </Group>
       </AppShell.Navbar>
 
-      <AppShell.Main>
+      <AppShell.Main ref={mainRef}>
         <Outlet />
       </AppShell.Main>
+
+      {/* The app's only WebGL context, mounted once for the session. Every 3D
+          page draws through a <SceneView>, which portals into this canvas and
+          is scissored to its own layout box -- so switching subject or view
+          rebuilds scene contents but never the context. Deliberately outside
+          the routes: SubjectLayoutPage early-returns a loader while the next
+          subject loads, which would unmount a canvas rendered there.
+          z-index 1 keeps it above the page background but below Mantine's
+          AppShell chrome (100) and its modal/menu portals (200+). */}
+      <Canvas
+        eventSource={mainRef as React.RefObject<HTMLElement>}
+        gl={{ alpha: true }}
+        style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 1 }}
+      >
+        <View.Port />
+      </Canvas>
 
       <AppShell.Footer>
         <JobsDrawer />
