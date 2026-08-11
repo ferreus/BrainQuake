@@ -25,7 +25,7 @@ os.environ["DATA_ROOT"] = "./data/test_data_root"
 from app.config import settings
 from app.db import Base, SessionLocal, engine, get_db
 from app.main import app
-from app.models import Artifact, Job
+from app.models import Artifact, Job, RecordingParams
 from app.workers import jobs_worker
 from app.workers.jobs_worker import run_job
 
@@ -2097,3 +2097,108 @@ def test_hfo_request_rejects_invalid_window_and_accepts_none():
     ):
         r = client.post(f"/subjects/{sid}/interictal/{artifact_id}/hfo", json=bad)
         assert r.status_code == 422, f"expected 422 for {bad}, got {r.status_code}"
+
+
+# ---------------------------------------------------------------------------
+# Per-recording compute params + annotation surfacing
+# ---------------------------------------------------------------------------
+
+def test_upload_edf_extracts_annotations():
+    """EDF+ TAL annotations (seizure markings, clinical events) must be parsed
+    at upload time and exposed via the params endpoint -- see
+    docs/bella_ictal_ei_vs_annotation_discrepancy.md for why the raw
+    annotations, not an auto-picked "the" onset, are what gets surfaced."""
+    name = "EdfAnnotations"
+    r = client.post("/subjects", json={"name": name})
+    sid = r.json()["id"]
+
+    sfreq, duration = 1000.0, 20.0
+    t = np.arange(int(sfreq * duration)) / sfreq
+    data = np.stack([50e-6 * np.sin(2 * np.pi * 5 * t), 50e-6 * np.sin(2 * np.pi * 7 * t)])
+    info = mne.create_info(["CH1", "CH2"], sfreq=sfreq, ch_types="eeg")
+    raw = mne.io.RawArray(data, info, verbose=False)
+    raw.set_annotations(mne.Annotations(
+        onset=[5.0, 8.5, 12.0],
+        duration=[0.0, 1.0, 0.0],
+        description=["EEG onset", "SZ 1P", "clinical onset"],
+    ))
+    edf_path = f"/tmp/{name}.edf"
+    raw.export(edf_path, fmt="edf", overwrite=True, verbose=False)
+    with open(edf_path, "rb") as f:
+        r = client.post(
+            f"/subjects/{sid}/upload?file_type=edf",
+            files={"file": (f"{name}.edf", f.read(), "application/octet-stream")},
+        )
+    os.remove(edf_path)
+    artifact_id = r.json()["id"]
+
+    params = client.get(f"/subjects/{sid}/edf/{artifact_id}/params").json()
+    assert params["edf_artifact_id"] == artifact_id
+    assert params["ictal_params"] is None
+    assert params["interictal_params"] is None
+    assert [a["description"] for a in params["annotations"]] == ["EEG onset", "SZ 1P", "clinical onset"]
+    assert [a["onset"] for a in params["annotations"]] == pytest.approx([5.0, 8.5, 12.0], abs=0.01)
+
+
+def test_recording_params_empty_when_nothing_saved():
+    """No 404 -- a recording with no compute history yet and no annotations
+    channel must still return a well-formed (empty) shape."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("RecParamsEmpty")
+    params = client.get(f"/subjects/{sid}/edf/{artifact_id}/params").json()
+    assert params["ictal_params"] is None
+    assert params["interictal_params"] is None
+    assert params["annotations"] == []
+
+
+def test_ei_compute_saves_recording_params():
+    sid, artifact_id, _, _ = _create_subject_with_edf("EiSavesParams")
+    body = {
+        "baseline_start": 0.0, "baseline_end": 3.0,
+        "target_start": 4.0, "target_end": 9.0,
+        "band_low": 2.0, "band_high": 200.0, "mains_freq": 60.0,
+    }
+    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json=body)
+    assert r.status_code == 200
+
+    params = client.get(f"/subjects/{sid}/edf/{artifact_id}/params").json()
+    saved = params["ictal_params"]
+    for key, value in body.items():
+        assert saved[key] == value
+    assert params["interictal_params"] is None
+
+
+def test_hfo_compute_saves_recording_params():
+    sid, artifact_id, _, _ = _create_subject_with_edf("HfoSavesParams")
+    body = {"band_low": 80.0, "band_high": 250.0, "mains_freq": 60.0, "rel_thresh": 3.0}
+    r = client.post(f"/subjects/{sid}/interictal/{artifact_id}/hfo", json=body)
+    assert r.status_code == 200
+
+    params = client.get(f"/subjects/{sid}/edf/{artifact_id}/params").json()
+    saved = params["interictal_params"]
+    for key, value in body.items():
+        assert saved[key] == value
+    assert params["ictal_params"] is None
+
+
+def test_delete_edf_recording_removes_recording_params():
+    sid, artifact_id, _, _ = _create_subject_with_edf("RecParamsDeleteTest")
+    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json={
+        "baseline_start": 0.0, "baseline_end": 3.0, "target_start": 4.0, "target_end": 9.0,
+    })
+    assert r.status_code == 200
+    run_job(r.json()["id"])
+
+    db = SessionLocal()
+    try:
+        assert db.query(RecordingParams).filter(RecordingParams.edf_artifact_id == artifact_id).count() == 1
+    finally:
+        db.close()
+
+    r = client.delete(f"/subjects/{sid}/edf/{artifact_id}")
+    assert r.status_code == 200, r.text
+
+    db = SessionLocal()
+    try:
+        assert db.query(RecordingParams).filter(RecordingParams.edf_artifact_id == artifact_id).count() == 0
+    finally:
+        db.close()

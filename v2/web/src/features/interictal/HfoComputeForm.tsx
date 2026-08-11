@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Group, NumberInput, Paper, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
+import type { HfoComputeParams } from "../../api/endpoints";
 import { useComputeHfo } from "../../api/queries/useInterictal";
 import { useJobPolling } from "../../api/queries/useJobPolling";
+import { recordingParamsQueryKey } from "../../api/queries/useRecordingParams";
 import { TERMINAL_JOB_STATES } from "../../api/types";
 
 interface HfoComputeFormProps {
@@ -20,6 +22,9 @@ interface HfoComputeFormProps {
   /** Recording sample rate and length, for Nyquist and window validation. */
   sfreq?: number;
   durationSec?: number;
+  /** This recording's last-submitted interictal params, if any -- takes
+   * priority over the display-filter band seed below, once per recording. */
+  initialParams?: HfoComputeParams | null;
 }
 
 /**
@@ -36,6 +41,7 @@ export function HfoComputeForm({
   remainChannels,
   sfreq,
   durationSec,
+  initialParams,
 }: HfoComputeFormProps) {
   const [relThresh, setRelThresh] = useState(2.0);
   const [absThresh, setAbsThresh] = useState(2.0);
@@ -54,6 +60,26 @@ export function HfoComputeForm({
   const [startTime, setStartTime] = useState<number | "">("");
   const [endTime, setEndTime] = useState<number | "">("");
   const [jobId, setJobId] = useState<number | undefined>();
+
+  // This recording's last-submitted params take priority over the display-
+  // filter band seed above, once per recording -- guarded so a later refetch
+  // (post-submit invalidate, window-focus refetch) doesn't stomp an
+  // in-progress unsaved edit.
+  const seededEdfId = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!initialParams || seededEdfId.current === edfArtifactId) return;
+    seededEdfId.current = edfArtifactId;
+    if (initialParams.band_low != null && initialParams.band_high != null) {
+      setBand([initialParams.band_low, initialParams.band_high]);
+    }
+    if (initialParams.rel_thresh != null) setRelThresh(initialParams.rel_thresh);
+    if (initialParams.abs_thresh != null) setAbsThresh(initialParams.abs_thresh);
+    if (initialParams.min_gap != null) setMinGap(initialParams.min_gap);
+    if (initialParams.min_last != null) setMinLast(initialParams.min_last);
+    if (initialParams.mains_freq != null) setMainsFreq(initialParams.mains_freq);
+    setStartTime(initialParams.start_time ?? "");
+    setEndTime(initialParams.end_time ?? "");
+  }, [edfArtifactId, initialParams]);
 
   const nyquist = sfreq ? sfreq / 2 : undefined;
   const bandHighTooHigh = nyquist != null && band[1] >= nyquist;
@@ -99,6 +125,9 @@ export function HfoComputeForm({
         },
       });
       setJobId(j.id);
+      // Params are saved server-side synchronously with job creation --
+      // refetch so the saved-params view reflects this submission right away.
+      queryClient.invalidateQueries({ queryKey: recordingParamsQueryKey(subjectId, edfArtifactId) });
     } catch (err) {
       notifications.show({
         color: "red",

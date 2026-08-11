@@ -4,7 +4,9 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Subject
+from app.schemas import RecordingParamsResponse
 from app.services import edf as edf_service
+from app.services import recording_params as recording_params_service
 from app.sigproc.filters import DEFAULT_MAINS_FREQ
 
 router = APIRouter(prefix="/subjects", tags=["edf"])
@@ -24,6 +26,15 @@ def get_edf_meta(subject_id: int, edf_artifact_id: int, db: Session = Depends(ge
         return edf_service.get_edf_meta(db, subject, edf_artifact_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@router.get("/{subject_id}/edf/{edf_artifact_id}/params", response_model=RecordingParamsResponse)
+def get_recording_params(subject_id: int, edf_artifact_id: int, db: Session = Depends(get_db)):
+    """The saved ictal/interictal params this recording was last computed
+    with, plus its parsed EDF+ annotations -- empty/null fields rather than a
+    404 when nothing has been computed yet."""
+    _get_subject_or_404(subject_id, db)
+    return recording_params_service.get_params_response(db, edf_artifact_id)
 
 
 @router.delete("/{subject_id}/edf/{edf_artifact_id}")

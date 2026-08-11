@@ -27,7 +27,7 @@ export function useDeleteEdfRecording(subjectId: number) {
     onSuccess: (_result, edfArtifactId) => {
       // Drop (not just invalidate) everything keyed on the deleted recording:
       // refetching those would only 404.
-      for (const key of ["edf-meta", "ei-result", "hfo-result"]) {
+      for (const key of ["edf-meta", "ei-result", "hfo-result", "recording-params"]) {
         queryClient.removeQueries({ queryKey: [key, subjectId, edfArtifactId] });
       }
       queryClient.removeQueries({

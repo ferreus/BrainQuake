@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Group, NumberInput, Paper, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
+import type { EiComputeParams } from "../../api/endpoints";
 import { useComputeEi } from "../../api/queries/useIctal";
 import { useJobPolling } from "../../api/queries/useJobPolling";
+import { recordingParamsQueryKey } from "../../api/queries/useRecordingParams";
 import { TERMINAL_JOB_STATES } from "../../api/types";
 import type { BaselineTargetSelection } from "../../components/eeg/BaselineTargetLayer";
 
@@ -23,6 +25,11 @@ interface EiComputeFormProps {
    * the canvas toolbar. Shared rather than a second local control so the
    * traces on screen and the EI computation can never disagree about it. */
   mainsFreq: number;
+  /** This recording's last-submitted ictal params, if any -- seeds band on
+   * recording switch. Baseline/target/mains are seeded by the page (into
+   * `selection` and the shared viewer state) since this form doesn't own
+   * them. */
+  initialParams?: EiComputeParams | null;
 }
 
 /**
@@ -34,12 +41,25 @@ interface EiComputeFormProps {
  * 500Hz is exactly Nyquist, which scipy's butter() rejects outright. The server
  * clamps it now, but there's no reason to send a value that needs clamping.
  */
-export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, remainChannels, mainsFreq }: EiComputeFormProps) {
+export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, remainChannels, mainsFreq, initialParams }: EiComputeFormProps) {
   const [bandLow, setBandLow] = useState(1.0);
   const [bandHigh, setBandHigh] = useState(300.0);
   // 50Hz Europe/Asia, 60Hz North America. The wrong value notches clean signal
   // and leaves the real interference in place.
   const [jobId, setJobId] = useState<number | undefined>();
+
+  // Seed band from this recording's last-submitted params, once per
+  // recording -- falls back to the hardcoded defaults above when there are
+  // none yet. Guarded to fire once per edfArtifactId, not on every refetch of
+  // initialParams (e.g. the post-submit invalidate, or a window-focus
+  // refetch), which would otherwise stomp an in-progress unsaved edit.
+  const seededEdfId = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!initialParams || seededEdfId.current === edfArtifactId) return;
+    seededEdfId.current = edfArtifactId;
+    if (initialParams.band_low != null) setBandLow(initialParams.band_low);
+    if (initialParams.band_high != null) setBandHigh(initialParams.band_high);
+  }, [edfArtifactId, initialParams]);
 
   const nyquist = sfreq ? sfreq / 2 : undefined;
   const bandHighTooHigh = nyquist != null && bandHigh >= nyquist;
@@ -95,6 +115,9 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, rema
         },
       });
       setJobId(j.id);
+      // Params are saved server-side synchronously with job creation --
+      // refetch so the saved-params view reflects this submission right away.
+      queryClient.invalidateQueries({ queryKey: recordingParamsQueryKey(subjectId, edfArtifactId) });
     } catch (err) {
       notifications.show({
         color: "red",

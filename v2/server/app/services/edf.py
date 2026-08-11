@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Artifact, Job, Subject
 from app.services.edf_common import resolve_edf_path
+from app.services import recording_params as recording_params_service
 from app.sigproc.channels import seeg_contacts
 from app.sigproc.filters import DEFAULT_MAINS_FREQ, filter_for_display
 
@@ -254,6 +255,7 @@ def delete_edf_recording(db: Session, subject: Subject, edf_artifact_id: int) ->
     # HI_preprocess_file and HI_count_highEvents_chns.
     shutil.rmtree(os.path.join(edf_dir, "HFOdets", stem), ignore_errors=True)
 
+    recording_params_service.delete_params(db, edf_artifact_id)
     _remove_file(os.path.join(settings.DATA_ROOT, artifact.rel_path))
     db.delete(artifact)
     db.commit()

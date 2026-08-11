@@ -5,6 +5,8 @@ import { ApiError } from "../../api/client";
 import { useArtifacts } from "../../api/queries/useElectrodes";
 import { useDeleteEdfRecording, useEdfMeta } from "../../api/queries/useEdf";
 import { useHfoResult } from "../../api/queries/useInterictal";
+import { useRecordingParams } from "../../api/queries/useRecordingParams";
+import { AnnotationsPanel } from "../../components/eeg/AnnotationsPanel";
 import { EdfLoadErrorPanel } from "../../components/eeg/EdfLoadErrorPanel";
 import { EdfRecordingBar } from "../../components/eeg/EdfRecordingBar";
 import { EegCanvas } from "../../components/eeg/EegCanvas";
@@ -34,9 +36,14 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
     refetch: refetchMeta,
   } = useEdfMeta(subjectId, effectiveEdfId);
   const { state, dispatch } = useEegViewerState("interictal");
+  const { data: recordingParams } = useRecordingParams(subjectId, effectiveEdfId);
   const deleteRecording = useDeleteEdfRecording(subjectId);
 
   const { data: hfoResult } = useHfoResult(subjectId, effectiveEdfId, true);
+
+  function handleJumpToAnnotation(onset: number) {
+    dispatch({ type: "SET_TIME_START", value: Math.max(0, onset - state.dispTimeWin / 2) });
+  }
 
   const remainChannels = useMemo(
     () => (meta?.channels ?? []).filter((c) => !state.excludedChannels.has(c)),
@@ -133,6 +140,7 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
                 onDelete={(chs) => dispatch({ type: "DELETE_CHANNELS", channels: chs })}
                 onRestore={(chs) => dispatch({ type: "RESTORE_CHANNELS", channels: chs })}
               />
+              <AnnotationsPanel annotations={recordingParams?.annotations ?? []} onJumpTo={handleJumpToAnnotation} />
               <HfoComputeForm
                 subjectId={subjectId}
                 edfArtifactId={effectiveEdfId}
@@ -141,6 +149,7 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
                 remainChannels={remainChannels}
                 sfreq={meta.fs}
                 durationSec={meta.duration_sec}
+                initialParams={recordingParams?.interictal_params ?? null}
               />
             </Stack>
           </Group>

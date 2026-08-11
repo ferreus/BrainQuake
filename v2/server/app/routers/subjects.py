@@ -10,6 +10,7 @@ from app.db import get_db
 from app.models import Artifact, Subject
 from app.schemas import ArtifactResponse, SubjectCreate, SubjectResponse
 from app.services import edf as edf_service
+from app.services import recording_params as recording_params_service
 
 router = APIRouter(prefix="/subjects", tags=["subjects"])
 
@@ -157,6 +158,10 @@ def upload_file(
     db.add(artifact)
     db.commit()
     db.refresh(artifact)
+
+    if kind == "raw_edf":
+        recording_params_service.populate_annotations_on_upload(db, subject, artifact)
+
     return artifact
 
 

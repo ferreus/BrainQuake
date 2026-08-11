@@ -4,6 +4,8 @@ import { notifications } from "@mantine/notifications";
 import { ApiError } from "../../api/client";
 import { useArtifacts } from "../../api/queries/useElectrodes";
 import { useDeleteEdfRecording, useEdfMeta } from "../../api/queries/useEdf";
+import { useRecordingParams } from "../../api/queries/useRecordingParams";
+import { AnnotationsPanel } from "../../components/eeg/AnnotationsPanel";
 import { EdfLoadErrorPanel } from "../../components/eeg/EdfLoadErrorPanel";
 import { EdfRecordingBar } from "../../components/eeg/EdfRecordingBar";
 import { EegCanvas } from "../../components/eeg/EegCanvas";
@@ -33,6 +35,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
     refetch: refetchMeta,
   } = useEdfMeta(subjectId, effectiveEdfId);
   const { state, dispatch } = useEegViewerState("ictal");
+  const { data: recordingParams } = useRecordingParams(subjectId, effectiveEdfId);
   const selection = useBaselineTargetSelection();
   // Channels deleted in the list must leave the EI computation, not just the
   // plot -- see EiComputeForm's remainChannels prop.
@@ -62,6 +65,28 @@ export function IctalPage({ subjectId }: IctalPageProps) {
     selectionEdfId.current = effectiveEdfId;
     resetSelection();
   }, [effectiveEdfId, resetSelection]);
+
+  // Seeds baseline/target/mains from this recording's last-submitted ictal
+  // params once they've loaded -- guarded so it only fires once per
+  // recording, not on every refetch (e.g. the invalidate right after a
+  // Compute submit, which would otherwise stomp the values just entered).
+  const seededParamsEdfId = useRef<number | undefined>(undefined);
+  const setBaselineRange = selection.setBaselineRange;
+  const setTargetRange = selection.setTargetRange;
+  useEffect(() => {
+    if (!recordingParams || recordingParams.edf_artifact_id !== effectiveEdfId) return;
+    if (seededParamsEdfId.current === effectiveEdfId) return;
+    seededParamsEdfId.current = effectiveEdfId;
+    const p = recordingParams.ictal_params;
+    if (!p) return;
+    setBaselineRange([p.baseline_start, p.baseline_end]);
+    setTargetRange([p.target_start, p.target_end]);
+    if (p.mains_freq != null) dispatch({ type: "SET_MAINS_FREQ", value: p.mains_freq });
+  }, [recordingParams, effectiveEdfId, setBaselineRange, setTargetRange, dispatch]);
+
+  function handleJumpToAnnotation(onset: number) {
+    dispatch({ type: "SET_TIME_START", value: Math.max(0, onset - state.dispTimeWin / 2) });
+  }
 
   function handleRemoveBadEdf() {
     if (!effectiveEdfId) return;
@@ -145,6 +170,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
                 onDelete={(chs) => dispatch({ type: "DELETE_CHANNELS", channels: chs })}
                 onRestore={(chs) => dispatch({ type: "RESTORE_CHANNELS", channels: chs })}
               />
+              <AnnotationsPanel annotations={recordingParams?.annotations ?? []} onJumpTo={handleJumpToAnnotation} />
               <EiComputeForm
                 subjectId={subjectId}
                 edfArtifactId={effectiveEdfId}
@@ -152,6 +178,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
                 sfreq={meta.fs}
                 remainChannels={remainChannels}
                 mainsFreq={state.mainsFreq}
+                initialParams={recordingParams?.ictal_params ?? null}
               />
             </Stack>
           </Group>

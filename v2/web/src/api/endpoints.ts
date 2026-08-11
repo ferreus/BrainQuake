@@ -316,6 +316,27 @@ export function deleteEdfRecording(subjectId: number, edfArtifactId: number): Pr
   return apiDelete<DeleteEdfResult>(`/subjects/${subjectId}/edf/${edfArtifactId}`);
 }
 
+export interface RecordingAnnotation {
+  onset: number;
+  duration: number;
+  description: string;
+}
+
+/** The saved ictal/interictal params this recording was last computed with,
+ * plus its parsed EDF+ annotations -- null/empty rather than a 404 when
+ * nothing has been computed yet or the file carries no annotations. */
+export interface RecordingParams {
+  edf_artifact_id: number;
+  ictal_params: EiComputeParams | null;
+  interictal_params: HfoComputeParams | null;
+  annotations: RecordingAnnotation[];
+  updated_at: string | null;
+}
+
+export function getRecordingParams(subjectId: number, edfArtifactId: number): Promise<RecordingParams> {
+  return apiGet<RecordingParams>(`/subjects/${subjectId}/edf/${edfArtifactId}/params`);
+}
+
 export interface EdfWindowParams {
   start: number;
   end: number;
