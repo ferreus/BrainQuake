@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Group, Loader, Stack, Switch, Text } from "@mantine/core";
+import { Group, Loader, SegmentedControl, Stack, Switch, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { ApiError } from "../../api/client";
 import { useArtifacts } from "../../api/queries/useElectrodes";
@@ -25,6 +25,7 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
   const edfArtifacts = (artifacts ?? []).filter((a) => a.kind === "raw_edf");
   const [selectedEdfId, setSelectedEdfId] = useState<number | undefined>();
   const [showOverlay, setShowOverlay] = useState(false);
+  const [subTab, setSubTab] = useState("viewer");
 
   const effectiveEdfId = edfArtifacts.some((a) => a.id === selectedEdfId) ? selectedEdfId : edfArtifacts[0]?.id;
 
@@ -86,7 +87,7 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
   }
 
   return (
-    <Stack h="100%" gap="sm" mt="md">
+    <Stack h="100%" gap="sm" pt="sm" style={{ minHeight: 0, overflow: "hidden" }}>
       <Group align="flex-end" gap="md" wrap="wrap">
         <EdfRecordingBar
           subjectId={subjectId}
@@ -94,8 +95,19 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
           value={effectiveEdfId}
           onChange={setSelectedEdfId}
         />
-        {effectiveEdfId && meta && <EegToolbar state={state} dispatch={dispatch} />}
-        {effectiveEdfId && meta && hfoResult && (
+        {effectiveEdfId && meta && (
+          <SegmentedControl
+            size="xs"
+            value={subTab}
+            onChange={setSubTab}
+            data={[
+              { label: "Viewer", value: "viewer" },
+              { label: "HFO Result", value: "result" },
+            ]}
+          />
+        )}
+        {effectiveEdfId && meta && subTab === "viewer" && <EegToolbar state={state} dispatch={dispatch} />}
+        {effectiveEdfId && meta && subTab === "viewer" && hfoResult && (
           <Switch
             label="Show HFO detections"
             size="sm"
@@ -125,7 +137,14 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
 
       {effectiveEdfId && meta && (
         <>
-          <Group align="stretch" gap="md" wrap="nowrap" style={{ flex: 1, minHeight: 0 }}>
+          {/* Both sub-views stay mounted (display-toggled) so the canvas pan
+              position and form state survive flipping between them. */}
+          <Group
+            align="stretch"
+            gap="md"
+            wrap="nowrap"
+            style={{ flex: 1, minHeight: 0, display: subTab === "viewer" ? "flex" : "none" }}
+          >
             <EegCanvas
               subjectId={subjectId}
               edfArtifactId={effectiveEdfId}
@@ -133,7 +152,7 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
               dispatch={dispatch}
               eventOverlays={eventOverlays}
             />
-            <Stack w={300} gap="sm" style={{ alignSelf: "flex-start" }}>
+            <Stack w={300} gap="sm" h="100%" style={{ flexShrink: 0, overflowY: "auto" }}>
               <EegChannelList
                 channels={meta.channels}
                 excludedChannels={state.excludedChannels}
@@ -153,7 +172,17 @@ export function InterictalPage({ subjectId }: InterictalPageProps) {
               />
             </Stack>
           </Group>
-          <HiResultPanel subjectId={subjectId} edfArtifactId={effectiveEdfId} />
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              flexDirection: "column",
+              display: subTab === "result" ? "flex" : "none",
+            }}
+          >
+            <HiResultPanel subjectId={subjectId} edfArtifactId={effectiveEdfId} />
+          </div>
         </>
       )}
     </Stack>

@@ -86,7 +86,7 @@ function RegisterCtStep({
   // Every upload inserts a fresh raw_ct artifact row (see routers/subjects.py),
   // which is what ctStale below compares against the last registration's
   // timestamp -- this is the only way to get a newer CT onto the server once a
-  // subject already exists, since NewPatientDialog only uploads one at creation.
+  // subject already exists, since NewSubjectDialog only uploads one at creation.
   async function handleUploadCt(file: File | null) {
     if (!file) return;
     setUploadProgress(0);
@@ -128,7 +128,7 @@ function RegisterCtStep({
   } else if (hasRawCt) {
     status = "CT uploaded, not yet registered";
   } else {
-    status = "Upload a CT scan for this patient first";
+    status = "Upload a CT scan for this subject first";
   }
 
   return (
@@ -286,9 +286,13 @@ function DeleteContactsButton({ subjectId, disabled }: DeleteContactsButtonProps
 
 interface ElectrodesPageProps {
   subjectId: number;
+  /** Mount the WebGL canvas only while this view is visible -- hidden WebGL
+   * contexts get lost by the browser (esp. alongside FreeBrowse's own context)
+   * and come back black. */
+  active: boolean;
 }
 
-export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
+export function ElectrodesPage({ subjectId, active }: ElectrodesPageProps) {
   const { data: artifacts } = useArtifacts(subjectId);
   const queryClient = useQueryClient();
   const kinds = new Set((artifacts ?? []).map((a) => a.kind));
@@ -352,28 +356,20 @@ export function ElectrodesPage({ subjectId }: ElectrodesPageProps) {
   }, [activeRecon, reconComplete, queryClient, subjectId]);
 
   return (
-    // Fixed viewport-relative height (not h="100%") on purpose: none of this
-    // page's ancestors (AppShell.Main, Tabs.Panel, ...) clip overflow, so a
-    // percentage height here just reflects however tall the content wants to
-    // be. With align="stretch" + h="100%", a long sidebar (many clusters in
-    // "2. Review Clusters", the segment form, etc.) used to stretch this
-    // whole row -- canvas included -- taller than the browser window, which
-    // pushed the actually-rendered 3D scene below the fold: it wasn't
-    // missing, just scrolled out of view. Pinning to 70vh and letting the
-    // sidebar scroll internally keeps the 3D view on-screen regardless of
-    // how much sidebar content there is.
-    <Group align="stretch" wrap="nowrap" gap="md" mt="md" h="70vh">
-      <div style={{ flex: 1, minHeight: 520, height: "100%", position: "relative" }}>
-        <SceneCanvas>
-          <BrainMesh subjectId={subjectId} />
-          {hasPendingSlicerPreview ? (
-            <SlicerContactsPreview subjectId={subjectId} />
-          ) : segmented ? (
-            <ElectrodeContacts subjectId={subjectId} selected={selectedContact} onSelect={setSelectedContact} />
-          ) : (
-            detected && <ClusterCentroids subjectId={subjectId} excluded={excludedClusters} />
-          )}
-        </SceneCanvas>
+    <Group align="stretch" wrap="nowrap" gap="md" mt="md" style={{ flex: 1, minHeight: 0 }}>
+      <div style={{ flex: 1, height: "100%", position: "relative" }}>
+        {active && (
+          <SceneCanvas>
+            <BrainMesh subjectId={subjectId} />
+            {hasPendingSlicerPreview ? (
+              <SlicerContactsPreview subjectId={subjectId} />
+            ) : segmented ? (
+              <ElectrodeContacts subjectId={subjectId} selected={selectedContact} onSelect={setSelectedContact} />
+            ) : (
+              detected && <ClusterCentroids subjectId={subjectId} excluded={excludedClusters} />
+            )}
+          </SceneCanvas>
+        )}
         {surfaceMissing && <SurfaceRebuildBanner subjectId={subjectId} activeRecon={activeRecon} />}
       </div>
       <Stack w={360} h="100%" gap="md" style={{ overflowY: "auto" }}>

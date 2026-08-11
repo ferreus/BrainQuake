@@ -28,16 +28,16 @@ export function deleteArtifact(artifactId: number): Promise<{ message: string }>
   return apiDelete(`/artifacts/${artifactId}`);
 }
 
-// --- Whole-patient export / import ---------------------------------------
+// --- Whole-subject export / import ---------------------------------------
 
 /** Queue a job that zips the subject's entire on-disk footprint. */
-export function exportPatient(subjectId: number): Promise<Job> {
+export function exportSubject(subjectId: number): Promise<Job> {
   return apiPost<Job>(`/subjects/${subjectId}/export`);
 }
 
 /** Absolute URL of the latest completed export archive -- point an <a> at it
  * (or window.location) to let the browser handle the file download. */
-export function patientExportDownloadUrl(subjectId: number): string {
+export function subjectExportDownloadUrl(subjectId: number): string {
   return `${API_BASE}/subjects/${subjectId}/export/download`;
 }
 
@@ -46,10 +46,10 @@ export interface ImportResult {
   job: Job;
 }
 
-/** Multipart-upload a previously exported patient zip. The server reads the
+/** Multipart-upload a previously exported subject zip. The server reads the
  * subject name from the archive manifest, creates the subject, and queues an
  * import job; returns both. Progress is byte-level upload progress. */
-export function importPatient(
+export function importSubject(
   file: File,
   onProgress?: (fraction: number) => void,
 ): { promise: Promise<ImportResult>; cancel: () => void } {
@@ -294,7 +294,7 @@ export function getEdfMeta(subjectId: number, edfArtifactId: number): Promise<Ed
 }
 
 /** Uploads an ictal/interictal recording. The server rejects (409) a filename
- * this patient already has unless `overwrite`, which replaces the old
+ * this subject already has unless `overwrite`, which replaces the old
  * recording and everything derived from it. */
 export function uploadEdf(
   subjectId: number,

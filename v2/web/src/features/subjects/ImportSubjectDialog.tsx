@@ -2,22 +2,22 @@ import { useState } from "react";
 import { Alert, Button, FileButton, Group, Modal, Progress, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
-import { importPatient } from "../../api/endpoints";
+import { importSubject } from "../../api/endpoints";
 import { ApiError } from "../../api/client";
 
-interface ImportPatientDialogProps {
+interface ImportSubjectDialogProps {
   opened: boolean;
   onClose: () => void;
   onImported: (subjectId: number) => void;
 }
 
 /**
- * Uploads a previously exported patient zip. The server reads the subject name
+ * Uploads a previously exported subject zip. The server reads the subject name
  * from the archive manifest, creates the subject, and queues an import job that
  * unpacks the payload and re-registers artifacts. The subject appears in the
  * list immediately; the import job's progress shows in the Jobs panel.
  */
-export function ImportPatientDialog({ opened, onClose, onImported }: ImportPatientDialogProps) {
+export function ImportSubjectDialog({ opened, onClose, onImported }: ImportSubjectDialogProps) {
   const [file, setFile] = useState<File | null>(null);
   const [progress, setProgress] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -34,7 +34,7 @@ export function ImportPatientDialog({ opened, onClose, onImported }: ImportPatie
     try {
       setBusy(true);
       setProgress(0);
-      const { subject } = await importPatient(file, setProgress).promise;
+      const { subject } = await importSubject(file, setProgress).promise;
 
       queryClient.invalidateQueries({ queryKey: ["subjects"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
@@ -62,19 +62,19 @@ export function ImportPatientDialog({ opened, onClose, onImported }: ImportPatie
           onClose();
         }
       }}
-      title="Import Patient"
+      title="Import Subject"
       closeOnClickOutside={!busy}
       withCloseButton={!busy}
     >
       <Stack>
         <Alert color="gray" variant="light">
-          Select a patient archive previously created with "Download Patient". The patient name is
+          Select a subject archive previously created with "Download Subject". The subject name is
           taken from the archive and must not already exist on this server.
         </Alert>
 
         <div>
           <Text size="sm" fw={500} mb={4}>
-            Patient archive (.zip) <Text component="span" c="red">*</Text>
+            Subject archive (.zip) <Text component="span" c="red">*</Text>
           </Text>
           <FileButton onChange={setFile} accept=".zip,application/zip" disabled={busy}>
             {(props) => (

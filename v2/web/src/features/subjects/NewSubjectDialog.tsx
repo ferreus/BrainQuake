@@ -8,7 +8,7 @@ import { ApiError } from "../../api/client";
 import { RECON_TYPES } from "../../api/types";
 import type { ReconType } from "../../api/types";
 
-interface NewPatientDialogProps {
+interface NewSubjectDialogProps {
   opened: boolean;
   onClose: () => void;
   onCreated: (subjectId: number) => void;
@@ -16,7 +16,7 @@ interface NewPatientDialogProps {
 
 type Stage = "idle" | "creating" | "uploading-t1" | "uploading-ct" | "starting-recon";
 
-export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialogProps) {
+export function NewSubjectDialog({ opened, onClose, onCreated }: NewSubjectDialogProps) {
   const [name, setName] = useState("");
   const [reconType, setReconType] = useState<ReconType>("recon-all");
   const [ageMonths, setAgeMonths] = useState<number | "">("");
@@ -45,7 +45,7 @@ export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialo
       notifications.show({
         color: "red",
         title: "Missing required fields",
-        message: "A patient name and a T1 (MRI) file are both required.",
+        message: "A subject name and a T1 (MRI) file are both required.",
       });
       return;
     }
@@ -90,14 +90,14 @@ export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialo
       onClose();
     } catch (err) {
       const message = err instanceof ApiError ? err.message : String(err);
-      notifications.show({ color: "red", title: "Failed to create patient", message });
+      notifications.show({ color: "red", title: "Failed to create subject", message });
       setStage("idle");
     }
   }
 
   const stageLabel: Record<Stage, string> = {
     idle: "",
-    creating: "Creating patient record...",
+    creating: "Creating subject record...",
     "uploading-t1": "Uploading T1 (MRI)...",
     "uploading-ct": "Uploading CT...",
     "starting-recon": "Starting reconstruction...",
@@ -112,13 +112,13 @@ export function NewPatientDialog({ opened, onClose, onCreated }: NewPatientDialo
           onClose();
         }
       }}
-      title="New Patient"
+      title="New Subject"
       closeOnClickOutside={!busy}
       withCloseButton={!busy}
     >
       <Stack>
         <TextInput
-          label="Patient name"
+          label="Subject name"
           placeholder="e.g. S1"
           value={name}
           onChange={(e) => setName(e.currentTarget.value)}

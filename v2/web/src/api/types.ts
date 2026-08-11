@@ -21,8 +21,8 @@ export type JobType =
   | "ei_compute"
   | "hfo_compute"
   | "soz_fuse"
-  | "export_patient"
-  | "import_patient";
+  | "export_subject"
+  | "import_subject";
 
 export type ReconType = "recon-all" | "fast-surfer" | "infant-surfer";
 

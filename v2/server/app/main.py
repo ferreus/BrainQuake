@@ -10,7 +10,7 @@ from app.routers import (
     ictal,
     interictal,
     jobs,
-    patient_io,
+    subject_io,
     recon,
     soz,
     subjects,
@@ -45,7 +45,7 @@ app.include_router(interictal.router)
 app.include_router(soz.router)
 app.include_router(surface.router)
 app.include_router(edf.router)
-app.include_router(patient_io.router)
+app.include_router(subject_io.router)
 app.include_router(artifacts.router)
 app.include_router(freebrowse.router)
 

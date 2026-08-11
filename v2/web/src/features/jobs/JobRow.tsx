@@ -16,7 +16,7 @@ const STATE_COLORS: Record<JobState, string> = {
 
 interface JobRowProps {
   job: Job;
-  /** Undefined when the subject list hasn't loaded yet, or the patient was
+  /** Undefined when the subject list hasn't loaded yet, or the subject was
    * deleted while its jobs stayed in the table -- fall back to the raw id. */
   subjectName?: string;
   onViewLog: (jobId: number) => void;

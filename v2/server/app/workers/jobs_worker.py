@@ -23,7 +23,7 @@ from app.services.electrodes import (
 from app.services.ictal import run_ei_compute_job
 from app.services.interictal import run_hfo_compute_job
 from app.services.job_control import JobCancelledError
-from app.services.patient_io import run_export_patient_job, run_import_patient_job
+from app.services.subject_io import run_export_subject_job, run_import_subject_job
 from app.services.recon import run_recon_job
 from app.services.soz import run_soz_fuse_job
 from app.services.surface import run_surface_export_job
@@ -47,8 +47,8 @@ JOB_HANDLERS = {
     "hfo_compute": run_hfo_compute_job,
     "soz_fuse": run_soz_fuse_job,
     "surface_export": run_surface_export_job,
-    "export_patient": run_export_patient_job,
-    "import_patient": run_import_patient_job,
+    "export_subject": run_export_subject_job,
+    "import_subject": run_import_subject_job,
 }
 
 # Set up logging for the worker itself

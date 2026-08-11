@@ -1,25 +1,24 @@
 import { useCallback, useState } from "react";
-import { Button } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { useExportPatient } from "../../api/queries/usePatientIo";
+import { useExportSubject } from "../../api/queries/useSubjectIo";
 import { useJobPolling } from "../../api/queries/useJobPolling";
-import { patientExportDownloadUrl } from "../../api/endpoints";
+import { subjectExportDownloadUrl } from "../../api/endpoints";
 import { ApiError } from "../../api/client";
 import type { Job } from "../../api/types";
 
 /**
- * "Download Patient": queues a server-side job that zips the subject's entire
- * on-disk footprint, watches that job to completion, then hands the browser
- * the finished archive. The job also shows up in the Jobs panel like any
- * other, so a page reload mid-export doesn't lose it.
+ * Queues a server-side job that zips the subject's entire on-disk footprint,
+ * watches it to completion, then hands the browser the finished archive. The
+ * job also shows up in the Jobs panel, so a page reload mid-export doesn't
+ * lose it.
  */
-export function ExportPatientButton({ subjectId, subjectName }: { subjectId: number; subjectName: string }) {
-  const exportPatient = useExportPatient();
+export function useSubjectExportDownload(subjectId: number, subjectName: string) {
+  const exportSubject = useExportSubject();
   const [jobId, setJobId] = useState<number | undefined>();
 
   const triggerBrowserDownload = useCallback(() => {
     const a = document.createElement("a");
-    a.href = patientExportDownloadUrl(subjectId);
+    a.href = subjectExportDownloadUrl(subjectId);
     a.download = `${subjectName}.zip`;
     document.body.appendChild(a);
     a.click();
@@ -49,26 +48,20 @@ export function ExportPatientButton({ subjectId, subjectName }: { subjectId: num
 
   useJobPolling(jobId, onTerminal);
 
-  async function handleClick() {
+  const start = useCallback(async () => {
     try {
-      const job = await exportPatient.mutateAsync(subjectId);
+      const job = await exportSubject.mutateAsync(subjectId);
       setJobId(job.id);
       notifications.show({
         color: "blue",
         title: "Preparing export",
-        message: "Zipping patient data — the download starts automatically when it's ready.",
+        message: "Zipping subject data — the download starts automatically when it's ready.",
       });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : String(err);
       notifications.show({ color: "red", title: "Could not start export", message });
     }
-  }
+  }, [exportSubject, subjectId]);
 
-  const busy = exportPatient.isPending || jobId != null;
-
-  return (
-    <Button variant="default" size="xs" onClick={handleClick} loading={busy}>
-      Download Patient
-    </Button>
-  );
+  return { start, busy: exportSubject.isPending || jobId != null };
 }

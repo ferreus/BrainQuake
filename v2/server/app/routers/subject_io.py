@@ -11,9 +11,9 @@ from app.config import settings
 from app.db import get_db
 from app.models import Artifact, Job, Subject
 from app.schemas import JobResponse, SubjectResponse
-from app.services.patient_io import read_import_manifest
+from app.services.subject_io import read_import_manifest
 
-router = APIRouter(prefix="/subjects", tags=["patient-io"])
+router = APIRouter(prefix="/subjects", tags=["subject-io"])
 
 
 class ImportResponse(BaseModel):
@@ -22,7 +22,7 @@ class ImportResponse(BaseModel):
 
 
 @router.post("/{subject_id}/export", response_model=JobResponse)
-def export_patient(subject_id: int, db: Session = Depends(get_db)):
+def export_subject(subject_id: int, db: Session = Depends(get_db)):
     """Queue a job that zips the subject's entire on-disk footprint (FreeSurfer
     dir + recv tree + a manifest) into a single downloadable archive."""
     subject = db.query(Subject).filter(Subject.id == subject_id).first()
@@ -31,7 +31,7 @@ def export_patient(subject_id: int, db: Session = Depends(get_db)):
 
     active = db.query(Job).filter(
         Job.subject_id == subject_id,
-        Job.job_type == "export_patient",
+        Job.job_type == "export_subject",
         Job.state.in_(["queued", "running"]),
     ).first()
     if active:
@@ -39,7 +39,7 @@ def export_patient(subject_id: int, db: Session = Depends(get_db)):
 
     job = Job(
         subject_id=subject.id,
-        job_type="export_patient",
+        job_type="export_subject",
         state="queued",
         params_json={},
         progress_pct=0.0,
@@ -52,20 +52,20 @@ def export_patient(subject_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{subject_id}/export/download")
-def download_patient_export(subject_id: int, db: Session = Depends(get_db)):
-    """Stream the most recent completed patient-export archive."""
+def download_subject_export(subject_id: int, db: Session = Depends(get_db)):
+    """Stream the most recent completed subject-export archive."""
     subject = db.query(Subject).filter(Subject.id == subject_id).first()
     if not subject:
         raise HTTPException(status_code=404, detail="Subject not found")
 
     artifact = (
         db.query(Artifact)
-        .filter(Artifact.subject_id == subject_id, Artifact.kind == "patient_export")
+        .filter(Artifact.subject_id == subject_id, Artifact.kind == "subject_export")
         .order_by(Artifact.created_at.desc())
         .first()
     )
     if not artifact:
-        raise HTTPException(status_code=404, detail="No patient export found. Run 'Download Patient' first.")
+        raise HTTPException(status_code=404, detail="No subject export found. Run 'Download subject' first.")
     abs_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
     if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail="Export file not found on disk")
@@ -73,11 +73,11 @@ def download_patient_export(subject_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/import", response_model=ImportResponse)
-def import_patient(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Accept a previously exported patient zip, create the subject record from
+def import_subject(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Accept a previously exported subject zip, create the subject record from
     its manifest, and queue a job that unpacks the payload and re-registers the
     subject's artifacts. The subject name is taken from the archive and must not
-    already exist (delete the existing patient first)."""
+    already exist (delete the existing subject first)."""
     imports_dir = os.path.join(settings.DATA_ROOT, "imports")
     os.makedirs(imports_dir, exist_ok=True)
     tmp_path = os.path.join(imports_dir, f"import_{uuid.uuid4().hex}.zip")
@@ -96,7 +96,7 @@ def import_patient(file: UploadFile = File(...), db: Session = Depends(get_db)):
         os.remove(tmp_path)
         raise HTTPException(
             status_code=409,
-            detail=f"A patient named '{name}' already exists. Delete it first to re-import.",
+            detail=f"A subject named '{name}' already exists. Delete it first to re-import.",
         )
 
     subject = Subject(
@@ -110,7 +110,7 @@ def import_patient(file: UploadFile = File(...), db: Session = Depends(get_db)):
 
     job = Job(
         subject_id=subject.id,
-        job_type="import_patient",
+        job_type="import_subject",
         state="queued",
         params_json={"zip_path": tmp_path},
         progress_pct=0.0,

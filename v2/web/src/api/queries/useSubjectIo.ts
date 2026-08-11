@@ -1,12 +1,12 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { exportPatient } from "../endpoints";
+import { exportSubject } from "../endpoints";
 
-/** Kick off the whole-patient export job. Progress is watched via the Jobs
+/** Kick off the whole-subject export job. Progress is watched via the Jobs
  * panel / useJobPolling on the returned job id. */
-export function useExportPatient() {
+export function useExportSubject() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (subjectId: number) => exportPatient(subjectId),
+    mutationFn: (subjectId: number) => exportSubject(subjectId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },

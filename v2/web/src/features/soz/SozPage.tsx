@@ -16,6 +16,8 @@ import { SozResultTable } from "./SozResultTable";
 
 interface SozPageProps {
   subjectId: number;
+  /** Mount the WebGL canvas only while this view is visible -- see ElectrodesPage. */
+  active: boolean;
 }
 
 /** Horizontal plasma gradient legend for the combined SOZ-suspicion score
@@ -35,7 +37,7 @@ function ScoreLegend() {
   );
 }
 
-export function SozPage({ subjectId }: SozPageProps) {
+export function SozPage({ subjectId, active }: SozPageProps) {
   const { data: artifacts } = useArtifacts(subjectId);
   const kinds = new Set((artifacts ?? []).map((a) => a.kind));
   const hasElectrodes = kinds.has("chnXyzDict");
@@ -83,12 +85,14 @@ export function SozPage({ subjectId }: SozPageProps) {
   ].filter(Boolean);
 
   return (
-    <Group align="stretch" wrap="nowrap" gap="md" mt="md" h="70vh">
-      <div style={{ flex: 1, minHeight: 520, height: "100%", position: "relative" }}>
-        <SceneCanvas>
-          <BrainMesh subjectId={subjectId} />
-          {rows && rows.length > 0 && <SozContacts rows={rows} topN={topN} />}
-        </SceneCanvas>
+    <Group align="stretch" wrap="nowrap" gap="md" mt="md" style={{ flex: 1, minHeight: 0 }}>
+      <div style={{ flex: 1, height: "100%", position: "relative" }}>
+        {active && (
+          <SceneCanvas>
+            <BrainMesh subjectId={subjectId} />
+            {rows && rows.length > 0 && <SozContacts rows={rows} topN={topN} />}
+          </SceneCanvas>
+        )}
         {surfaceMissing && (
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <Text size="sm" c="dimmed">

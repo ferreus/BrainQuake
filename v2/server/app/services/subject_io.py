@@ -1,4 +1,4 @@
-"""Whole-patient export / import.
+"""Whole-subject export / import.
 
 Export bundles everything a subject owns on disk into a single portable zip:
 the FreeSurfer subject directory (``SUBJECTS_DIR/<name>``) and the raw-upload +
@@ -12,7 +12,7 @@ server's ``SUBJECTS_DIR`` / ``DATA_ROOT`` and re-registers every artifact whose
 backing file made it into the archive. The subject name is preserved verbatim
 -- every on-disk path and every FreeSurfer-internal reference is keyed by name,
 so importing under a different name would silently break those references. A
-name collision is therefore rejected (delete the existing patient first).
+name collision is therefore rejected (delete the existing subject first).
 
 The archive layout mirrors the on-disk layout so paths stay valid across
 servers even when SUBJECTS_DIR and DATA_ROOT are configured differently on each:
@@ -145,7 +145,7 @@ def _build_manifest(db: Session, subject: Subject) -> dict:
     }
 
 
-def run_export_patient_job(db: Session, job: Job, log_file):
+def run_export_subject_job(db: Session, job: Job, log_file):
     subject = db.query(Subject).filter(Subject.id == job.subject_id).first()
     if not subject:
         raise ValueError("Subject not found")
@@ -158,7 +158,7 @@ def run_export_patient_job(db: Session, job: Job, log_file):
         )
 
     job.progress_pct = 5.0
-    job.progress_message = "Scanning patient files"
+    job.progress_message = "Scanning subject files"
     db.commit()
 
     files = list(_collect_files(name))
@@ -190,7 +190,7 @@ def run_export_patient_job(db: Session, job: Job, log_file):
     # serves the newest and stale zips don't accumulate on disk.
     old_exports = (
         db.query(Artifact)
-        .filter(Artifact.subject_id == subject.id, Artifact.kind == "patient_export")
+        .filter(Artifact.subject_id == subject.id, Artifact.kind == "subject_export")
         .all()
     )
     for old in old_exports:
@@ -207,7 +207,7 @@ def run_export_patient_job(db: Session, job: Job, log_file):
     artifact = Artifact(
         subject_id=subject.id,
         job_id=job.id,
-        kind="patient_export",
+        kind="subject_export",
         rel_path=rel_path,
         meta_json={"filename": os.path.basename(out_path), "file_count": len(files), "bytes": size},
     )
@@ -233,17 +233,17 @@ def read_import_manifest(zip_path: str) -> dict:
         try:
             raw = zf.read(MANIFEST_NAME)
         except KeyError:
-            raise ValueError("Not a BrainQuake patient export (missing manifest.json).") from None
+            raise ValueError("Not a BrainQuake subject export (missing manifest.json).") from None
     try:
         manifest = json.loads(raw)
     except json.JSONDecodeError:
-        raise ValueError("Patient export manifest.json is corrupt.") from None
+        raise ValueError("Subject export manifest.json is corrupt.") from None
     if not manifest.get("name"):
-        raise ValueError("Patient export manifest.json has no subject name.")
+        raise ValueError("Subject export manifest.json has no subject name.")
     return manifest
 
 
-def run_import_patient_job(db: Session, job: Job, log_file):
+def run_import_subject_job(db: Session, job: Job, log_file):
     subject = db.query(Subject).filter(Subject.id == job.subject_id).first()
     if not subject:
         raise ValueError("Subject not found")
@@ -262,7 +262,7 @@ def run_import_patient_job(db: Session, job: Job, log_file):
         )
 
     job.progress_pct = 10.0
-    job.progress_message = "Extracting patient files"
+    job.progress_message = "Extracting subject files"
     db.commit()
 
     os.makedirs(_recv_root(name), exist_ok=True)

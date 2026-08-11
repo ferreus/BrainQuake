@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Group, Loader, Stack, Text } from "@mantine/core";
+import { Group, Loader, SegmentedControl, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { ApiError } from "../../api/client";
 import { useArtifacts } from "../../api/queries/useElectrodes";
@@ -24,6 +24,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
   const { data: artifacts } = useArtifacts(subjectId);
   const edfArtifacts = (artifacts ?? []).filter((a) => a.kind === "raw_edf");
   const [selectedEdfId, setSelectedEdfId] = useState<number | undefined>();
+  const [subTab, setSubTab] = useState("viewer");
 
   const effectiveEdfId = edfArtifacts.some((a) => a.id === selectedEdfId) ? selectedEdfId : edfArtifacts[0]?.id;
 
@@ -122,7 +123,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
   ];
 
   return (
-    <Stack h="100%" gap="sm" mt="md">
+    <Stack h="100%" gap="sm" pt="sm" style={{ minHeight: 0, overflow: "hidden" }}>
       <Group align="flex-end" gap="md" wrap="wrap">
         <EdfRecordingBar
           subjectId={subjectId}
@@ -131,7 +132,18 @@ export function IctalPage({ subjectId }: IctalPageProps) {
           onChange={setSelectedEdfId}
           onUploaded={() => selection.reset()}
         />
-        {effectiveEdfId && meta && <EegToolbar state={state} dispatch={dispatch} />}
+        {effectiveEdfId && meta && (
+          <SegmentedControl
+            size="xs"
+            value={subTab}
+            onChange={setSubTab}
+            data={[
+              { label: "Viewer", value: "viewer" },
+              { label: "EI Result", value: "result" },
+            ]}
+          />
+        )}
+        {effectiveEdfId && meta && subTab === "viewer" && <EegToolbar state={state} dispatch={dispatch} />}
       </Group>
 
       {!effectiveEdfId && <Text c="dimmed">Import an ictal EDF recording to get started.</Text>}
@@ -154,7 +166,14 @@ export function IctalPage({ subjectId }: IctalPageProps) {
 
       {effectiveEdfId && meta && (
         <>
-          <Group align="stretch" gap="md" wrap="nowrap" style={{ flex: 1, minHeight: 0 }}>
+          {/* Both sub-views stay mounted (display-toggled) so the canvas pan
+              position and form state survive flipping between them. */}
+          <Group
+            align="stretch"
+            gap="md"
+            wrap="nowrap"
+            style={{ flex: 1, minHeight: 0, display: subTab === "viewer" ? "flex" : "none" }}
+          >
             <EegCanvas
               subjectId={subjectId}
               edfArtifactId={effectiveEdfId}
@@ -163,7 +182,7 @@ export function IctalPage({ subjectId }: IctalPageProps) {
               markers={markers}
               onCanvasClick={selection.awaitingClick ? selection.handleClick : undefined}
             />
-            <Stack w={300} gap="sm" style={{ alignSelf: "flex-start" }}>
+            <Stack w={300} gap="sm" h="100%" style={{ flexShrink: 0, overflowY: "auto" }}>
               <EegChannelList
                 channels={meta.channels}
                 excludedChannels={state.excludedChannels}
@@ -182,7 +201,17 @@ export function IctalPage({ subjectId }: IctalPageProps) {
               />
             </Stack>
           </Group>
-          <EiResultPanel subjectId={subjectId} edfArtifactId={effectiveEdfId} />
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflowY: "auto",
+              flexDirection: "column",
+              display: subTab === "result" ? "flex" : "none",
+            }}
+          >
+            <EiResultPanel subjectId={subjectId} edfArtifactId={effectiveEdfId} />
+          </div>
         </>
       )}
     </Stack>

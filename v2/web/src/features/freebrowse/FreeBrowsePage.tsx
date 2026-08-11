@@ -22,7 +22,7 @@ export function FreeBrowsePage({ subjectId }: FreeBrowsePageProps) {
   // is set at subject *creation*, long before any recon runs, so it can't be
   // used to gate this -- the recon job's own verdict decides, with orig_nii
   // (recon.py's first registered artifact) as the fallback for subjects with
-  // no recon job row (e.g. imported patients).
+  // no recon job row (e.g. imported subjects).
   const { data: artifacts } = useArtifacts(subjectId);
   const reconJob = useLastJob(subjectId, "recon");
   const reconComplete = reconJob
@@ -42,18 +42,11 @@ export function FreeBrowsePage({ subjectId }: FreeBrowsePageProps) {
 
   const nvdUrl = `/api/subjects/${subjectId}/freebrowse.nvd`;
   return (
-    // Fixed viewport-relative height, not "100%" -- same reasoning as
-    // ElectrodesPage.tsx/SozPage.tsx's h="70vh": none of this page's
-    // ancestors (AppShell.Main, Tabs.Panel, ...) establish a definite
-    // height, so a percentage height is invalid per spec and an <iframe>
-    // (unlike a div) doesn't fall back to fitting its content -- it
-    // collapses to the HTML-spec default replaced-element size of 300x150px
-    // instead, which is exactly the ~147px collapse this fixes.
     <iframe
       key={subjectId}
       title="FreeBrowse"
       src={`/freebrowse/index.html?nvd=${encodeURIComponent(nvdUrl)}`}
-      style={{ width: "100%", height: "70vh", border: "none" }}
+      style={{ width: "100%", flex: 1, minHeight: 0, border: "none" }}
     />
   );
 }

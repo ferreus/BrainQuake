@@ -33,7 +33,7 @@ export function JobsDrawer() {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>ID</Table.Th>
-                <Table.Th>Patient</Table.Th>
+                <Table.Th>Subject</Table.Th>
                 <Table.Th>Type</Table.Th>
                 <Table.Th>State</Table.Th>
                 <Table.Th>Progress</Table.Th>

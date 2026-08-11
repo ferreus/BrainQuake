@@ -204,11 +204,11 @@ def test_full_e2e_flow(mock_run):
     # 1. Create a subject
     response = client.post(
         "/subjects",
-        json={"name": "TestPatient", "recon_type": "recon-all"},
+        json={"name": "TestSubject", "recon_type": "recon-all"},
     )
     assert response.status_code == 200
     subject_data = response.json()
-    assert subject_data["name"] == "TestPatient"
+    assert subject_data["name"] == "TestSubject"
     subject_id = subject_data["id"]
 
     # SUBJECTS_DIR/<name> must NOT exist yet -- recon-all/fast-surfer/infant_recon_all
@@ -216,9 +216,9 @@ def test_full_e2e_flow(mock_run):
     # already has a prior run" when given -i, and refuse. The recon job itself
     # creates it (see services/recon.py's run_recon_job) immediately before invoking
     # the recon tool, not subject creation.
-    assert not os.path.exists(os.path.join(settings.SUBJECTS_DIR, "TestPatient"))
+    assert not os.path.exists(os.path.join(settings.SUBJECTS_DIR, "TestSubject"))
     assert os.path.exists(
-        os.path.join(settings.DATA_ROOT, "recv", "TestPatient"))
+        os.path.join(settings.DATA_ROOT, "recv", "TestSubject"))
 
     # 2. Upload dummy T1 and CT files
     response = client.post(
@@ -309,14 +309,14 @@ def test_full_e2e_flow(mock_run):
     assert "ct_intracranial_nii" in ct_kinds
 
     intracranial = os.path.join(
-        settings.DATA_ROOT, "recv", "TestPatient", "fslresults",
-        "TestPatientintracranial.nii.gz",
+        settings.DATA_ROOT, "recv", "TestSubject", "fslresults",
+        "TestSubjectintracranial.nii.gz",
     )
     assert os.path.exists(intracranial)
 
     legacy_ct = os.path.join(
-        settings.SUBJECTS_DIR, "TestPatient", "fslresults",
-        "TestPatientCT_Reg.nii.gz",
+        settings.SUBJECTS_DIR, "TestSubject", "fslresults",
+        "TestSubjectCT_Reg.nii.gz",
     )
     assert os.path.exists(legacy_ct)
     db.close()
@@ -1681,7 +1681,7 @@ def test_edf_meta_cache_is_invalidated_when_the_file_changes():
 
 
 @patch("subprocess.Popen", side_effect=MockPopen)
-def test_export_import_patient_roundtrip(mock_run):
+def test_export_import_subject_roundtrip(mock_run):
     # Build a subject with a real on-disk footprint: recon (writes the
     # SUBJECTS_DIR/<name> tree + recon artifacts) plus an EDF upload under
     # recv/<name>.
@@ -1708,13 +1708,13 @@ def test_export_import_patient_roundtrip(mock_run):
     artifacts_before = client.get(f"/subjects/{sid}/artifacts").json()
     kinds_before = sorted(a["kind"] for a in artifacts_before)
 
-    # Export -> job produces a patient_export artifact, download streams a zip.
+    # Export -> job produces a subject_export artifact, download streams a zip.
     r = client.post(f"/subjects/{sid}/export")
     assert r.status_code == 200
     export_job_id = r.json()["id"]
     run_job(export_job_id)
 
-    r = client.get(f"/subjects/{sid}/artifacts?kind=patient_export")
+    r = client.get(f"/subjects/{sid}/artifacts?kind=subject_export")
     assert len(r.json()) == 1
 
     r = client.get(f"/subjects/{sid}/export/download")
@@ -1723,7 +1723,7 @@ def test_export_import_patient_roundtrip(mock_run):
     zip_bytes = r.content
     assert zipfile.is_zipfile(io.BytesIO(zip_bytes))
 
-    # Wipe the patient entirely, as the user would before moving servers.
+    # Wipe the subject entirely, as the user would before moving servers.
     r = client.delete(f"/subjects/{sid}")
     assert r.status_code == 200
     assert not os.path.isdir(os.path.join(settings.SUBJECTS_DIR, name))
@@ -1741,7 +1741,7 @@ def test_export_import_patient_roundtrip(mock_run):
     run_job(body["job"]["id"])
 
     # Subject is fully restored: files back on disk, subject_dir set, and every
-    # exportable artifact re-registered (patient_export itself lives under
+    # exportable artifact re-registered (subject_export itself lives under
     # DATA_ROOT/exports, not the captured trees, so it is not re-registered).
     r = client.get(f"/subjects/{new_sid}")
     assert r.json()["subject_dir"] == os.path.join(settings.SUBJECTS_DIR, name)
@@ -1764,7 +1764,7 @@ def test_export_import_patient_roundtrip(mock_run):
     # A non-export zip is rejected with a helpful 400.
     bogus = io.BytesIO()
     with zipfile.ZipFile(bogus, "w") as zf:
-        zf.writestr("hello.txt", "not a patient")
+        zf.writestr("hello.txt", "not a subject")
     r = client.post(
         "/subjects/import",
         files={"file": ("bogus.zip", bogus.getvalue(), "application/zip")},

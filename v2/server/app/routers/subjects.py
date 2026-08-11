@@ -68,11 +68,11 @@ def delete_subject(subject_id: int, db: Session = Depends(get_db)):
     if subject.subject_dir and os.path.exists(subject.subject_dir):
         shutil.rmtree(subject.subject_dir)
 
-    # Patient-export archives live outside the two dirs above (under
+    # Subject-export archives live outside the two dirs above (under
     # DATA_ROOT/exports); remove their files so they don't orphan on disk after
     # the Artifact rows cascade-delete with the subject.
     for artifact in db.query(Artifact).filter(
-        Artifact.subject_id == subject.id, Artifact.kind == "patient_export"
+        Artifact.subject_id == subject.id, Artifact.kind == "subject_export"
     ).all():
         export_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
         if os.path.exists(export_path):
@@ -132,7 +132,7 @@ def upload_file(
         if existing and not overwrite:
             raise HTTPException(
                 status_code=409,
-                detail=f"A recording named '{filename}' already exists for this patient",
+                detail=f"A recording named '{filename}' already exists for this subject",
             )
         if existing:
             try:
