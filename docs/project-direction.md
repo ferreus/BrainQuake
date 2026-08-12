@@ -43,8 +43,17 @@ lobectomy that did not help** (seizures unchanged post-surgery).
   shafts **I and A**. Fragility ranked the clinical onset shafts above the
   spread shafts (sanity check passed), but its top pick is a shaft clinicians
   did not mark. The fragility method's published validation is precisely the
-  failed-surgery scenario: resections that missed the fragile region. **Open
-  question: where is shaft D anatomically, and was it inside the resection?**
+  failed-surgery scenario: resections that missed the fragile region.
+  **Resolved 2026-08-13** — see
+  [bella_fragility_resection_analysis.md](bella_fragility_resection_analysis.md).
+  Shaft D is right **posterior superior temporal gyrus** (y = −21.5, the most
+  lateral shaft), and post-op MRI puts it **16.9–19.5 mm outside the 17.3 mL
+  resection cavity**, while clinical-SOZ shaft I was resected outright and A to
+  its margin. Li et al.'s own outcome statistic on the same 8 seizures gives an
+  interpretability ratio of **0.986** and Cohen's d **+0.24** (their successful
+  resections: 1.51; their failures: n.s.) — the method retrodicts this failure
+  correctly. Caveats, including the unreleased classifier and the age-4 cohort
+  mismatch, are in that document.
 - **BrainQuake's own EI on Bella clip 17 disagrees with the clinical
   annotation** — see
   [bella_ictal_ei_vs_annotation_discrepancy.md](bella_ictal_ei_vs_annotation_discrepancy.md).
