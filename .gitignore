@@ -141,4 +141,4 @@ v2/docker/license.txt
 # data (imaging + EEG) which must stay out of the repository entirely.
 v2/server/data/
 
-
+v2/verification_results/

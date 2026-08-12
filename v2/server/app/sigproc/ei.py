@@ -10,7 +10,7 @@ from typing import NamedTuple
 import numpy as np
 from scipy.signal import convolve2d
 
-from app.sigproc.filters import bandpass
+from app.sigproc.filters import DEFAULT_MAINS_FREQ, bandpass, filter_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -329,3 +329,110 @@ def load_ei_result(path):
         "time_coef": data['time_coef'].tolist(),
         "diagnostics": diagnostics,
     }
+
+
+def compute_ei_pipeline(
+    raw_data: np.ndarray,
+    fs: float,
+    chn_names: list,
+    baseline_start: float,
+    baseline_end: float,
+    target_start: float,
+    target_end: float,
+    ei_method: str = "band_ratio",
+    band_low: float = 1.0,
+    band_high: float = 500.0,
+    mains_freq: float = DEFAULT_MAINS_FREQ,
+    low_band: tuple = BARTOLOMEI_LOW_BAND,
+    high_band: tuple = BARTOLOMEI_HIGH_BAND,
+    threshold_k: float = ONSET_THRESHOLD_K,
+    span_start: float = 0.0,
+) -> dict:
+    """Run full end-to-end EI calculation on raw array data without DB dependencies.
+
+    Args:
+        raw_data: (n_channels, n_samples) un-filtered signal segment.
+        fs: Sampling rate in Hz.
+        chn_names: List of channel names.
+        baseline_start, baseline_end: Baseline window start/end in seconds.
+        target_start, target_end: Target window start/end in seconds.
+        ei_method: 'band_ratio' (default, Bartolomei et al. 2008) or 'broadband' (HFER).
+        band_low, band_high: Pre-filter band limits in Hz.
+        mains_freq: Mains notch frequency in Hz (50 or 60).
+        low_band, high_band: Sub-bands for 'band_ratio' method.
+        threshold_k: Robust sigma multiplier for onset detection.
+        span_start: Offset in seconds of raw_data[0] relative to original recording.
+
+    Returns:
+        Dict with keys:
+            ei, ei_raw, hfer, time_coef: ndarrays (n_channels,)
+            onset: ndarray (n_channels,) sample indices relative to target window
+            crossed: boolean ndarray (n_channels,)
+            diagnostics: dict
+            ei_scores: dict mapping channel name -> ei score (0.0 for invalid/NaN)
+            ranked_channels: list of channel names sorted by EI score descending
+    """
+    if ei_method not in ("band_ratio", "broadband"):
+        raise ValueError(f"unknown ei_method {ei_method!r}; expected 'band_ratio' or 'broadband'")
+
+    saturated = find_saturated_channels(raw_data)
+    if saturated:
+        logger.warning(
+            "%d/%d channel(s) are clipped at the amplifier rail for >1%% of the analysed "
+            "window; their energy is flat-topped and their EI is not meaningful: %s",
+            len(saturated), len(chn_names), [chn_names[i] for i in saturated],
+        )
+
+    filtered = filter_for_display(raw_data, fs, band_low, band_high, mains_freq=mains_freq)
+
+    def _idx(t):
+        return int(round((t - span_start) * fs))
+
+    base_start_i, base_end_i = _idx(baseline_start), _idx(baseline_end)
+    target_start_i, target_end_i = _idx(target_start), _idx(target_end)
+
+    baseline_data = filtered[:, base_start_i:base_end_i]
+    target_data = filtered[:, target_start_i:target_end_i]
+
+    if ei_method == "band_ratio":
+        norm_target, norm_base = compute_band_ratio(
+            target_data, baseline_data, fs, low_band=low_band, high_band=high_band
+        )
+    else:
+        norm_target, norm_base = compute_hfer(target_data, baseline_data, fs)
+
+    ei, ei_raw, hfer, time_coef = compute_ei_index(
+        norm_target, norm_base, fs, threshold_k=threshold_k
+    )
+
+    onset_res = determine_threshold_onset(norm_target, norm_base, threshold_k=threshold_k)
+    diag = {
+        "method": ei_method,
+        "band_low": band_low,
+        "band_high": band_high,
+        "mains_freq": mains_freq,
+        "saturated_channels": [chn_names[i] for i in saturated],
+        "dead_channels": [n for n, v in zip(chn_names, np.isfinite(ei_raw)) if not v],
+        **ei_diagnostics(onset_res.onset, onset_res.crossed, fs, norm_target.shape[1]),
+    }
+    if ei_method == "band_ratio":
+        diag["er_low_band"] = list(low_band)
+        diag["er_high_band"] = list(high_band)
+
+    ei_scores = {
+        name: float(ei[i]) if np.isfinite(ei[i]) else 0.0 for i, name in enumerate(chn_names)
+    }
+    ranked_channels = sorted(ei_scores.keys(), key=lambda k: ei_scores[k], reverse=True)
+
+    return {
+        "ei": ei,
+        "ei_raw": ei_raw,
+        "hfer": hfer,
+        "time_coef": time_coef,
+        "onset": onset_res.onset,
+        "crossed": onset_res.crossed,
+        "diagnostics": diag,
+        "ei_scores": ei_scores,
+        "ranked_channels": ranked_channels,
+    }
+

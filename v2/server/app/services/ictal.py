@@ -12,16 +12,11 @@ from app.sigproc.channels import load_seeg
 from app.sigproc.ei import (
     BARTOLOMEI_HIGH_BAND,
     BARTOLOMEI_LOW_BAND,
-    compute_band_ratio,
-    compute_ei_index,
-    compute_hfer,
-    determine_threshold_onset,
-    ei_diagnostics,
-    find_saturated_channels,
+    compute_ei_pipeline,
     load_ei_result,
     save_ei_result,
 )
-from app.sigproc.filters import DEFAULT_MAINS_FREQ, filter_for_display
+from app.sigproc.filters import DEFAULT_MAINS_FREQ
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +53,11 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
     db.commit()
 
     edf_path = resolve_edf_path(subject, artifact)
-    # Auxiliary traces are gone before anything reads a sample, so they are in
-    # neither the common-average reference nor the EI ranking.
     edf_data = load_seeg(edf_path)
     fs = edf_data.info['sfreq']
     chn_names = edf_data.ch_names
     duration = float(edf_data.times[-1])
 
-    # Typed-in windows can land outside the recording or invert; catch it before
-    # the expensive load, with a message naming the recording length rather than
-    # failing later on an empty slice inside compute_hfer.
     for label, t0, t1 in (("baseline", baseline_start, baseline_end),
                           ("target", target_start, target_end)):
         if t0 < 0 or t1 > duration or t0 >= t1:
@@ -75,9 +65,6 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
                 f"{label} window {t0:.3f}-{t1:.3f}s is invalid for a {duration:.3f}s recording"
             )
 
-    # Channels the caller kept in the trace viewer. Applied before anything
-    # else, so a dropped channel is out of the common-average reference too --
-    # not merely absent from the ranking.
     remain_chns = params.get("remain_chns")
     if remain_chns:
         wanted = set(remain_chns)
@@ -96,31 +83,11 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
         edf_data.pick(picks)
         chn_names = edf_data.ch_names
 
-    # Only the two windows are used, but filtfilt needs runway on either side or
-    # its edge transient lands inside them. 10 s comfortably covers the impulse
-    # response of a 1 Hz-cornered 5th-order Butterworth.
     pad = 10.0
     span_start = max(0.0, min(baseline_start, target_start) - pad)
     span_end = min(duration, max(baseline_end, target_end) + pad)
     edf_data.crop(tmin=span_start, tmax=span_end).load_data()
     raw_data, _ = edf_data[:]
-
-    saturated = find_saturated_channels(raw_data)
-    if saturated:
-        logger.warning(
-            "%d/%d channel(s) are clipped at the amplifier rail for >1%% of the analysed "
-            "window; their energy is flat-topped and their EI is not meaningful: %s",
-            len(saturated), len(chn_names), [chn_names[i] for i in saturated],
-        )
-
-    filtered = filter_for_display(raw_data, fs, band_low, band_high, mains_freq=mains_freq)
-
-    # Re-base the window indices onto the cropped span.
-    def _idx(t):
-        return int(round((t - span_start) * fs))
-
-    base_start_i, base_end_i = _idx(baseline_start), _idx(baseline_end)
-    target_start_i, target_end_i = _idx(target_start), _idx(target_end)
 
     job.progress_pct = 60.0
     job.progress_message = "Computing HFER + EI index"
@@ -128,26 +95,24 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
 
     check_cancelled(db, job)
 
-    baseline_data = filtered[:, base_start_i:base_end_i]
-    target_data = filtered[:, target_start_i:target_end_i]
-    if ei_method == "band_ratio":
-        norm_target, norm_base = compute_band_ratio(
-            target_data, baseline_data, fs, low_band=low_band, high_band=high_band)
-    else:
-        norm_target, norm_base = compute_hfer(target_data, baseline_data, fs)
-    ei, ei_raw, hfer, time_coef = compute_ei_index(norm_target, norm_base, fs)
+    pipeline_res = compute_ei_pipeline(
+        raw_data=raw_data,
+        fs=fs,
+        chn_names=chn_names,
+        baseline_start=baseline_start,
+        baseline_end=baseline_end,
+        target_start=target_start,
+        target_end=target_end,
+        ei_method=ei_method,
+        band_low=band_low,
+        band_high=band_high,
+        mains_freq=mains_freq,
+        low_band=low_band,
+        high_band=high_band,
+        span_start=span_start,
+    )
 
-    onset, crossed = determine_threshold_onset(norm_target, norm_base)
-    diagnostics = {
-        "method": ei_method,
-        "band_low": band_low, "band_high": band_high, "mains_freq": mains_freq,
-        "saturated_channels": [chn_names[i] for i in saturated],
-        "dead_channels": [n for n, v in zip(chn_names, np.isfinite(ei_raw)) if not v],
-        **ei_diagnostics(onset, crossed, fs, norm_target.shape[1]),
-    }
-    if ei_method == "band_ratio":
-        diagnostics["er_low_band"] = list(low_band)
-        diagnostics["er_high_band"] = list(high_band)
+    diagnostics = pipeline_res["diagnostics"]
     final_message = "EI computation complete"
     if diagnostics["degenerate_window"]:
         final_message = (
@@ -155,12 +120,20 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
             "-- the ranking is effectively energy-only. Consider starting it at the onset."
         )
 
-    ei_result_path = save_ei_result(edf_path, chn_names, ei, ei_raw, hfer, time_coef,
-                                    diagnostics=diagnostics)
+    ei_result_path = save_ei_result(
+        edf_path,
+        chn_names,
+        pipeline_res["ei"],
+        pipeline_res["ei_raw"],
+        pipeline_res["hfer"],
+        pipeline_res["time_coef"],
+        diagnostics=diagnostics,
+    )
     register_artifact(db, subject.id, job.id, "ei_npz", ei_result_path)
 
     job.progress_pct = 95.0
     job.progress_message = final_message
     db.commit()
+
 
 
