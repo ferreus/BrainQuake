@@ -1,4 +1,6 @@
+import math
 import os
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, model_validator
@@ -13,6 +15,19 @@ from app.services import recording_params as recording_params_service
 from app.sigproc.filters import DEFAULT_MAINS_FREQ
 
 router = APIRouter(prefix="/subjects", tags=["ictal"])
+
+
+def _json_safe(value):
+    """NaN/inf -> null. A channel with no usable baseline has an undefined EI,
+    and JSON has no way to spell NaN -- json.dumps emits a bare NaN token that
+    JSON.parse rejects, blanking the whole panel."""
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def _get_subject_or_404(subject_id: int, db: Session) -> Subject:
@@ -39,6 +54,12 @@ class EiRequest(BaseModel):
     # trace viewer must be sent here -- otherwise they stay in the ranking AND
     # in the common-average reference, which mixes them into every channel.
     remain_chns: list[str] | None = None
+    # 'band_ratio' is Bartolomei's published E(beta+gamma)/E(theta+alpha);
+    # 'broadband' is the older energy-vs-baseline variant, kept so earlier
+    # results stay reproducible.
+    ei_method: Literal["band_ratio", "broadband"] = "band_ratio"
+    er_low_band: tuple[float, float] | None = None   # defaults to BARTOLOMEI_LOW_BAND
+    er_high_band: tuple[float, float] | None = None  # defaults to BARTOLOMEI_HIGH_BAND
 
     @model_validator(mode="after")
     def _check_windows(self):
@@ -57,6 +78,17 @@ class EiRequest(BaseModel):
             )
         if self.mains_freq < 0:
             raise ValueError(f"mains_freq must be >= 0, got {self.mains_freq}")
+        # The baseline is what the target is measured against; overlapping them
+        # puts seizure activity into the reference and flattens the contrast.
+        if self.baseline_end > self.target_start:
+            raise ValueError(
+                f"baseline must end before the target starts (baseline_end="
+                f"{self.baseline_end}, target_start={self.target_start})"
+            )
+        for label in ("er_low_band", "er_high_band"):
+            band = getattr(self, label)
+            if band is not None and band[0] >= band[1]:
+                raise ValueError(f"{label} must be (low, high) with low < high, got {band}")
         return self
 
 
@@ -116,7 +148,7 @@ def get_ei_result(subject_id: int, edf_artifact_id: int, db: Session = Depends(g
         raise HTTPException(status_code=404, detail="EI result artifact not found")
 
     abs_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
-    result = ictal_service.load_ei_result(abs_path)
+    result = _json_safe(ictal_service.load_ei_result(abs_path))
     # The windows and bands the result was computed over. Without these the
     # client can only offer its per-channel drill-down while the selection that
     # produced the result is still in memory -- i.e. never after a reload.

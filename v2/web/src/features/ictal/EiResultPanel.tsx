@@ -37,8 +37,12 @@ export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) 
 
   const stats = useMemo(() => {
     if (!data || data.ei.length === 0) return null;
-    const mean = data.ei.reduce((a, b) => a + b, 0) / data.ei.length;
-    const variance = data.ei.reduce((a, b) => a + (b - mean) ** 2, 0) / data.ei.length;
+    // Dead channels come back as null; averaging them in would drag the
+    // threshold toward zero and mark half the montage as suspect.
+    const vals = data.ei.filter((v): v is number => v != null && Number.isFinite(v));
+    if (vals.length === 0) return null;
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length;
     return { mean, threshold: mean + Math.sqrt(variance) };
   }, [data]);
 
@@ -59,7 +63,9 @@ export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) 
   const width = Math.max(600, data.chn_names.length * 22);
   const height = 220;
   const padding = { top: 24, bottom: 30, left: 4, right: 10 };
-  const maxEi = Math.max(...data.ei, stats.threshold) * 1.1 || 1;
+  const maxEi =
+    Math.max(...data.ei.filter((v): v is number => v != null && Number.isFinite(v)),
+             stats.threshold) * 1.1 || 1;
   const barWidth = (width - padding.left - padding.right) / data.chn_names.length;
   const plotBottom = height - padding.bottom;
 
@@ -87,7 +93,9 @@ export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) 
             mean + std
           </text>
           {data.chn_names.map((name, i) => {
-            const v = data.ei[i];
+            const raw = data.ei[i];
+            // a dead channel has no bar to draw, not a zero-height one
+            const v = raw != null && Number.isFinite(raw) ? raw : 0;
             const flagged = v > stats.threshold;
             const x = padding.left + i * barWidth;
             const y = yFor(v);

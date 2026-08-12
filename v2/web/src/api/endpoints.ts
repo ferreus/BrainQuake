@@ -446,10 +446,24 @@ export function retryJob(job: Job): Promise<Job> {
 
 export interface EiResult {
   chn_names: string[];
-  ei: number[];
-  ei_raw: number[];
-  hfer: number[];
-  time_coef: number[];
+  /** null where the channel had no usable baseline (dead electrode) -- an
+   * undefined EI, distinct from a real score of 0 meaning "quiet". */
+  ei: (number | null)[];
+  ei_raw: (number | null)[];
+  hfer: (number | null)[];
+  time_coef: (number | null)[];
+  /** How the result was computed and whether it can be trusted -- absent on
+   * results written before diagnostics existed. */
+  diagnostics?: {
+    method?: "band_ratio" | "broadband";
+    n_channels?: number;
+    n_crossed?: number;
+    n_never_crossed?: number;
+    frac_onset_at_window_start?: number;
+    degenerate_window?: boolean;
+    dead_channels?: string[];
+    saturated_channels?: string[];
+  };
   /** The job's own params -- the windows and bands this result was computed
    * over. Session state can't supply them after a reload. */
   params: {
@@ -460,6 +474,7 @@ export interface EiResult {
     band_low?: number;
     band_high?: number;
     mains_freq?: number;
+    ei_method?: "band_ratio" | "broadband";
   };
 }
 

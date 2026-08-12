@@ -1,6 +1,7 @@
 """EI job orchestration. The numerics live in app/sigproc/ei.py."""
 import logging
 
+import numpy as np
 from sqlalchemy.orm import Session
 
 from app.models import Artifact, Job, Subject
@@ -9,8 +10,13 @@ from app.services.job_control import check_cancelled
 from app.services.recon import register_artifact
 from app.sigproc.channels import load_seeg
 from app.sigproc.ei import (
+    BARTOLOMEI_HIGH_BAND,
+    BARTOLOMEI_LOW_BAND,
+    compute_band_ratio,
     compute_ei_index,
     compute_hfer,
+    determine_threshold_onset,
+    ei_diagnostics,
     find_saturated_channels,
     load_ei_result,
     save_ei_result,
@@ -41,6 +47,11 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
     target_start = float(params["target_start"])
     target_end = float(params["target_end"])
     mains_freq = float(params.get("mains_freq", DEFAULT_MAINS_FREQ))
+    ei_method = params.get("ei_method", "band_ratio")
+    low_band = tuple(params.get("er_low_band") or BARTOLOMEI_LOW_BAND)
+    high_band = tuple(params.get("er_high_band") or BARTOLOMEI_HIGH_BAND)
+    if ei_method not in ("band_ratio", "broadband"):
+        raise ValueError(f"unknown ei_method {ei_method!r}; expected 'band_ratio' or 'broadband'")
 
     job.progress_pct = 10.0
     job.progress_message = "Loading edf and applying notch + bandpass filter"
@@ -119,14 +130,37 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
 
     baseline_data = filtered[:, base_start_i:base_end_i]
     target_data = filtered[:, target_start_i:target_end_i]
-    norm_target, norm_base = compute_hfer(target_data, baseline_data, fs)
+    if ei_method == "band_ratio":
+        norm_target, norm_base = compute_band_ratio(
+            target_data, baseline_data, fs, low_band=low_band, high_band=high_band)
+    else:
+        norm_target, norm_base = compute_hfer(target_data, baseline_data, fs)
     ei, ei_raw, hfer, time_coef = compute_ei_index(norm_target, norm_base, fs)
 
-    ei_result_path = save_ei_result(edf_path, chn_names, ei, ei_raw, hfer, time_coef)
+    onset, crossed = determine_threshold_onset(norm_target, norm_base)
+    diagnostics = {
+        "method": ei_method,
+        "band_low": band_low, "band_high": band_high, "mains_freq": mains_freq,
+        "saturated_channels": [chn_names[i] for i in saturated],
+        "dead_channels": [n for n, v in zip(chn_names, np.isfinite(ei_raw)) if not v],
+        **ei_diagnostics(onset, crossed, fs, norm_target.shape[1]),
+    }
+    if ei_method == "band_ratio":
+        diagnostics["er_low_band"] = list(low_band)
+        diagnostics["er_high_band"] = list(high_band)
+    final_message = "EI computation complete"
+    if diagnostics["degenerate_window"]:
+        final_message = (
+            "EI complete, but the target window starts inside activity already under way "
+            "-- the ranking is effectively energy-only. Consider starting it at the onset."
+        )
+
+    ei_result_path = save_ei_result(edf_path, chn_names, ei, ei_raw, hfer, time_coef,
+                                    diagnostics=diagnostics)
     register_artifact(db, subject.id, job.id, "ei_npz", ei_result_path)
 
     job.progress_pct = 95.0
-    job.progress_message = "EI computation complete"
+    job.progress_message = final_message
     db.commit()
 
 

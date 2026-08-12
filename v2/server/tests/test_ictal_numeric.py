@@ -17,12 +17,15 @@ import pytest
 
 from app.sigproc.channels import seeg_contacts
 from app.sigproc.ei import (
+    compute_band_ratio,
     compute_ei_index,
     compute_hfer,
     determine_threshold_onset,
+    ei_diagnostics,
     find_saturated_channels,
+    load_ei_result,
 )
-from app.sigproc.filters import filter_for_display
+from app.sigproc.filters import bandpass, filter_for_display
 
 FS = 1000.0
 N_CH = 20
@@ -92,15 +95,20 @@ def test_quiet_recording_yields_no_ei():
     assert np.all(ei >= 0)
 
 
-def test_dead_channel_gets_zero_ei_not_nan():
-    """A flat channel has zero baseline energy; it must not poison the output."""
+def test_dead_channel_gets_nan_ei_not_zero():
+    """A flat channel has zero baseline energy, so its EI is undefined.
+
+    It used to be forced to 0.0, which is a real score meaning "quiet" -- a dead
+    electrode then sorted alongside genuinely silent brain instead of being
+    excluded. NaN is the honest answer and soz.build_result_table masks it.
+    """
     target, base = _make_seizure()
     base[0] = 0.0
     target[0] = 0.0
     norm_t, norm_b = compute_hfer(target, base, FS)
     ei, _, _, _ = compute_ei_index(norm_t, norm_b, FS)
-    assert np.all(np.isfinite(ei))
-    assert ei[0] == 0.0
+    assert np.isnan(ei[0])
+    assert np.all(np.isfinite(ei[1:])), "one dead channel must not poison the rest"
 
 
 # --------------------------------------------------------------------------
@@ -111,16 +119,41 @@ def test_onset_detection_orders_channels_by_start_time():
     target, base = _make_seizure(onset_channel=5, onset_time=1.0,
                                  second_channel=10, second_time=3.0)
     norm_t, norm_b = compute_hfer(target, base, FS)
-    onsets = determine_threshold_onset(norm_t, norm_b)
+    onsets, crossed = determine_threshold_onset(norm_t, norm_b)
+    assert crossed[5] and crossed[10]
     assert onsets[5] < onsets[10], "the earlier burst must be detected earlier"
 
 
-def test_channels_that_never_cross_are_placed_at_the_end():
+def test_channels_that_never_cross_are_reported_as_not_crossed():
+    """Non-crossing channels are flagged by the mask, not by an out-of-range index.
+
+    The old sentinel (onset == n_samples) doubled as "skip this channel", which
+    is what left the whole tail of the ranking tied at EI = 0.
+    """
     target, base = _make_seizure()
     norm_t, norm_b = compute_hfer(target, base, FS)
-    onsets = determine_threshold_onset(norm_t, norm_b)
+    _onsets, crossed = determine_threshold_onset(norm_t, norm_b)
     quiet = [i for i in range(N_CH) if i not in (5, 10)]
-    assert np.all(onsets[quiet] == norm_t.shape[1])
+    assert not crossed[quiet].any()
+    assert crossed[[5, 10]].all()
+
+
+def test_non_crossing_channels_are_graded_by_energy_not_tied_at_zero():
+    """The tail must carry information: a louder quiet channel outranks a
+    quieter one, instead of every non-crosser collapsing to exactly 0."""
+    n = int(10 * FS)
+    base = _noise(N_CH, n, seed=21)
+    target = _noise(N_CH, n, seed=22)
+    target[5] += _burst(n, int(1.0 * FS))          # the only channel that crosses
+    target[9] *= 1.3                                # elevated, but below threshold
+    norm_t, norm_b = compute_hfer(target, base, FS)
+    _onsets, crossed = determine_threshold_onset(norm_t, norm_b)
+    ei, _, _, _ = compute_ei_index(norm_t, norm_b, FS)
+
+    assert crossed[5] and not crossed[9]
+    quiet = [i for i in range(N_CH) if i not in (5, 9)]
+    assert ei[9] > np.max(ei[quiet]), "the elevated non-crosser must outrank flat ones"
+    assert len(np.unique(ei[quiet])) > 1, "the tail must not be a single tied value"
 
 
 def test_baseline_artifact_no_longer_hides_a_real_onset():
@@ -131,15 +164,15 @@ def test_baseline_artifact_no_longer_hides_a_real_onset():
     """
     target, base = _make_seizure(onset_channel=5)
     norm_t, norm_b = compute_hfer(target, base, FS)
-    clean_onset = determine_threshold_onset(norm_t, norm_b)[5]
-    assert clean_onset < norm_t.shape[1], "sanity: the onset is detectable without an artifact"
+    clean = determine_threshold_onset(norm_t, norm_b)
+    assert clean.crossed[5], "sanity: the onset is detectable without an artifact"
 
     base_with_pop = base.copy()
     base_with_pop[5, int(2 * FS)] += 5000.0  # a single-sample electrode pop
     norm_t2, norm_b2 = compute_hfer(target, base_with_pop, FS)
-    popped_onset = determine_threshold_onset(norm_t2, norm_b2)[5]
-    assert popped_onset < norm_t2.shape[1], "the pop must not suppress the channel"
-    assert popped_onset == pytest.approx(clean_onset, abs=0.05 * FS)
+    popped = determine_threshold_onset(norm_t2, norm_b2)
+    assert popped.crossed[5], "the pop must not suppress the channel"
+    assert popped.onset[5] == pytest.approx(clean.onset[5], abs=0.05 * FS)
 
 
 def test_late_channel_energy_is_measured_at_its_own_onset():
@@ -289,3 +322,122 @@ def test_flat_channel_is_not_reported_as_saturated():
     data = _noise(4, int(10 * FS), seed=10)
     data[1] = 0.0
     assert 1 not in find_saturated_channels(data)
+
+
+# --------------------------------------------------------------------------
+# Bartolomei band ratio
+# --------------------------------------------------------------------------
+
+def _osc(n, freq, amp, fs=FS):
+    return amp * np.sin(2 * np.pi * freq * np.arange(n) / fs)
+
+
+def _two_band_noise(seed_low, seed_high, n):
+    """Signal with independent theta/alpha and beta/gamma content, so the energy
+    ratio has real variance -- a pure sinusoid makes the baseline ratio so
+    stationary that MAD collapses and every channel crosses threshold."""
+    low = bandpass(_noise(N_CH, n, seed=seed_low), FS, 3.5, 12.4) * 5
+    high = bandpass(_noise(N_CH, n, seed=seed_high), FS, 12.4, 97.0)
+    return low, high
+
+
+def _band_shift_seizure(shift_channel=5, shift_time=2.0):
+    """One channel moves its energy from theta/alpha into beta/gamma, at
+    constant total power. Only a band-ratio method can see this."""
+    n = int(10 * FS)
+    low_b, high_b = _two_band_noise(31, 131, n)
+    low_t, high_t = _two_band_noise(32, 132, n)
+    target = low_t + high_t
+    k = int(shift_time * FS)
+    low_seg, high_seg = low_t[shift_channel, k:], high_t[shift_channel, k:]
+    e_low, e_high = np.sum(low_seg ** 2), np.sum(high_seg ** 2)
+    a = 0.05  # gut the low band, put its energy into the high band
+    b = np.sqrt((e_low + e_high - a * a * e_low) / e_high)
+    target[shift_channel, k:] = a * low_seg + b * high_seg
+    return target, low_b + high_b
+
+
+def test_band_ratio_detects_energy_moving_from_low_to_high_band():
+    target, base = _band_shift_seizure()
+    ei, _, _, _ = compute_ei_index(*compute_band_ratio(target, base, FS), FS)
+    assert int(np.argmax(ei)) == 5
+
+
+def test_broadband_is_blind_to_a_pure_band_shift():
+    """The shift preserves total power, so the older broadband method has
+    nothing to detect. This is why band_ratio is the default."""
+    target, base = _band_shift_seizure()
+    ei, _, _, _ = compute_ei_index(*compute_hfer(target, base, FS), FS)
+    assert int(np.argmax(ei)) != 5
+    assert ei[5] < 0.5, "broadband must not rank a constant-power band shift highly"
+
+
+def test_band_ratio_only_responds_to_its_configured_high_band():
+    """40 Hz added on top of an unchanged low band: seen by a 12.4-97 Hz high
+    band, invisible to a 60-97 Hz one."""
+    n = int(10 * FS)
+    low_b, high_b = _two_band_noise(41, 141, n)
+    low_t, high_t = _two_band_noise(42, 142, n)
+    target = low_t + high_t
+    k = int(2.0 * FS)
+    target[5, k:] += _osc(n, 40.0, 4.0)[k:]
+    base = low_b + high_b
+
+    inside, _, _, _ = compute_ei_index(
+        *compute_band_ratio(target, base, FS, high_band=(12.4, 97.0)), FS)
+    outside, _, _, _ = compute_ei_index(
+        *compute_band_ratio(target, base, FS, high_band=(60.0, 97.0)), FS)
+    assert int(np.argmax(inside)) == 5
+    assert int(np.argmax(outside)) != 5
+
+
+def test_band_ratio_clamps_a_band_above_nyquist():
+    """A 97 Hz gamma edge is impossible at fs=150; clamp instead of raising."""
+    fs = 150.0
+    n = int(10 * fs)
+    base = _noise(4, n, seed=33)
+    target = _noise(4, n, seed=34)
+    norm_t, norm_b = compute_band_ratio(target, base, fs)
+    assert norm_t.shape[0] == 4 and np.isfinite(norm_t).any()
+
+
+# --------------------------------------------------------------------------
+# Degenerate target window
+# --------------------------------------------------------------------------
+
+def test_degenerate_window_flagged_when_discharge_precedes_the_window():
+    n = int(10 * FS)
+    base = _noise(N_CH, n, seed=41)
+    target = _noise(N_CH, n, seed=42)
+    for i in range(N_CH):  # every channel already discharging at sample 0
+        target[i] += _burst(n, 0, dur=8.0)
+    norm_t, norm_b = compute_hfer(target, base, FS)
+    onset, crossed = determine_threshold_onset(norm_t, norm_b)
+    diag = ei_diagnostics(onset, crossed, FS, norm_t.shape[1])
+    assert diag["degenerate_window"]
+    assert diag["frac_onset_at_window_start"] > 0.2
+
+
+def test_clean_seizure_is_not_flagged_as_degenerate():
+    target, base = _make_seizure(onset_channel=5, onset_time=1.0,
+                                 second_channel=10, second_time=3.0)
+    norm_t, norm_b = compute_hfer(target, base, FS)
+    onset, crossed = determine_threshold_onset(norm_t, norm_b)
+    diag = ei_diagnostics(onset, crossed, FS, norm_t.shape[1])
+    assert not diag["degenerate_window"]
+    assert diag["n_crossed"] == 2
+    assert diag["n_never_crossed"] == N_CH - 2
+
+
+# --------------------------------------------------------------------------
+# Result archive compatibility
+# --------------------------------------------------------------------------
+
+def test_ei_result_written_before_diagnostics_existed_still_loads(tmp_path):
+    path = tmp_path / "old_ei.npz"
+    np.savez(path, ei=np.array([1.0, 0.5]), ei_raw=np.array([2.0, 1.0]),
+             hfer=np.array([4.0, 1.0]), time_coef=np.array([1.0, 0.5]),
+             chn_names=np.array(["A1", "A2"]))
+    result = load_ei_result(str(path))
+    assert result["chn_names"] == ["A1", "A2"]
+    assert result["diagnostics"] == {}
