@@ -47,6 +47,18 @@ does not depend on the choice.
 
 ## Result 1 — the outcome statistic
 
+```
+SZ1P: 184 electrodes x 239 windows, R2 median 0.941, frag range [0.000, 0.994], 2.9 min
+SZ2P: 184 electrodes x 239 windows, R2 median 0.996, frag range [0.000, 0.997], 2.9 min
+SZ3P: 184 electrodes x 239 windows, R2 median 0.887, frag range [0.000, 0.995], 2.9 min
+SZ4P: 184 electrodes x 239 windows, R2 median 0.996, frag range [0.000, 0.995], 3.9 min
+SZ5P: 184 electrodes x 239 windows, R2 median 0.841, frag range [0.000, 0.995], 3.6 min
+SZ6P: 184 electrodes x 239 windows, R2 median 0.998, frag range [0.000, 0.996], 3.8 min
+SZ7P: 184 electrodes x 239 windows, R2 median 0.998, frag range [0.000, 0.995], 3.8 min
+SZ8P: 184 electrodes x 239 windows, R2 median 0.851, frag range [0.000, 0.990], 2.9 min
+done -> data\fragility\export/frag_full
+```
+
 SOZ = the clinically annotated onset shafts **A and I** (16 contacts). Paper
 window, −10 s to the first 5% of each seizure:
 
