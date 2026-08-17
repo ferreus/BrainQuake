@@ -118,3 +118,6 @@ The old PLAN.md phase system is retired. Current roadmap: **[docs/project-direct
 Keep comments short and consise. Explain WHY only if it's not clear from the code, and only in 1-2 lines of code.
 
 **Prefer the simple solution over the complete one.** When something can be fixed by deleting code or relaxing a constraint, do that instead of adding a parallel code path, a second data structure, or new metadata. If a proposal introduces a detection heuristic or a DB field, look for the degrade-gracefully version first.
+
+**Workflow rule**: Every 5 consecutive tasks / shell runs you do on your own, you pause, and let the user know what are you trying to achieve, current progress, next steps.
+

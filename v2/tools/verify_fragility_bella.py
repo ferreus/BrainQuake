@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Validate pure Python Neural Fragility (app.sigproc.fragility) on Bella's 8 seizures.
 
-Cross-validates against reference EZFragility outputs in data/ezfragility_result.txt.
+Cross-validates the size-normalised shaft ranking against the reference EZFragility (R)
+output. That file is expected to hold one row per shaft, shaft label as the first token
+and votes/ch as the last numeric token -- the format this script itself prints. Exits
+nonzero if the rankings disagree; without a reference file it only prints the ranking.
 """
 
+import argparse
 import os
 import re
 import sys
@@ -11,6 +15,7 @@ import time
 from collections import Counter
 import mne
 import numpy as np
+from scipy.stats import spearmanr
 
 # Add server directory to path
 SERVER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../server"))
@@ -38,13 +43,77 @@ SEIZURE_FILES = [
 GT_ONSET_SHAFTS = {"A", "I"}
 GT_SPREAD_SHAFTS = {"N", "P", "G", "L", "K", "Q", "S"}
 
+DEFAULT_REF = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/ezfragility_result.txt"))
+EVAL_WINDOW_S = (0.0, 3.0)  # score the ictal period only; pre-onset baseline is context
+SPEARMAN_MIN = 0.8
+
 
 def get_shaft(contact_name: str) -> str:
     m = SHAFT_RE.match(contact_name.strip())
     return m.group(1) if m else contact_name
 
 
+def load_reference(path: str) -> dict[str, float]:
+    """Parse shaft -> votes/ch from an EZFragility shaft-ranking table."""
+    ref = {}
+    with open(path) as fh:
+        for line in fh:
+            tokens = line.split()
+            if not tokens or not re.fullmatch(r"[A-Za-z]+'?", tokens[0]):
+                continue
+            floats = [float(t) for t in tokens[1:] if re.fullmatch(r"-?\d+(\.\d+)?", t)]
+            if floats:
+                ref[tokens[0]] = floats[-1]
+    return ref
+
+
+def compare_to_reference(ranked_shafts: list[tuple[str, float]], ref_path: str) -> int:
+    """Print the Python-vs-R comparison; return a process exit code."""
+    if not os.path.exists(ref_path):
+        print(f"\nNo reference at {ref_path} -- skipping cross-validation.", flush=True)
+        print("Parity against EZFragility is UNVERIFIED.", flush=True)
+        return 0
+
+    ref = load_reference(ref_path)
+    if not ref:
+        print(f"\nERROR: parsed no shaft rows from {ref_path}.", flush=True)
+        return 1
+
+    ours = dict(ranked_shafts)
+    shared = [s for s in ours if s in ref]
+    if len(shared) < 3:
+        print(f"\nERROR: only {len(shared)} shafts in common with the reference.", flush=True)
+        return 1
+
+    rho = spearmanr([ours[s] for s in shared], [ref[s] for s in shared]).statistic
+    our_top = max(shared, key=lambda s: ours[s])
+    ref_top = max(shared, key=lambda s: ref[s])
+
+    print(f"\n=== CROSS-VALIDATION vs EZFragility ({os.path.basename(ref_path)}) ===", flush=True)
+    print(f"{'shaft':>6} {'python':>9} {'R':>9}", flush=True)
+    for s in sorted(shared, key=lambda s: ref[s], reverse=True):
+        print(f"{s:>6} {ours[s]:>9.2f} {ref[s]:>9.2f}", flush=True)
+    print(f"\nSpearman over {len(shared)} shafts: {rho:.4f} (threshold {SPEARMAN_MIN})", flush=True)
+    print(f"top shaft: python={our_top}  R={ref_top}", flush=True)
+
+    failures = []
+    if not (rho >= SPEARMAN_MIN):
+        failures.append(f"Spearman {rho:.4f} < {SPEARMAN_MIN}")
+    if our_top != ref_top:
+        failures.append(f"top shaft {our_top} != {ref_top}")
+
+    if failures:
+        print("PARITY FAILED: " + "; ".join(failures), flush=True)
+        return 1
+    print("PARITY OK", flush=True)
+    return 0
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ref", default=DEFAULT_REF, help="EZFragility shaft-ranking table")
+    args = parser.parse_args()
+
     print(f"Loading Bella EDFs from: {BELLA_DIR}", flush=True)
     if not os.path.exists(BELLA_DIR):
         print(f"Error: {BELLA_DIR} not found.", flush=True)
@@ -102,7 +171,7 @@ def main():
             radius=1.0,
             num_freqs=16,
             l2_reg=1e-5,
-            eval_window_s=(-crop_pre, crop_post),
+            eval_window_s=EVAL_WINDOW_S,
             onset_s=crop_pre,  # data starts at -crop_pre relative to onset
         )
         elapsed = time.time() - t0
@@ -121,7 +190,7 @@ def main():
 
     if not all_results:
         print("No seizures evaluated.", flush=True)
-        return
+        return 1
 
     # Aggregate votes to shafts
     shaft_votes = Counter()
@@ -158,6 +227,8 @@ def main():
     top_shaft = ranked_shafts[0][0]
     print(f"\nTop identified shaft: {top_shaft} (votes/ch: {ranked_shafts[0][1]:.2f})", flush=True)
 
+    return compare_to_reference(ranked_shafts, args.ref)
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

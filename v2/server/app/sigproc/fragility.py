@@ -11,26 +11,21 @@ Zero dependencies on FastAPI, SQLAlchemy, or Pydantic.
 """
 
 import math
-import os
-import sys
+import warnings
 from typing import Any
 import numpy as np
 import scipy.linalg
 
-# Check for PyTorch CUDA support (including discovering local virtualenv if present)
 _CUDA_AVAILABLE = False
 try:
     import torch
     _CUDA_AVAILABLE = torch.cuda.is_available()
 except ImportError:
-    fastapi_site = os.path.expanduser("~/virtualenv/fastapi/lib/python3.12/site-packages")
-    if os.path.exists(fastapi_site) and fastapi_site not in sys.path:
-        sys.path.append(fastapi_site)
-        try:
-            import torch
-            _CUDA_AVAILABLE = torch.cuda.is_available()
-        except Exception:
-            pass
+    pass
+
+# Below this |sin(theta)| the contour point is real, so the imaginary constraint
+# vanishes instead of pinning Delta to a rounding-error direction.
+_REAL_Z_TOL = 1e-12
 
 
 def fit_ltv_model(
@@ -49,8 +44,10 @@ def fit_ltv_model(
     X : np.ndarray
         Multi-channel time series window of shape (N, T).
     l2_reg : float
-        L2 Ridge regularization parameter to ensure stable matrix inversion
-        when T <= N or when channels are collinear.
+        L2 Ridge regularization, expressed as a fraction of the mean covariance
+        eigenvalue so the fit is invariant to the signal's units (V vs uV).
+        Needed whenever T <= N or channels are collinear -- note a common-average
+        montage makes X1 rank-deficient by construction.
 
     Returns
     -------
@@ -71,7 +68,9 @@ def fit_ltv_model(
 
     cov = X1 @ X1.T
     if l2_reg > 0:
-        cov += l2_reg * np.eye(n_channels, dtype=cov.dtype)
+        cov_scale = float(np.trace(cov)) / n_channels
+        if cov_scale > 0:
+            cov += (l2_reg * cov_scale) * np.eye(n_channels, dtype=cov.dtype)
 
     try:
         A_T = scipy.linalg.solve(cov, X1 @ X2.T, assume_a="pos")
@@ -92,13 +91,13 @@ def fit_ltv_model(
     return A, r2
 
 
-def compute_min_perturbations_gpu(
+def compute_fragility_batch_gpu(
     A_batch: np.ndarray,
     radius: float = 1.0,
     num_freqs: int = 16,
     batch_size: int = 16,
 ) -> np.ndarray:
-    """Fast GPU-accelerated batched fragility computation using PyTorch CUDA.
+    """Batched, GPU-accelerated equivalent of `compute_min_perturbations`, normalized.
 
     Parameters
     ----------
@@ -114,7 +113,7 @@ def compute_min_perturbations_gpu(
     Returns
     -------
     frag_matrix : np.ndarray
-        Fragility matrix of shape (n_channels, n_windows).
+        Per-window normalized fragility, shape (n_channels, n_windows).
     """
     import torch
 
@@ -123,6 +122,7 @@ def compute_min_perturbations_gpu(
 
     thetas = torch.linspace(0.0, math.pi, num_freqs, dtype=torch.float64, device=device)
     z_points = torch.polar(torch.full_like(thetas, radius), thetas)  # (M,)
+    is_real_z = torch.abs(torch.sin(thetas)) < _REAL_Z_TOL  # (M,)
     I_mat = torch.eye(n_channels, dtype=torch.complex128, device=device)
 
     all_frags = []
@@ -134,11 +134,21 @@ def compute_min_perturbations_gpu(
         M_mats = z_points[None, :, None, None] * I_mat[None, None, :, :] - sub_A[:, None, :, :]
         M_inv = torch.linalg.inv(M_mats)
 
-        # 2-norm of each row: shape (cur_b, M, N)
-        row_norms = torch.linalg.vector_norm(M_inv, dim=-1)
-        max_row_norms = torch.max(row_norms, dim=1).values  # (cur_b, N)
+        # Rows of the resolvent: a + jb = e_k^T (zI - A)^-1, shape (cur_b, M, N)
+        a, b = M_inv.real, M_inv.imag
+        aa = torch.sum(a * a, dim=-1)
+        bb = torch.sum(b * b, dim=-1)
+        ab = torch.sum(a * b, dim=-1)
 
-        min_deltas = 1.0 / torch.clamp(max_row_norms, min=1e-12)  # (cur_b, N)
+        det = aa * bb - ab * ab
+        deltas = torch.full_like(aa, float("inf"))
+        ok = det > 0
+        deltas[ok] = torch.sqrt(bb[ok] / det[ok])
+
+        real_rows = is_real_z[None, :, None].expand_as(deltas) & (aa > 0)
+        deltas = torch.where(real_rows, torch.rsqrt(torch.clamp(aa, min=1e-300)), deltas)
+
+        min_deltas = torch.min(deltas, dim=1).values  # (cur_b, N)
         max_deltas = torch.max(min_deltas, dim=-1, keepdim=True).values
 
         sub_frag = 1.0 - (min_deltas / torch.clamp(max_deltas, min=1e-12))
@@ -155,11 +165,18 @@ def compute_min_perturbations(
 ) -> np.ndarray:
     """Compute the minimum column perturbation norm required to destabilize the system.
 
-    For each channel k in {0, ..., N-1}, finds the minimum Euclidean norm of the column
-    perturbation Delta_k such that the perturbed system matrix A + Delta_k e_k^T has an
-    eigenvalue on the contour |lambda| = radius:
+    For each channel k, finds the smallest REAL column perturbation Delta_k such that
+    A + Delta_k e_k^T has an eigenvalue on the contour |lambda| = radius. Writing
+    a + jb = e_k^T (z I - A)^(-1) at z = radius * e^(j*theta), the determinant lemma
+    turns that into two real constraints, a.Delta = 1 and b.Delta = 0, whose
+    minimum-norm solution has
 
-        ||Delta_k*||_2 = 1 / max_{theta in [0, pi]} ||e_k^T (radius * e^(j*theta) * I - A)^(-1)||_2
+        ||Delta_k(theta)|| = sqrt( (b.b) / ((a.a)(b.b) - (a.b)^2) )
+
+    and ||Delta_k|| is the minimum over theta. Real z (theta = 0, pi) drops the second
+    constraint, giving 1/||a||. Restricting Delta to the reals matters: the complex
+    relaxation 1/||a + jb|| is strictly smaller whenever the critical theta is
+    interior, i.e. exactly the oscillatory onsets of interest.
 
     Parameters
     ----------
@@ -180,22 +197,39 @@ def compute_min_perturbations(
         raise ValueError(f"A must be square, got {A.shape}")
 
     thetas = np.linspace(0.0, np.pi, num_freqs)
-    z_points = radius * np.exp(1j * thetas)
 
+    # One Schur factorization per matrix, reused across frequencies: with A = Q T Q^H,
+    # (zI - A)^-1 = Q (zI - T)^-1 Q^H is a triangular solve plus a matmul. Both are
+    # BLAS3, where a complex LU per frequency is not -- ~65x faster here, and unitary
+    # so the resolvent's conditioning is untouched.
+    T_mat, Q = scipy.linalg.schur(A, output="complex")
+    QH = Q.conj().T
     I_mat = np.eye(n_channels, dtype=np.complex128)
-    M_mats = z_points[:, None, None] * I_mat[None, :, :] - A[None, :, :]
 
-    try:
-        M_inv = np.linalg.inv(M_mats)
-    except np.linalg.LinAlgError:
-        M_inv = np.linalg.pinv(M_mats)
+    perturbation_norms = np.full(n_channels, np.inf)
+    for theta in thetas:
+        z = radius * np.exp(1j * theta)
+        try:
+            M_inv = Q @ scipy.linalg.solve_triangular(z * I_mat - T_mat, QH)
+        except (scipy.linalg.LinAlgError, ValueError):
+            continue  # z sits on an eigenvalue; neighbouring frequencies cover it
 
-    row_norms = np.linalg.norm(M_inv, axis=-1)
-    max_inv_row_norms = np.max(row_norms, axis=0)
+        a, b = M_inv.real, M_inv.imag
+        aa = np.einsum("kn,kn->k", a, a)
 
-    perturbation_norms = np.zeros(n_channels, dtype=np.float64)
-    valid_mask = max_inv_row_norms > 1e-12
-    perturbation_norms[valid_mask] = 1.0 / max_inv_row_norms[valid_mask]
+        if abs(math.sin(theta)) < _REAL_Z_TOL:
+            # z is real, so the imaginary constraint vanishes and ||Delta|| = 1/||a||
+            deltas = np.where(aa > 0, 1.0 / np.sqrt(np.maximum(aa, 1e-300)), np.inf)
+        else:
+            bb = np.einsum("kn,kn->k", b, b)
+            ab = np.einsum("kn,kn->k", a, b)
+            det = aa * bb - ab * ab  # >= 0 by Cauchy-Schwarz; 0 means z is unreachable
+            deltas = np.full(n_channels, np.inf)
+            ok = det > 0
+            deltas[ok] = np.sqrt(bb[ok] / det[ok])
+
+        np.minimum(perturbation_norms, deltas, out=perturbation_norms)
+
     return perturbation_norms
 
 
@@ -306,6 +340,13 @@ def compute_fragility_pipeline(
     if win_samples > total_samples:
         raise ValueError(f"Recording duration ({total_samples} samples) is shorter than window ({win_samples} samples)")
 
+    if win_samples - 1 <= n_channels:
+        warnings.warn(
+            f"Window has {win_samples - 1} regressors for {n_channels} channels; the LTV fit "
+            f"is underdetermined and driven by l2_reg. Lengthen win_s or reduce channels.",
+            stacklevel=2,
+        )
+
     starts = np.arange(0, total_samples - win_samples + 1, step_samples)
     n_windows = len(starts)
 
@@ -327,13 +368,14 @@ def compute_fragility_pipeline(
 
     if use_gpu:
         try:
-            frag_matrix = compute_min_perturbations_gpu(
+            frag_matrix = compute_fragility_batch_gpu(
                 A_batch,
                 radius=radius,
                 num_freqs=num_freqs,
                 batch_size=16,
             )
-        except Exception:
+        except Exception as exc:
+            warnings.warn(f"GPU fragility failed ({exc!r}); falling back to CPU.", stacklevel=2)
             frag_matrix = None
 
     if frag_matrix is None:

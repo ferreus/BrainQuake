@@ -5,12 +5,36 @@ import pytest
 
 from app.sigproc.fragility import (
     _CUDA_AVAILABLE,
+    compute_fragility_batch_gpu,
     compute_fragility_pipeline,
     compute_min_perturbations,
-    compute_min_perturbations_gpu,
     compute_window_fragility,
     fit_ltv_model,
 )
+
+
+def _oracle_min_real_perturbation(A, k, radius=1.0, num_freqs=512):
+    """Independent min-norm real perturbation, via lstsq rather than the closed form."""
+    n = A.shape[0]
+    best_norm, best_delta = np.inf, None
+    for theta in np.linspace(0.0, np.pi, num_freqs):
+        z = radius * np.exp(1j * theta)
+        r = np.linalg.inv(z * np.eye(n) - A)[k, :]
+        if abs(np.sin(theta)) < 1e-12:  # real z: the imaginary constraint drops out
+            B, c = r.real[None, :], np.array([1.0])
+        else:
+            B, c = np.vstack([r.real, r.imag]), np.array([1.0, 0.0])
+        delta = np.linalg.lstsq(B, c, rcond=None)[0]
+        norm = float(np.linalg.norm(delta))
+        if norm < best_norm:
+            best_norm, best_delta = norm, delta
+    return best_norm, best_delta
+
+
+def _stable_oscillatory_system(n=8, rho=0.85, seed=3):
+    rng = np.random.default_rng(seed)
+    A = rng.normal(scale=0.9 / np.sqrt(n), size=(n, n))
+    return A * (rho / np.max(np.abs(np.linalg.eigvals(A))))
 
 
 @pytest.mark.skipif(not _CUDA_AVAILABLE, reason="CUDA not available")
@@ -21,7 +45,7 @@ def test_cuda_and_numpy_parity():
     n_windows = 4
     A_batch = rng.normal(scale=0.05, size=(n_windows, n_channels, n_channels))
 
-    frag_gpu = compute_min_perturbations_gpu(A_batch, radius=1.0, num_freqs=16)
+    frag_gpu = compute_fragility_batch_gpu(A_batch, radius=1.0, num_freqs=16)
 
     frag_np = np.zeros((n_channels, n_windows))
     for w in range(n_windows):
@@ -78,6 +102,47 @@ def test_perturbation_destabilizes_system():
     A_diag = np.diag([0.8, 0.5, 0.4, 0.3, 0.2])
     norms_diag = compute_min_perturbations(A_diag, radius=1.0, num_freqs=64)
     assert pytest.approx(0.2, abs=1e-3) == norms_diag[0]
+
+
+def test_perturbation_destabilizes_oscillatory_system():
+    """The reported norm must be achievable by a REAL Delta that actually destabilizes.
+
+    Guards the distinction from the complex relaxation, which the real-eigenvalue
+    matrices above cannot detect (both formulas agree when the critical theta is 0 or pi).
+    """
+    A = _stable_oscillatory_system()
+    n = A.shape[0]
+    eigs = np.linalg.eigvals(A)
+    assert np.max(np.abs(np.imag(eigs))) > 1e-3, "test system must be oscillatory"
+    assert np.max(np.abs(eigs)) < 1.0, "test system must start stable"
+
+    norms = compute_min_perturbations(A, radius=1.0, num_freqs=512)
+
+    for k in range(n):
+        ref_norm, delta = _oracle_min_real_perturbation(A, k, radius=1.0, num_freqs=512)
+        assert pytest.approx(ref_norm, rel=1e-6) == norms[k]
+
+        A_pert = A.copy()
+        A_pert[:, k] += delta
+        assert np.max(np.abs(np.linalg.eigvals(A_pert))) >= 1.0 - 1e-8
+
+
+def test_complex_relaxation_would_underestimate():
+    """Pin the size of the bug that was fixed: the complex bound is strictly smaller."""
+    A = _stable_oscillatory_system()
+    n = A.shape[0]
+    thetas = np.linspace(0.0, np.pi, 512)
+
+    complex_bound = np.array([
+        1.0 / max(
+            np.linalg.norm(np.linalg.inv(z * np.eye(n) - A)[k, :]) for z in np.exp(1j * thetas)
+        )
+        for k in range(n)
+    ])
+    real_norms = compute_min_perturbations(A, radius=1.0, num_freqs=512)
+
+    assert np.all(real_norms >= complex_bound - 1e-12)
+    assert np.max(real_norms / complex_bound) > 1.05  # ~7% on this system, more at higher N
 
 
 def test_compute_window_fragility_bounds_and_ranking():
@@ -141,3 +206,25 @@ def test_compute_fragility_pipeline_shapes_and_timing():
     assert pytest.approx(0.0, abs=0.1) == res["start_times"][idx_onset]
     assert len(res["ranked_channels"]) == n_channels
     assert len(res["channel_scores"]) == n_channels
+
+
+def test_fragility_is_invariant_to_signal_units():
+    """Volts vs microvolts must not change the ranking (l2_reg is relative to cov scale)."""
+    rng = np.random.default_rng(11)
+    n_channels, fs, n_samples = 12, 1000.0, 2000
+
+    # Correlated channels, as a real montage is: few latent sources + sensor noise
+    latent = rng.normal(size=(3, n_samples)).cumsum(axis=1)
+    data_uv = (rng.normal(size=(n_channels, 3)) @ latent) * 5 + rng.normal(scale=20.0, size=(n_channels, n_samples))
+    data_uv -= data_uv.mean(axis=0, keepdims=True)  # CAR -> rank deficient by construction
+
+    kw = dict(fs=fs, win_s=0.25, step_s=0.125, num_freqs=16, device="cpu")
+    scores_uv = compute_fragility_pipeline(data=data_uv, **kw)["channel_scores"]
+    scores_v = compute_fragility_pipeline(data=data_uv * 1e-6, **kw)["channel_scores"]
+
+    np.testing.assert_allclose(
+        [scores_uv[c] for c in scores_uv],
+        [scores_v[c] for c in scores_uv],
+        rtol=1e-6,
+        atol=1e-9,
+    )
