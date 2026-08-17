@@ -73,7 +73,8 @@ def bandpass(data, fs, band_low, band_high, order=5, context=""):
     return sosfiltfilt(sos, data)
 
 
-def filter_for_display(data, fs, band_low, band_high, mains_freq=DEFAULT_MAINS_FREQ):
+def filter_for_display(data, fs, band_low, band_high, mains_freq=DEFAULT_MAINS_FREQ,
+                       reference="car"):
     """Common-average reference, then a mains-harmonic notch, then a
     user-specified zero-phase Butterworth bandpass -- ported from
     client_ictal.py's IctalModule.filter_data() (git tag legacy-final). This is the
@@ -91,13 +92,18 @@ def filter_for_display(data, fs, band_low, band_high, mains_freq=DEFAULT_MAINS_F
     filter order) and untouched here to avoid drifting already-verified
     HFO output.
     """
+    if reference not in ("car", "none"):
+        raise ValueError(f"unknown reference {reference!r}; expected 'car' or 'none'")
     band_low, band_high = clamp_band(band_low, band_high, fs, "filter_for_display")
     # Common-average reference over whatever the caller passed. The numeric
     # callers pass contacts only (edf_common.load_seeg); the viewer passes what
     # the user selected. Skipped below two channels: the average of one channel
     # is that channel, so subtracting it returns exactly zero -- which is what
     # the web client's single-channel drill-down was plotting.
-    if np.ndim(data) > 1 and np.shape(data)[0] > 1:
+    # 'none' is for data already re-referenced by the caller (montage.apply_bipolar).
+    if reference == "none":
+        pass
+    elif np.ndim(data) > 1 and np.shape(data)[0] > 1:
         data = data - np.mean(data, axis=0)
     else:
         logger.info("single channel: returning it unreferenced (a common average of one is itself)")

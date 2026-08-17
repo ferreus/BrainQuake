@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Paper, ScrollArea, Text, Title, useComputedColorScheme } from "@mantine/core";
+import { Badge, Group, Paper, ScrollArea, Text, Title, useComputedColorScheme } from "@mantine/core";
 import { useEiResult } from "../../api/queries/useIctal";
 import { SpectrogramModal } from "./SpectrogramModal";
 
@@ -73,11 +73,19 @@ export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) 
     return padding.top + (plotBottom - padding.top) * (1 - v / maxEi);
   }
 
+  // Absent on results computed before the montage was selectable -- those were CAR.
+  const reference = data.diagnostics?.reference;
+  const referenceLabel =
+    reference === "bipolar" ? "Bipolar" : reference === "car" ? "Common average" : "Common average (legacy)";
+
   return (
     <Paper withBorder p="sm" style={{ flex: 1, minWidth: 0 }}>
-      <Title order={6} mb="xs">
-        Epileptogenicity Index (EI)
-      </Title>
+      <Group gap="xs" mb="xs" wrap="nowrap">
+        <Title order={6}>Epileptogenicity Index (EI)</Title>
+        <Badge size="xs" variant="light" color={reference === "bipolar" ? "blue" : "gray"}>
+          {referenceLabel}
+        </Badge>
+      </Group>
       <ScrollArea>
         <svg width={width} height={height} role="img" aria-label="EI per channel bar chart">
           <line
@@ -124,7 +132,8 @@ export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) 
         </svg>
       </ScrollArea>
       <Text size="xs" c="dimmed" mt={4}>
-        Click a bar to view that channel's raw signal + spectrogram.
+        Click a {reference === "bipolar" ? "derivation" : "channel"} to view its raw signal
+        + spectrogram.
       </Text>
 
       <SpectrogramModal
@@ -134,6 +143,7 @@ export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) 
         range={targetRange}
         bandLow={params?.band_low ?? 1}
         bandHigh={params?.band_high ?? 300}
+        reference={reference ?? "car"}
         onClose={() => setDrillDownChannel(null)}
       />
     </Paper>

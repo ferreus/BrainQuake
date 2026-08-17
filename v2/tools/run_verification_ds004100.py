@@ -125,8 +125,11 @@ def process_subject_ictal(subject_dir):
         ei, ei_raw, hfer, time_coef = compute_ei_index(norm_target, norm_base, fs)
 
         # Build ranking
-        ei_scores = {name: float(ei[i]) if np.isfinite(ei[i]) else 0.0 for i, name in enumerate(ch_names)}
-        ranked_channels = sorted(ei_scores.keys(), key=lambda k: ei_scores[k], reverse=True)
+        ei_scores = {name: float(ei[i]) for i, name in enumerate(ch_names)}
+        ranked_channels = sorted(
+            ei_scores, key=lambda k: ei_scores[k] if np.isfinite(ei_scores[k]) else -np.inf,
+            reverse=True,
+        )
 
         top_k = len(soz_gt) if soz_gt else 5
         top_pred_soz = ranked_channels[:top_k]

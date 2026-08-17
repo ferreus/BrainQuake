@@ -41,7 +41,16 @@ def _by_channel(chn_names, values, source):
 
 
 def load_ei_result(ei_result_path):
+    """EI keyed by *contact*, which is what the electrode map and the 3D view use.
+
+    Under a bipolar reference `chn_names` holds pair names (A1-A2) that match no
+    contact, so prefer the contact projection when the archive carries one.
+    Archives written before it existed were all CAR, where channels are contacts.
+    """
     data = np.load(ei_result_path, allow_pickle=True)
+    if 'contact_names' in data.files and 'ei_by_contact' in data.files:
+        names = [str(n) for n in data['contact_names']]
+        return _by_channel(names, data['ei_by_contact'], "EI result")
     chn_names = [str(n) for n in data['chn_names']]
     return _by_channel(chn_names, data['ei'], "EI result")
 

@@ -1,8 +1,23 @@
 # Open question: EI ranking disagrees with the clinical annotation (Bella, clip 17)
 
-**Status:** unresolved observation, parked for discussion. Not a known bug.
+**Status: largely resolved 2026-08-16.** See
+[ei_reference_montage_ds004100.md](ei_reference_montage_ds004100.md) for the re-run.
+Re-running all 8 seizures with the current code ranks shafts **A and I top-2 under both
+CAR and bipolar** — the disagreement below is gone. Three things changed since this note:
 
-**Date:** 2026-08-07
+1. **Aux channels are now excluded.** `REF2` ranking 6th below is the tell — that run
+   included `REF`/`DC`/`EKG` traces in the common average, which swamps a microvolt
+   contact. `sigproc/channels.load_seeg` now drops them.
+2. **The EI numerics were fixed.** The two suspicions in "Things to check" were both
+   real: onset threshold moved from `baseline_max + 20σ` to `median + 20·MAD` (one
+   baseline artefact no longer makes a channel undetectable), and the time term moved
+   from `1/onset_rank` to `1/(delay + tau)` (a 2 ms difference no longer divides a
+   channel's score by 10).
+3. **Reference montage.** Bipolar peaks on **A8/A9**, matching the manual analysis below.
+   CAR ranks A8/A9 below their own shaft average.
+
+The original **date: 2026-08-07** observation is kept in full below, because the manual
+signal analysis of shaft A is what the bipolar EI result was later checked against.
 
 ## The observation
 

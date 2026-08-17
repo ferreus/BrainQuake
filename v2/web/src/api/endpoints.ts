@@ -345,6 +345,8 @@ export interface EdfWindowParams {
   bandHigh?: number;
   /** Power-line frequency to notch: 50 Europe/Asia, 60 North America. */
   mainsFreq?: number;
+  /** 'bipolar' makes `channels` name derivations (A1-A2) rather than contacts. */
+  reference?: EiReference;
 }
 
 export interface EdfWindow {
@@ -375,6 +377,7 @@ export async function getEdfWindow(
   if (params.bandLow != null) qs.set("band_low", String(params.bandLow));
   if (params.bandHigh != null) qs.set("band_high", String(params.bandHigh));
   if (params.mainsFreq != null) qs.set("mains_freq", String(params.mainsFreq));
+  if (params.reference != null) qs.set("reference", params.reference);
   const buf = await apiGetBinary(`/subjects/${subjectId}/edf/${edfArtifactId}/window?${qs.toString()}`);
   const parsed = parseEdfWindowBinary(buf);
   return {
@@ -401,10 +404,41 @@ export interface EiComputeParams {
   mains_freq?: number;
   /** Channel names to keep; omitted means every channel in the file. */
   remain_chns?: string[];
+  /** Re-reference montage. Bipolar (the server default) cancels the shared
+   * reference and the volume-conducted far field; under it the analysed
+   * channels are derivations (A1-A2), not contacts. */
+  reference?: EiReference;
 }
+
+export type EiReference = "car" | "bipolar";
 
 export function computeEi(subjectId: number, edfArtifactId: number, params: EiComputeParams): Promise<Job> {
   return apiPost<Job>(`/subjects/${subjectId}/ictal/${edfArtifactId}/ei`, params);
+}
+
+export interface BipolarPreview {
+  n_contacts: number;
+  n_pairs: number;
+  pairs: string[];
+  /** Contacts that end up in no derivation: unparseable, alone on a shaft, or
+   * stranded next to a numbering gap. They get no EI score at all. */
+  unpairable: string[];
+  skipped_gaps: { shaft: string; between: [string, string] }[];
+  /** remain_chns entries this recording doesn't have; the EI job rejects them. */
+  unknown_channels: string[];
+}
+
+export function getBipolarPreview(
+  subjectId: number,
+  edfArtifactId: number,
+  remainChns?: string[],
+): Promise<BipolarPreview> {
+  const qs = new URLSearchParams();
+  for (const c of remainChns ?? []) qs.append("remain_chns", c);
+  const suffix = qs.toString() ? `?${qs}` : "";
+  return apiGet<BipolarPreview>(
+    `/subjects/${subjectId}/ictal/${edfArtifactId}/bipolar-preview${suffix}`,
+  );
 }
 
 // Mirrors v2/client/api_client.py's _RETRY_DISPATCH: every job type's
@@ -445,7 +479,12 @@ export function retryJob(job: Job): Promise<Job> {
 }
 
 export interface EiResult {
+  /** The analysed channels: derivations (A1-A2) under bipolar, contacts under CAR. */
   chn_names: string[];
+  /** The same result projected back onto contacts, for anything that joins on
+   * contact names. Equals chn_names under CAR. */
+  contact_names: string[];
+  ei_by_contact: (number | null)[];
   /** null where the channel had no usable baseline (dead electrode) -- an
    * undefined EI, distinct from a real score of 0 meaning "quiet". */
   ei: (number | null)[];
@@ -456,6 +495,8 @@ export interface EiResult {
    * results written before diagnostics existed. */
   diagnostics?: {
     method?: "band_ratio" | "broadband";
+    /** Absent on results computed before the montage was selectable -- those were CAR. */
+    reference?: EiReference;
     n_channels?: number;
     n_crossed?: number;
     n_never_crossed?: number;
@@ -475,6 +516,7 @@ export interface EiResult {
     band_high?: number;
     mains_freq?: number;
     ei_method?: "band_ratio" | "broadband";
+    reference?: EiReference;
   };
 }
 

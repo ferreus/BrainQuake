@@ -28,6 +28,7 @@ from app.sigproc.ei import BARTOLOMEI_HIGH_BAND, BARTOLOMEI_LOW_BAND, ONSET_THRE
 from app.sigproc.filters import DEFAULT_MAINS_FREQ
 from app.sigproc.fusion import fuse_ei_hfo_scores
 from app.sigproc.hfo import compute_hfo_pipeline
+from app.sigproc.montage import project_pairs_to_contacts
 
 # Import verification_report from the same tools directory
 TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +39,15 @@ from verification_report import generate_html_report
 DEFAULT_DATASET_DIR = "/media/data/eeg/ds004100"
 DEFAULT_OUTPUT_CSV = "/home/ferreus/dev/BrainQuake/verification_ds004100_full.csv"
 DEFAULT_OUTPUT_HTML = "/home/ferreus/dev/BrainQuake/verification_ds004100_report.html"
+
+
+def parse_acq(base_name):
+    """BIDS acq- entity ('seeg'/'ecog'). Bipolar pairing by adjacent contact
+    number is only physically right for depths, so results are split on this."""
+    for part in base_name.split("_"):
+        if part.startswith("acq-"):
+            return part[len("acq-"):]
+    return "unknown"
 
 
 def read_tsv(filepath):
@@ -192,8 +202,13 @@ def process_run(edf_path, ieeg_dir, base_name, sub_id, opts):
                 high_band=opts.er_high_band,
                 threshold_k=opts.threshold_k,
                 span_start=span_start,
+                reference=opts.reference,
             )
-            ei_by_chan = ei_res["ei_scores"]
+            # Bipolar scores name pairs; ground truth names contacts.
+            ei_by_chan = (
+                project_pairs_to_contacts(ei_res["ei_scores"], ei_res["pairs"])
+                if opts.reference == "bipolar" else ei_res["ei_scores"]
+            )
         except Exception as e:
             return None, f"EI signal processing error: {e}"
 
@@ -222,8 +237,14 @@ def process_run(edf_path, ieeg_dir, base_name, sub_id, opts):
 
     # Select ranking strategy
     if opts.mode == "ei":
-        ranked_channels = ei_res["ranked_channels"]
+        # Rank from ei_by_chan, not ei_res["ranked_channels"] -- under bipolar the
+        # latter ranks pairs, and evaluation is per contact.
         scores_by_chan = ei_by_chan
+        ranked_channels = sorted(
+            scores_by_chan,
+            key=lambda c: scores_by_chan[c] if np.isfinite(scores_by_chan[c]) else -np.inf,
+            reverse=True,
+        )
     elif opts.mode == "hfo":
         ranked_channels = hfo_res["ranked_channels"]
         scores_by_chan = hi_by_chan
@@ -248,6 +269,7 @@ def process_run(edf_path, ieeg_dir, base_name, sub_id, opts):
     res_dict = {
         "subject": sub_id,
         "run_id": base_name,
+        "acq": parse_acq(base_name),
         "run_label": f"Run {run_label}",
         "t_onset_sec": round(t_onset, 2),
         "duration_sec": round(duration, 2),
@@ -283,6 +305,10 @@ def main():
     parser.add_argument("--band-high", type=float, default=500.0, help="Filter high corner frequency in Hz")
     parser.add_argument("--mains-freq", type=float, default=DEFAULT_MAINS_FREQ, help="Mains notch frequency in Hz")
     parser.add_argument("--threshold-k", type=float, default=ONSET_THRESHOLD_K, help="Onset detection threshold k")
+    parser.add_argument("--reference", choices=["car", "bipolar"], default="car",
+                        help="EI re-reference montage")
+    parser.add_argument("--acq", choices=["all", "seeg", "ecog"], default="all",
+                        help="Restrict to one BIDS acquisition type")
 
     args = parser.parse_args()
     args.er_low_band = BARTOLOMEI_LOW_BAND
@@ -302,6 +328,7 @@ def main():
     print(f"Total Subjects   : {total_subjects}", flush=True)
     print(f"Evaluation Mode  : {args.mode.upper()}", flush=True)
     print(f"EI Algorithm     : {args.ei_method}", flush=True)
+    print(f"Reference        : {args.reference}", flush=True)
     print(f"Output CSV       : {args.output_csv}", flush=True)
     print(f"Output HTML      : {args.output_html}", flush=True)
     print("=" * 90, flush=True)
@@ -351,6 +378,9 @@ def main():
             except Exception:
                 pass
 
+        if args.acq != "all":
+            edfs = [f for f in edfs if parse_acq(os.path.basename(f)) == args.acq]
+
         edfs = sorted(edfs)
         if not edfs:
             print(f"[{idx}/{total_subjects}] {sub_id:<12} | SKIPPED (No downloaded binary EDF files)", flush=True)
@@ -382,6 +412,7 @@ def main():
                 all_results.append({
                     "subject": sub_id,
                     "run_id": base_name,
+                    "acq": parse_acq(base_name),
                     "run_label": base_name,
                     "t_onset_sec": 0,
                     "duration_sec": 0,

@@ -11,6 +11,7 @@ import numpy as np
 from scipy.signal import convolve2d
 
 from app.sigproc.filters import DEFAULT_MAINS_FREQ, bandpass, filter_for_display
+from app.sigproc.montage import apply_bipolar, project_pairs_to_contacts
 
 logger = logging.getLogger(__name__)
 
@@ -279,18 +280,32 @@ def ei_diagnostics(onset, crossed, fs, n_samples,
     }
 
 
-def save_ei_result(edf_filename, chn_names, ei, ei_raw, hfer, time_coef, diagnostics=None):
+def save_ei_result(edf_filename, chn_names, ei, ei_raw, hfer, time_coef, diagnostics=None,
+                   ei_by_contact=None):
     """Persist EI results next to the edf file, in an EIdets/ folder alongside it --
     mirrors where HI_apis.py saves HFOdets/ next to the inter-ictal edf -- so
-    downstream steps (soz.py) can reuse them instead of recomputing EI."""
+    downstream steps (soz.py) can reuse them instead of recomputing EI.
+
+    `chn_names` are the analysed channels, which under a bipolar reference are
+    pairs (A1-A2). `ei_by_contact` carries the same result projected back onto
+    contacts, since SOZ fusion and the 3D view join on contact names.
+    """
+    # Keying by name below would keep only the last of each, silently dropping results.
+    duplicates = {n for n in chn_names if list(chn_names).count(n) > 1}
+    if duplicates:
+        raise ValueError(f"EI result: duplicate channel names {sorted(duplicates)}")
     filedir = os.path.dirname(os.path.abspath(edf_filename))
     results_dir = os.path.join(filedir, 'EIdets')
     os.makedirs(results_dir, exist_ok=True)
     file_pre_ext = os.path.basename(edf_filename).split('.')[0]
     out_path = os.path.join(results_dir, file_pre_ext + '_ei.npz')
+    by_contact = ei_by_contact if ei_by_contact is not None else dict(zip(chn_names, ei))
+    contact_names = list(by_contact)
     # diagnostics as JSON text, not a pickled dict, so loading needs no allow_pickle
     np.savez(out_path, ei=ei, ei_raw=ei_raw, hfer=hfer, time_coef=time_coef,
              chn_names=np.array(chn_names),
+             contact_names=np.array(contact_names),
+             ei_by_contact=np.array([by_contact[n] for n in contact_names], dtype=float),
              diagnostics=np.array(json.dumps(diagnostics or {})))
     return out_path
 
@@ -319,15 +334,21 @@ def find_saturated_channels(data, frac_threshold=0.01):
 
 def load_ei_result(path):
     data = np.load(path, allow_pickle=True)
-    # archives written before diagnostics existed simply have no such key
+    # archives written before diagnostics/contact projection existed have no such key
     diagnostics = json.loads(str(data['diagnostics'])) if 'diagnostics' in data.files else {}
+    chn_names = [str(n) for n in data['chn_names']]
+    ei = data['ei'].tolist()
+    has_contacts = 'contact_names' in data.files and 'ei_by_contact' in data.files
     return {
-        "chn_names": [str(n) for n in data['chn_names']],
-        "ei": data['ei'].tolist(),
+        "chn_names": chn_names,
+        "ei": ei,
         "ei_raw": data['ei_raw'].tolist(),
         "hfer": data['hfer'].tolist(),
         "time_coef": data['time_coef'].tolist(),
         "diagnostics": diagnostics,
+        # Pre-projection archives were all CAR, so their channels are contacts.
+        "contact_names": ([str(n) for n in data['contact_names']] if has_contacts else chn_names),
+        "ei_by_contact": (data['ei_by_contact'].tolist() if has_contacts else ei),
     }
 
 
@@ -347,6 +368,7 @@ def compute_ei_pipeline(
     high_band: tuple = BARTOLOMEI_HIGH_BAND,
     threshold_k: float = ONSET_THRESHOLD_K,
     span_start: float = 0.0,
+    reference: str = "car",
 ) -> dict:
     """Run full end-to-end EI calculation on raw array data without DB dependencies.
 
@@ -362,6 +384,8 @@ def compute_ei_pipeline(
         low_band, high_band: Sub-bands for 'band_ratio' method.
         threshold_k: Robust sigma multiplier for onset detection.
         span_start: Offset in seconds of raw_data[0] relative to original recording.
+        reference: 'car' (default) or 'bipolar'. Bipolar derives adjacent
+            same-shaft pairs, so the returned channel names are pairs (A1-A2).
 
     Returns:
         Dict with keys:
@@ -369,21 +393,34 @@ def compute_ei_pipeline(
             onset: ndarray (n_channels,) sample indices relative to target window
             crossed: boolean ndarray (n_channels,)
             diagnostics: dict
-            ei_scores: dict mapping channel name -> ei score (0.0 for invalid/NaN)
+            ei_scores: dict mapping channel name -> ei score (NaN where undefined)
             ranked_channels: list of channel names sorted by EI score descending
     """
     if ei_method not in ("band_ratio", "broadband"):
         raise ValueError(f"unknown ei_method {ei_method!r}; expected 'band_ratio' or 'broadband'")
+    if reference not in ("car", "bipolar"):
+        raise ValueError(f"unknown reference {reference!r}; expected 'car' or 'bipolar'")
 
+    # Clipping is a property of the raw contact, so check before any derivation.
     saturated = find_saturated_channels(raw_data)
+    saturated_names = [chn_names[i] for i in saturated]
     if saturated:
         logger.warning(
             "%d/%d channel(s) are clipped at the amplifier rail for >1%% of the analysed "
             "window; their energy is flat-topped and their EI is not meaningful: %s",
-            len(saturated), len(chn_names), [chn_names[i] for i in saturated],
+            len(saturated), len(chn_names), saturated_names,
         )
 
-    filtered = filter_for_display(raw_data, fs, band_low, band_high, mains_freq=mains_freq)
+    pairs = None
+    if reference == "bipolar":
+        raw_data, chn_names, pairs = apply_bipolar(raw_data, chn_names)
+        if pairs is None:
+            logger.warning("falling back to CAR: this recording cannot be paired")
+            reference = "car"  # diagnostics must record what actually ran
+    filtered = filter_for_display(
+        raw_data, fs, band_low, band_high, mains_freq=mains_freq,
+        reference="none" if reference == "bipolar" else "car",
+    )
 
     def _idx(t):
         return int(round((t - span_start) * fs))
@@ -408,10 +445,11 @@ def compute_ei_pipeline(
     onset_res = determine_threshold_onset(norm_target, norm_base, threshold_k=threshold_k)
     diag = {
         "method": ei_method,
+        "reference": reference,
         "band_low": band_low,
         "band_high": band_high,
         "mains_freq": mains_freq,
-        "saturated_channels": [chn_names[i] for i in saturated],
+        "saturated_channels": saturated_names,
         "dead_channels": [n for n, v in zip(chn_names, np.isfinite(ei_raw)) if not v],
         **ei_diagnostics(onset_res.onset, onset_res.crossed, fs, norm_target.shape[1]),
     }
@@ -419,10 +457,12 @@ def compute_ei_pipeline(
         diag["er_low_band"] = list(low_band)
         diag["er_high_band"] = list(high_band)
 
-    ei_scores = {
-        name: float(ei[i]) if np.isfinite(ei[i]) else 0.0 for i, name in enumerate(chn_names)
-    }
-    ranked_channels = sorted(ei_scores.keys(), key=lambda k: ei_scores[k], reverse=True)
+    # NaN stays NaN: a channel with no usable baseline is undefined, not quiet.
+    ei_scores = {name: float(ei[i]) for i, name in enumerate(chn_names)}
+    ranked_channels = sorted(
+        ei_scores, key=lambda k: ei_scores[k] if np.isfinite(ei_scores[k]) else -np.inf,
+        reverse=True,
+    )
 
     return {
         "ei": ei,
@@ -434,5 +474,13 @@ def compute_ei_pipeline(
         "diagnostics": diag,
         "ei_scores": ei_scores,
         "ranked_channels": ranked_channels,
+        "pairs": pairs,  # None unless reference='bipolar'
+        # Derived names -- pairs under bipolar, contacts otherwise. Callers must
+        # use these rather than the names they passed in.
+        "chn_names": list(chn_names),
+        # Contact-keyed scores for everything downstream that joins on contacts
+        # (SOZ fusion, the 3D view). Identity mapping under CAR.
+        "ei_by_contact": (project_pairs_to_contacts(ei_scores, pairs)
+                          if pairs is not None else dict(ei_scores)),
     }
 

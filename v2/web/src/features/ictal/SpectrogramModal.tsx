@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Loader, Modal, Stack, Text } from "@mantine/core";
 import { ApiError } from "../../api/client";
+import type { EiReference } from "../../api/endpoints";
 import { useEdfWindow } from "../../api/queries/useEdf";
 import { hotColorRgb } from "../../lib/colormap";
 import { computeSpectrogram } from "../../lib/spectrogram";
@@ -12,6 +13,9 @@ interface SpectrogramModalProps {
   range: [number, number] | null;
   bandLow: number;
   bandHigh: number;
+  /** Must match the reference the EI result was computed under, or `channel`
+   * names a derivation the server cannot resolve. */
+  reference: EiReference;
   onClose: () => void;
 }
 
@@ -27,7 +31,7 @@ const MAX_WINDOW_SECONDS = 60;
 /** Per-channel drill-down: raw target-window trace + STFT spectrogram,
  * mirroring client_ictal.py's ei_press_func popup (left-click a bar in the
  * EI chart). */
-export function SpectrogramModal({ subjectId, edfArtifactId, channel, range, bandLow, bandHigh, onClose }: SpectrogramModalProps) {
+export function SpectrogramModal({ subjectId, edfArtifactId, channel, range, bandLow, bandHigh, reference, onClose }: SpectrogramModalProps) {
   const enabled = channel != null && range != null;
   const start = range?.[0] ?? 0;
   const end = Math.min(range?.[1] ?? 0, start + MAX_WINDOW_SECONDS);
@@ -36,7 +40,7 @@ export function SpectrogramModal({ subjectId, edfArtifactId, channel, range, ban
   const { data, isFetching, error } = useEdfWindow(
     subjectId,
     edfArtifactId,
-    { start, end, channels: channel ? [channel] : undefined, bandLow, bandHigh },
+    { start, end, channels: channel ? [channel] : undefined, bandLow, bandHigh, reference },
     enabled,
     0,
   );
@@ -117,13 +121,22 @@ export function SpectrogramModal({ subjectId, edfArtifactId, channel, range, ban
   })();
 
   return (
-    <Modal opened={channel != null} onClose={onClose} title={channel ? `Channel ${channel}` : ""} size="lg">
+    <Modal
+      opened={channel != null}
+      onClose={onClose}
+      title={channel ? `${reference === "bipolar" ? "Derivation" : "Channel"} ${channel}` : ""}
+      size="lg"
+    >
       <Stack>
         <Text size="xs" c="dimmed">
           {truncated
             ? `Target window ${start.toFixed(1)}-${(range?.[1] ?? 0).toFixed(1)}s, showing the first ${MAX_WINDOW_SECONDS}s`
             : `Target window ${start.toFixed(1)}-${end.toFixed(1)}s`}
-          {` · filtered ${bandLow}-${bandHigh}Hz, single channel so no common-average reference`}
+          {` · filtered ${bandLow}-${bandHigh}Hz, ${
+            reference === "bipolar"
+              ? "referenced against its neighbouring contact"
+              : "single channel so no common-average reference"
+          }`}
         </Text>
         {isFetching && !samples && <Loader size="sm" />}
         {status && (

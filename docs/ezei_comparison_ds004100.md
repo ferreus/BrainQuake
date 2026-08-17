@@ -1,5 +1,13 @@
 # Benchmark Report: BrainQuake EI Band Ratio vs. EZEI R Package (ds004100)
 
+> [!WARNING]
+> **Confounded by montage choice (added 2026-08-16).** Every number below was produced
+> with BrainQuake on a common-average reference. Switching to bipolar alone improves our
+> SEEG SOZ recall by +7.4 pp (p = 0.0066) — comparable to the +9.6 pp advantage reported
+> here. If EZEI references differently, some of that advantage is montage, not method.
+> Do not quote these figures as a method comparison until EZEI's referencing is checked.
+> See [ei_reference_montage_ds004100.md](ei_reference_montage_ds004100.md).
+
 **Date:** 2026-08-13  
 **Dataset:** OpenNeuro `ds004100` (iEEG recordings from patients with focal epilepsy)  
 **Evaluated Runs:** 213 seizure recordings  

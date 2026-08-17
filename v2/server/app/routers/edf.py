@@ -65,6 +65,10 @@ def get_edf_window(
         DEFAULT_MAINS_FREQ,
         description="power-line frequency to notch: 50 Europe/Asia, 60 North America",
     ),
+    reference: str = Query(
+        "car",
+        description="'car' (channels are contacts) or 'bipolar' (channels are derivations, A1-A2)",
+    ),
     db: Session = Depends(get_db),
 ):
     subject = _get_subject_or_404(subject_id, db)
@@ -80,6 +84,7 @@ def get_edf_window(
             band_low=band_low,
             band_high=band_high,
             mains_freq=mains_freq,
+            reference=reference,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e

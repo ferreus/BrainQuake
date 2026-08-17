@@ -45,8 +45,13 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
     ei_method = params.get("ei_method", "band_ratio")
     low_band = tuple(params.get("er_low_band") or BARTOLOMEI_LOW_BAND)
     high_band = tuple(params.get("er_high_band") or BARTOLOMEI_HIGH_BAND)
+    # Legacy params carry no reference and were computed under CAR; retrying such a
+    # job must reproduce its original result. New jobs always send one explicitly.
+    reference = params.get("reference", "car")
     if ei_method not in ("band_ratio", "broadband"):
         raise ValueError(f"unknown ei_method {ei_method!r}; expected 'band_ratio' or 'broadband'")
+    if reference not in ("car", "bipolar"):
+        raise ValueError(f"unknown reference {reference!r}; expected 'car' or 'bipolar'")
 
     job.progress_pct = 10.0
     job.progress_message = "Loading edf and applying notch + bandpass filter"
@@ -110,6 +115,7 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
         low_band=low_band,
         high_band=high_band,
         span_start=span_start,
+        reference=reference,
     )
 
     diagnostics = pipeline_res["diagnostics"]
@@ -122,12 +128,15 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
 
     ei_result_path = save_ei_result(
         edf_path,
-        chn_names,
+        # the pipeline's own names, not the ones passed in: under bipolar these
+        # are pairs (A1-A2) and there is one fewer per shaft
+        pipeline_res["chn_names"],
         pipeline_res["ei"],
         pipeline_res["ei_raw"],
         pipeline_res["hfer"],
         pipeline_res["time_coef"],
         diagnostics=diagnostics,
+        ei_by_contact=pipeline_res["ei_by_contact"],
     )
     register_artifact(db, subject.id, job.id, "ei_npz", ei_result_path)
 

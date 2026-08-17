@@ -14,8 +14,10 @@ from app.services.soz import (
     _by_channel,
     build_result_table,
     describe_name_overlap,
+    load_ei_result,
     rank_pct,
 )
+from app.sigproc.ei import save_ei_result
 
 
 def _contacts(names):
@@ -165,3 +167,87 @@ def test_hfo_segment_start_times_follow_the_analysis_window(tmp_path):
     starts = sorted(t[0] for t in times[0])
     assert starts[0] == pytest.approx(window_start + 20.0, abs=0.1)
     assert starts[1] == pytest.approx(window_start + seg_len + 20.0, abs=0.1)
+
+
+# --------------------------------------------------------------------------
+# Bipolar EI must still join to contacts
+# --------------------------------------------------------------------------
+
+def test_bipolar_ei_archive_loads_keyed_by_contact(tmp_path):
+    """The regression that motivated storing a contact projection.
+
+    Under a bipolar reference the analysed channels are pairs (A1-A2), which
+    match no contact in the electrode map -- every lookup would miss, every EI
+    would become NaN, and the fusion would silently degrade to HFO-only.
+    """
+    edf = tmp_path / "rec.edf"
+    edf.write_bytes(b"")
+    path = save_ei_result(
+        str(edf), ["A1-A2", "A2-A3"],
+        np.array([1.0, 0.4]), np.array([2.0, 0.8]),
+        np.array([4.0, 1.0]), np.array([1.0, 0.5]),
+        diagnostics={"reference": "bipolar"},
+        ei_by_contact={"A1": 1.0, "A2": 1.0, "A3": 0.4},
+    )
+    by_chan = load_ei_result(path)
+    assert by_chan == {"A1": 1.0, "A2": 1.0, "A3": 0.4}
+
+    overlap = describe_name_overlap(["A1", "A2", "A3"], by_chan, "ei")
+    assert overlap["matched"] == 3, "bipolar EI must still match the electrode map"
+
+    rows = build_result_table(_contacts(["A1", "A2", "A3"]), ei_by_chan=by_chan)
+    ranked = [r["contact"] for r in rows]
+    assert set(ranked[:2]) == {"A1", "A2"}, "both members of the hot pair rank above A3"
+    assert ranked[-1] == "A3"
+    assert all(not np.isnan(r["ei"]) for r in rows)
+
+
+def test_car_ei_archive_still_loads_by_channel(tmp_path):
+    edf = tmp_path / "rec.edf"
+    edf.write_bytes(b"")
+    path = save_ei_result(
+        str(edf), ["A1", "A2"],
+        np.array([1.0, 0.5]), np.array([2.0, 1.0]),
+        np.array([4.0, 1.0]), np.array([1.0, 0.5]),
+        diagnostics={"reference": "car"},
+    )
+    assert load_ei_result(path) == {"A1": 1.0, "A2": 0.5}
+
+
+def test_a_dead_channel_stays_nan_through_the_production_save_path(tmp_path):
+    """run_ei_compute_job always passes ei_by_contact, so that is the path that
+    decides whether an undefined EI survives -- 0.0 would rank it as 'quiet' and
+    shift every other contact's percentile."""
+    edf = tmp_path / "rec.edf"
+    edf.write_bytes(b"")
+    ei = np.array([1.0, 0.5, np.nan])
+    names = ["A1", "A2", "A3"]
+    path = save_ei_result(
+        str(edf), names, ei, ei, ei, ei,
+        diagnostics={"reference": "car"},
+        ei_by_contact=dict(zip(names, ei)),
+    )
+    loaded = load_ei_result(path)
+    assert np.isnan(loaded["A3"])
+
+    rows = {r["contact"]: r for r in build_result_table(names, ei_by_chan=loaded)}
+    assert np.isnan(rows["A3"]["ei_percentile"])
+    assert rows["A1"]["ei_percentile"] == 1.0
+    assert rows["A2"]["ei_percentile"] == 0.0
+
+
+def test_duplicate_channel_names_are_refused_at_save_time(tmp_path):
+    edf = tmp_path / "rec.edf"
+    edf.write_bytes(b"")
+    ones = np.ones(2)
+    with pytest.raises(ValueError, match="duplicate channel names"):
+        save_ei_result(str(edf), ["A1", "A1"], ones, ones, ones, ones)
+
+
+def test_ei_archive_without_a_contact_projection_falls_back(tmp_path):
+    """Archives written before the projection existed were all CAR."""
+    path = tmp_path / "old_ei.npz"
+    np.savez(path, ei=np.array([1.0, 0.5]), ei_raw=np.array([2.0, 1.0]),
+             hfer=np.array([4.0, 1.0]), time_coef=np.array([1.0, 0.5]),
+             chn_names=np.array(["A1", "A2"]))
+    assert load_ei_result(str(path)) == {"A1": 1.0, "A2": 0.5}

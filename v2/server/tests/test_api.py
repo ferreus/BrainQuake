@@ -1968,13 +1968,13 @@ def test_ei_honours_remain_chns():
     """
     sid, artifact_id, ch_names, _ = _create_subject_with_edf("EiRemainChns")
 
-    _, state = _run_ei_and_load(sid, artifact_id)
+    _, state = _run_ei_and_load(sid, artifact_id, reference="car")
     assert state == "finished"
     full = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
     assert full["chn_names"] == ch_names
 
     keep = ch_names[:2]
-    _, state = _run_ei_and_load(sid, artifact_id, remain_chns=keep)
+    _, state = _run_ei_and_load(sid, artifact_id, reference="car", remain_chns=keep)
     assert state == "finished"
     subset = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
     assert subset["chn_names"] == keep, "the result must only contain the kept channels"
@@ -2202,3 +2202,109 @@ def test_delete_edf_recording_removes_recording_params():
         assert db.query(RecordingParams).filter(RecordingParams.edf_artifact_id == artifact_id).count() == 0
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# EI reference montage (CAR vs bipolar)
+# ---------------------------------------------------------------------------
+
+def test_ei_defaults_to_bipolar_and_reports_pair_names():
+    """Bipolar beats CAR on SEEG SOZ localization, so it is the default for new
+    jobs -- see docs/ei_reference_montage_ds004100.md."""
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("EiBipolarDefault")
+
+    job_id, state = _run_ei_and_load(sid, artifact_id)
+    assert state == "finished"
+
+    params = client.get(f"/jobs/{job_id}").json()["params_json"]
+    assert params["reference"] == "bipolar"
+
+    result = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
+    assert result["diagnostics"]["reference"] == "bipolar"
+    # CH1..CH4 -> three derivations, and the analysed names are pairs.
+    assert result["chn_names"] == ["CH1-CH2", "CH2-CH3", "CH3-CH4"]
+    assert len(result["ei"]) == len(result["chn_names"])
+    # ... but the archive still carries a contact-keyed projection for fusion.
+    assert result["contact_names"] == ch_names
+    assert len(result["ei_by_contact"]) == len(ch_names)
+
+
+def test_ei_job_saved_before_reference_existed_replays_as_car():
+    """Retrying a legacy job must reproduce its original result, not silently
+    switch method."""
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("EiLegacyReplay")
+
+    job = Job(
+        subject_id=sid,
+        job_type="ei_compute",
+        state="queued",
+        params_json={
+            "edf_artifact_id": artifact_id,
+            "baseline_start": 0.0, "baseline_end": 3.0,
+            "target_start": 4.0, "target_end": 9.0,
+        },  # no "reference" key, as written before this field existed
+        progress_pct=0.0,
+        progress_message="Job queued",
+    )
+    with SessionLocal() as db:
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+
+    run_job(job_id)
+    assert client.get(f"/jobs/{job_id}").json()["state"] == "finished"
+    result = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
+    assert result["diagnostics"]["reference"] == "car"
+    assert result["chn_names"] == ch_names
+
+
+def test_bipolar_preview_lists_the_derivations_that_would_be_built():
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("EiBipolarPreview")
+
+    r = client.get(f"/subjects/{sid}/ictal/{artifact_id}/bipolar-preview")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["n_contacts"] == len(ch_names)
+    assert body["pairs"] == ["CH1-CH2", "CH2-CH3", "CH3-CH4"]
+    assert body["n_pairs"] == 3
+    assert body["unpairable"] == []
+    assert body["skipped_gaps"] == []
+
+
+def test_bipolar_preview_reflects_excluded_channels():
+    """Dropping a contact legitimately opens a numbering gap, and the preview
+    must show the montage that would actually result."""
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("EiPreviewExclusions")
+
+    keep = [ch_names[0], ch_names[1], ch_names[3]]  # CH1, CH2, CH4 -- CH3 dropped
+    r = client.get(
+        f"/subjects/{sid}/ictal/{artifact_id}/bipolar-preview",
+        params=[("remain_chns", c) for c in keep],
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pairs"] == ["CH1-CH2"], "CH2-CH4 spans two contact spacings"
+    assert body["skipped_gaps"] == [{"shaft": "CH", "between": ["CH2", "CH4"]}]
+
+
+def test_edf_window_serves_bipolar_derivations():
+    """The result panel's drill-down asks for the channel it charted, which under
+    bipolar is a pair name -- the window endpoint has to resolve it."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfWindowBipolar")
+
+    r = client.get(
+        f"/subjects/{sid}/edf/{artifact_id}/window",
+        params={"start": 0.0, "end": 2.0, "channels": "CH1-CH2", "reference": "bipolar"},
+    )
+    assert r.status_code == 200, r.text
+    window = _parse_edf_window_binary(r.content)
+    assert window["channels"] == ["CH1-CH2"]
+    assert window["data"].shape[0] == 1
+
+    bad = client.get(
+        f"/subjects/{sid}/edf/{artifact_id}/window",
+        params={"start": 0.0, "end": 2.0, "channels": "CH1", "reference": "bipolar"},
+    )
+    assert bad.status_code == 400
+    assert "unknown derivation" in bad.json()["detail"]

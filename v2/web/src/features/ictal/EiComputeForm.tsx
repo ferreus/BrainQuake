@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Group, NumberInput, Paper, Text, Title } from "@mantine/core";
+import { Button, Group, NumberInput, Paper, SegmentedControl, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
+import type { UseQueryResult } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
-import type { EiComputeParams } from "../../api/endpoints";
-import { useComputeEi } from "../../api/queries/useIctal";
+import type { BipolarPreview, EiComputeParams, EiReference } from "../../api/endpoints";
+import { useBipolarPreview, useComputeEi } from "../../api/queries/useIctal";
 import { useJobPolling } from "../../api/queries/useJobPolling";
 import { recordingParamsQueryKey } from "../../api/queries/useRecordingParams";
 import { TERMINAL_JOB_STATES } from "../../api/types";
@@ -44,6 +45,9 @@ interface EiComputeFormProps {
 export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, remainChannels, mainsFreq, initialParams }: EiComputeFormProps) {
   const [bandLow, setBandLow] = useState(1.0);
   const [bandHigh, setBandHigh] = useState(300.0);
+  // Bipolar by default: it beats CAR on SEEG SOZ localization
+  // (docs/ei_reference_montage_ds004100.md).
+  const [reference, setReference] = useState<EiReference>("bipolar");
   // 50Hz Europe/Asia, 60Hz North America. The wrong value notches clean signal
   // and leaves the real interference in place.
   const [jobId, setJobId] = useState<number | undefined>();
@@ -59,7 +63,12 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, rema
     seededEdfId.current = edfArtifactId;
     if (initialParams.band_low != null) setBandLow(initialParams.band_low);
     if (initialParams.band_high != null) setBandHigh(initialParams.band_high);
+    if (initialParams.reference != null) setReference(initialParams.reference);
   }, [edfArtifactId, initialParams]);
+
+  const bipolar = reference === "bipolar";
+  const preview = useBipolarPreview(subjectId, edfArtifactId, remainChannels, bipolar);
+  const noDerivations = bipolar && preview.data != null && preview.data.n_pairs === 0;
 
   const nyquist = sfreq ? sfreq / 2 : undefined;
   const bandHighTooHigh = nyquist != null && bandHigh >= nyquist;
@@ -110,6 +119,7 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, rema
           target_end: selection.targetRange[1],
           band_low: bandLow,
           band_high: bandHigh,
+          reference,
           mains_freq: mainsFreq,
           remain_chns: remainChannels,
         },
@@ -214,6 +224,27 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, rema
         <NumberInput label="Band low (Hz)" value={bandLow} onChange={(v) => setBandLow(Number(v) || 0)} size="xs" />
         <NumberInput label="Band high (Hz)" value={bandHigh} onChange={(v) => setBandHigh(Number(v) || 0)} size="xs" />
       </Group>
+      <Text size="xs" fw={500} mt={8}>
+        Reference
+      </Text>
+      <SegmentedControl
+        size="xs"
+        fullWidth
+        mt={4}
+        value={reference}
+        onChange={(v) => setReference(v as EiReference)}
+        data={[
+          { label: "Bipolar", value: "bipolar" },
+          { label: "Common average", value: "car" },
+        ]}
+      />
+      {bipolar ? (
+        <BipolarSummary query={preview} />
+      ) : (
+        <Text size="xs" c="dimmed" mt={4}>
+          Every channel referenced to the average of all of them.
+        </Text>
+      )}
       <Text size="xs" c="dimmed" mt={4}>
         Mains {mainsFreq}Hz &mdash; set on the trace toolbar, shared with the display filter
       </Text>
@@ -227,6 +258,12 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, rema
           Band low must be above 0 and below band high.
         </Text>
       )}
+      {noDerivations && (
+        <Text size="xs" c="orange" mt={4}>
+          No derivations can be built from these channel names; the common-average
+          reference will be used instead.
+        </Text>
+      )}
       <Button size="xs" mt="sm" fullWidth loading={running} disabled={!ready} onClick={handleCompute}>
         Compute EI
       </Button>
@@ -236,5 +273,55 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, rema
         </Text>
       )}
     </Paper>
+  );
+}
+
+/** What the bipolar montage will actually analyse. An unpairable naming scheme
+ * or a gap left by an excluded contact is otherwise only visible after a job
+ * has already run. */
+function BipolarSummary({ query }: { query: UseQueryResult<BipolarPreview> }) {
+  if (query.isPending) {
+    return (
+      <Text size="xs" c="dimmed" mt={4}>
+        Checking which contacts pair...
+      </Text>
+    );
+  }
+  if (query.isError || !query.data) {
+    return (
+      <Text size="xs" c="orange" mt={4}>
+        Could not check the montage; the job will report any problem.
+      </Text>
+    );
+  }
+  const { n_pairs, n_contacts, unpairable, skipped_gaps, unknown_channels } = query.data;
+  return (
+    <>
+      <Text size="xs" c="dimmed" mt={4}>
+        Adjacent contacts on each shaft (A1-A2, A2-A3, ...) &mdash; {n_pairs} derivation
+        {n_pairs === 1 ? "" : "s"} from {n_contacts} contacts.
+      </Text>
+      {unpairable.length > 0 && (
+        <Text size="xs" c="orange" mt={2}>
+          {unpairable.length} contact{unpairable.length === 1 ? "" : "s"} left out:{" "}
+          {unpairable.slice(0, 6).join(", ")}
+          {unpairable.length > 6 ? ", ..." : ""}
+        </Text>
+      )}
+      {skipped_gaps.length > 0 && (
+        <Text size="xs" c="orange" mt={2}>
+          {skipped_gaps.length} numbering gap{skipped_gaps.length === 1 ? "" : "s"} not
+          bridged: {skipped_gaps.slice(0, 3).map((g) => g.between.join("/")).join(", ")}
+          {skipped_gaps.length > 3 ? ", ..." : ""}
+        </Text>
+      )}
+      {unknown_channels.length > 0 && (
+        <Text size="xs" c="red" mt={2}>
+          Not in this recording, so the job will fail:{" "}
+          {unknown_channels.slice(0, 6).join(", ")}
+          {unknown_channels.length > 6 ? ", ..." : ""}
+        </Text>
+      )}
+    </>
   );
 }

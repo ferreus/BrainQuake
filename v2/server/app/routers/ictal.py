@@ -2,7 +2,7 @@ import math
 import os
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, model_validator
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,10 @@ from app.models import Artifact, Job, Subject
 from app.schemas import JobResponse
 from app.services import ictal as ictal_service
 from app.services import recording_params as recording_params_service
+from app.services.edf_common import resolve_edf_path
+from app.sigproc.channels import load_seeg
 from app.sigproc.filters import DEFAULT_MAINS_FREQ
+from app.sigproc.montage import bipolar_plan
 
 router = APIRouter(prefix="/subjects", tags=["ictal"])
 
@@ -60,6 +63,10 @@ class EiRequest(BaseModel):
     ei_method: Literal["band_ratio", "broadband"] = "band_ratio"
     er_low_band: tuple[float, float] | None = None   # defaults to BARTOLOMEI_LOW_BAND
     er_high_band: tuple[float, float] | None = None  # defaults to BARTOLOMEI_HIGH_BAND
+    # Bipolar by default: it beats CAR on SEEG SOZ localization
+    # (docs/ei_reference_montage_ds004100.md). Jobs saved before this field
+    # existed replay as CAR -- see services/ictal.py.
+    reference: Literal["car", "bipolar"] = "bipolar"
 
     @model_validator(mode="after")
     def _check_windows(self):
@@ -120,6 +127,47 @@ def compute_ei(subject_id: int, edf_artifact_id: int, request: EiRequest, db: Se
     db.refresh(job)
     recording_params_service.save_ictal_params(db, edf_artifact_id, request.model_dump())
     return job
+
+
+@router.get("/{subject_id}/ictal/{edf_artifact_id}/bipolar-preview")
+def bipolar_preview(
+    subject_id: int,
+    edf_artifact_id: int,
+    remain_chns: list[str] | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """The derivations a bipolar montage would build for this recording.
+
+    Lets the client show what it is about to compute on -- an unpairable naming
+    scheme is otherwise only discovered after the job fails.
+    """
+    subject = _get_subject_or_404(subject_id, db)
+    artifact = db.query(Artifact).filter(
+        Artifact.id == edf_artifact_id, Artifact.subject_id == subject_id
+    ).first()
+    if not artifact:
+        raise HTTPException(status_code=404, detail="edf artifact not found for this subject")
+
+    raw = load_seeg(resolve_edf_path(subject, artifact))
+    chn_names = list(raw.ch_names)
+    raw.close()
+    # Exclusions are applied first: dropping a contact legitimately opens a
+    # numbering gap, and the preview must show the montage that would result.
+    unknown = []
+    if remain_chns:
+        wanted = set(remain_chns)
+        unknown = sorted(wanted - set(chn_names))  # the EI job rejects these outright
+        chn_names = [n for n in chn_names if n in wanted]
+
+    plan = bipolar_plan(chn_names)
+    return {
+        "n_contacts": len(chn_names),
+        "n_pairs": len(plan["pairs"]),
+        "pairs": [p.name for p in plan["pairs"]],
+        "unpairable": plan["unpairable"],
+        "skipped_gaps": plan["skipped_gaps"],
+        "unknown_channels": unknown,
+    }
 
 
 @router.get("/{subject_id}/ictal/{edf_artifact_id}/ei-result")

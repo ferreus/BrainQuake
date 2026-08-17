@@ -19,11 +19,13 @@ from app.sigproc.channels import seeg_contacts
 from app.sigproc.ei import (
     compute_band_ratio,
     compute_ei_index,
+    compute_ei_pipeline,
     compute_hfer,
     determine_threshold_onset,
     ei_diagnostics,
     find_saturated_channels,
     load_ei_result,
+    save_ei_result,
 )
 from app.sigproc.filters import bandpass, filter_for_display
 
@@ -441,3 +443,70 @@ def test_ei_result_written_before_diagnostics_existed_still_loads(tmp_path):
     result = load_ei_result(str(path))
     assert result["chn_names"] == ["A1", "A2"]
     assert result["diagnostics"] == {}
+    # Pre-projection archives were all CAR, so their channels are their contacts.
+    assert result["contact_names"] == ["A1", "A2"]
+    assert result["ei_by_contact"] == [1.0, 0.5]
+
+
+def test_ei_result_round_trips_the_contact_projection(tmp_path):
+    edf = tmp_path / "rec.edf"
+    edf.write_bytes(b"")
+    path = save_ei_result(
+        str(edf), ["A1-A2", "A2-A3"],
+        np.array([1.0, 0.4]), np.array([2.0, 0.8]),
+        np.array([4.0, 1.0]), np.array([1.0, 0.5]),
+        diagnostics={"reference": "bipolar"},
+        ei_by_contact={"A1": 1.0, "A2": 1.0, "A3": 0.4},
+    )
+    result = load_ei_result(path)
+    assert result["chn_names"] == ["A1-A2", "A2-A3"]
+    assert result["diagnostics"]["reference"] == "bipolar"
+    assert dict(zip(result["contact_names"], result["ei_by_contact"])) == {
+        "A1": 1.0, "A2": 1.0, "A3": 0.4,
+    }
+
+
+def test_bipolar_pipeline_reports_pairs_and_a_contact_projection():
+    fs, n = 500.0, 4000
+    rng = np.random.default_rng(3)
+    data = rng.normal(0, 1e-5, (4, n))
+    data[2, 2500:] += rng.normal(0, 5e-4, n - 2500)  # A3 gets the discharge
+    names = ["A1", "A2", "A3", "A4"]
+    res = compute_ei_pipeline(
+        raw_data=data, fs=fs, chn_names=names,
+        baseline_start=0.0, baseline_end=3.0, target_start=5.0, target_end=8.0,
+        reference="bipolar",
+    )
+    assert res["chn_names"] == ["A1-A2", "A2-A3", "A3-A4"]
+    assert res["diagnostics"]["reference"] == "bipolar"
+    assert set(res["ei_by_contact"]) == set(names)
+    # A3 sits in the two hottest derivations, so it must outrank the far end.
+    assert res["ei_by_contact"]["A3"] > res["ei_by_contact"]["A1"]
+
+
+def test_unpairable_names_fall_back_to_car():
+    """Diagnostics must record the reference that actually ran, not the one asked for."""
+    fs, n = 500.0, 4000
+    data = np.random.default_rng(5).normal(0, 1e-5, (2, n))
+    names = ["REF", "MARKER"]
+    res = compute_ei_pipeline(
+        raw_data=data, fs=fs, chn_names=names,
+        baseline_start=0.0, baseline_end=3.0, target_start=5.0, target_end=8.0,
+        reference="bipolar",
+    )
+    assert res["pairs"] is None
+    assert res["chn_names"] == names
+    assert res["diagnostics"]["reference"] == "car"
+
+
+def test_car_pipeline_contact_projection_is_the_identity():
+    fs, n = 500.0, 4000
+    data = np.random.default_rng(4).normal(0, 1e-5, (4, n))
+    names = ["A1", "A2", "A3", "A4"]
+    res = compute_ei_pipeline(
+        raw_data=data, fs=fs, chn_names=names,
+        baseline_start=0.0, baseline_end=3.0, target_start=5.0, target_end=8.0,
+        reference="car",
+    )
+    assert res["chn_names"] == names
+    assert res["ei_by_contact"] == res["ei_scores"]

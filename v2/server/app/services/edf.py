@@ -13,6 +13,7 @@ from app.services.edf_common import resolve_edf_path
 from app.services import recording_params as recording_params_service
 from app.sigproc.channels import seeg_contacts
 from app.sigproc.filters import DEFAULT_MAINS_FREQ, filter_for_display
+from app.sigproc.montage import bipolar_pairs
 
 # Synchronous (not a job) windowed EDF fetch for the web client's EEG canvas --
 # closes the gap where EDF files were only ever retrievable whole (raw_edf
@@ -141,6 +142,7 @@ def get_edf_window(
     band_high=None,
     pad: float = 2.0,
     mains_freq: float = DEFAULT_MAINS_FREQ,
+    reference: str = "car",
 ):
     """GET .../edf/{id}/window. When filtering, the requested range is padded
     by `pad` seconds (clamped to the recording) before running the zero-phase
@@ -161,7 +163,28 @@ def get_edf_window(
     start = max(0.0, start)
     end = min(duration, end)
 
-    if channels:
+    if reference not in ("car", "bipolar"):
+        raise ValueError(f"unknown reference {reference!r}; expected 'car' or 'bipolar'")
+
+    # Under bipolar the addressable channels are derivations, not contacts, so
+    # names are resolved against the pairs the montage would build.
+    bipolar = reference == "bipolar"
+    if bipolar:
+        pairs = bipolar_pairs(seeg_contacts(raw.ch_names))
+        by_name = {p.name: p for p in pairs}
+        if channels:
+            missing = set(channels) - set(by_name)
+            if missing:
+                raise ValueError(f"unknown derivation(s) for this recording: {sorted(missing)}")
+            wanted_pairs = [by_name[c] for c in channels]
+        else:
+            wanted_pairs = pairs
+        if not wanted_pairs:
+            raise ValueError("no derivations available: channel names do not pair")
+        index = {n: i for i, n in enumerate(raw.ch_names)}
+        picks = sorted({index[p.contact_a] for p in wanted_pairs}
+                       | {index[p.contact_b] for p in wanted_pairs})
+    elif channels:
         wanted = set(channels)
         picks = [i for i, name in enumerate(raw.ch_names) if name in wanted]
         missing = wanted - set(raw.ch_names)
@@ -181,12 +204,21 @@ def get_edf_window(
     i0, i1 = raw.time_as_index([pad_start, pad_end])
     data, _ = raw[picks, i0:i1]
 
+    if bipolar:
+        row = {raw.ch_names[p]: r for r, p in enumerate(picks)}
+        data = np.stack([data[row[p.contact_a]] - data[row[p.contact_b]] for p in wanted_pairs])
+        out_names = [p.name for p in wanted_pairs]
+    else:
+        out_names = [raw.ch_names[i] for i in picks]
+
     if filtering:
         # NOTE: the common-average reference inside filter_for_display is taken
         # over the *picked* channels, so a client requesting a subset sees
         # slightly different traces than one requesting all of them -- and than
-        # what the EI job computes over its own channel set.
-        data = filter_for_display(data, fs, band_low, band_high, mains_freq=mains_freq)
+        # what the EI job computes over its own channel set. Bipolar data is
+        # already referenced, so CAR must not be applied on top of it.
+        data = filter_for_display(data, fs, band_low, band_high, mains_freq=mains_freq,
+                                  reference="none" if bipolar else "car")
         trim0 = int(round((start - pad_start) * fs))
         trim1 = trim0 + int(round((end - start) * fs))
         data = data[:, trim0:trim1]
@@ -195,7 +227,7 @@ def get_edf_window(
         "fs": fs,
         "start": start,
         "end": end,
-        "channels": [raw.ch_names[i] for i in picks],
+        "channels": out_names,
         "filtered": filtering,
         "band_low": band_low,
         "band_high": band_high,
