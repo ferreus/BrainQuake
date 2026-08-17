@@ -27,7 +27,7 @@ from app.sigproc.fragility import compute_fragility_pipeline
 SEEG_CONTACT_RE = re.compile(r"^[A-Za-z]'?\d+$")
 SHAFT_RE = re.compile(r"^([A-Za-z]+'?)\d+$")
 
-BELLA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/Bella/BellaEDF"))
+BELLA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../datasets/Bella"))
 
 SEIZURE_FILES = [
     ("SZ1P", "DA6465AU_17_20240319072231.edf", r"^SZ 1P$"),
