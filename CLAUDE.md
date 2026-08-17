@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 BrainQuake is a self-hosted research platform for SEEG analysis: electrode localization, brain surface reconstruction (FreeSurfer recon jobs), and seizure-focus computation (EI/HFO/SOZ, neural fragility via external tools). It began as a reproduction of the BrainQuake paper (PMC8782204) and became a personal research platform — the motivating case and real goals are in **[docs/project-direction.md](docs/project-direction.md)**; read it before making prioritization decisions. The paper's algorithms are one replaceable plugin, not the project's purpose.
 
+## Workflow
+
+Single developer. Work happens on `main` and commits go straight to `main` — no PR,
+no review flow, no feature branches unless explicitly asked for one.
+
 ## Repository layout
 
 ```
