@@ -94,8 +94,9 @@ cEI is being asked to work on a window chosen for EI.
 
 ## Results
 
-_To be filled from the runs above._
+Statistically insignificat
 
 ## Decision
 
-_Not yet answered._
+Drop cei from our code.
+
