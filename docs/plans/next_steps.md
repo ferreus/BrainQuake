@@ -15,6 +15,11 @@ flowchart TD
         B --> C["Integrate into BrainQuake sigproc pipeline"]
     end
 
+    subgraph Step1_5 ["Step 1.5: Fix LTV Identifiability (dimensionality, not regularization)"]
+        K["Longer window: 500 ms doubles T"] --> L["Re-measure rho(A), needed lambda, dynamic range"]
+        L --> M["Re-check parity vs EZFragility and the Bella shaft ranking"]
+    end
+
     subgraph Step2 ["Step 2: Spike-HFO & PAC Interictal Localization"]
         D["Extract clean interictal clips (Bella clip 12)"] --> E["Spike detection + Ripple/Fast-Ripple co-occurrence"]
         E --> F["Modulation Index / Phase-Amplitude Coupling (0.5-4Hz to 80-250Hz)"]
@@ -29,7 +34,8 @@ flowchart TD
         I --> J["Generate patient report against post-op resection cavity"]
     end
 
-    Step1 --> Step4
+    Step1 --> Step1_5
+    Step1_5 --> Step4
     Step2 --> Step4
     Step3 --> Step4
 ```
@@ -45,6 +51,17 @@ flowchart TD
 - **Target Metrics:**
   - Verify exact ranking parity against Bella's 8 seizures (`data/ezfragility_result.txt` where shaft D dominates with 4.83 votes/ch).
   - Run full benchmark on OpenNeuro `ds004100` (213 seizure runs).
+
+### Phase 1.5: Fix the LTV fit's identifiability — dimensionality, not regularization
+- **The lead to chase next is dimensionality, not regularization: a longer window (500 ms doubles T at the cost of time resolution).**
+- **Why:** at 184 channels and a 250 ms window, each row of $A$ is fit from 249 sample pairs — **1.35 observations per parameter**. The fit nearly interpolates, so its eigenvalues scatter across the unit circle: measured on Bella, **100% of windows are spectrally unstable under OLS** (median $\rho \approx 1.014$) and 52–77% remain unstable at the $\lambda \approx 10^{-4}$ that both Li et al. and `EZFragility` use. No choice of $\lambda$ fixes an under-constrained fit; it only trades instability for shrinkage.
+- **Ruled out (2026-08-18):** missing preprocessing is *not* the cause. Li et al. specify notch + 0.5 Hz–Nyquist 4th-order Butterworth before CAR, which `export_edf.py` omits. Applying it leaves $\rho_{OLS}$ unchanged (1.0124–1.0156) and makes $\lambda=10^{-4}$ instability *worse* (75–91%). The problem is the $N \approx T$ regime itself.
+- **Cost of the current workaround:** `l2_reg = 0.3` clears stability on every window but parks them all at $\rho \approx 0.998$, compressing the shaft-mean fragility range to CV 2.49% vs R's 8.25% — a 3.3× loss of discriminability — and dropping contact-level Spearman vs `EZFragility` by 0.142 across all 8 seizures.
+- **Candidate fixes, in order of expected payoff:**
+  1. **Longer window** (500 ms → T = 499, 2.7 obs/param) at the cost of time resolution; the direct test.
+  2. **Per-shaft or regional fits** instead of all 184 channels jointly, cutting N rather than raising T.
+  3. Low-rank / factor-structured $A$, if 1 and 2 are insufficient.
+- **Success criterion:** stability at a $\lambda$ near the paper's without the escalation search, with dynamic range at or above R's.
 
 ### Phase 2: Interictal Spike-Ripple Co-occurrence & Phase-Amplitude Coupling (PAC)
 - **Scientific Foundation:** Dimakopoulos et al. 2023 (*Nat Comms*), Weiss et al. 2023, pyHFO 2025.
