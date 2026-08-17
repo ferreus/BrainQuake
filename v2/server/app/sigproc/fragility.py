@@ -30,7 +30,8 @@ _REAL_Z_TOL = 1e-12
 
 def fit_ltv_model(
     X: np.ndarray,
-    l2_reg: float = 1e-5,
+    l2_reg: float = 0.3,
+    max_bisect: int = 20,
 ) -> tuple[np.ndarray, float]:
     """Fit a discrete-time Linear Time-Varying (LTV) dynamical system model.
 
@@ -39,15 +40,27 @@ def fit_ltv_model(
 
     where X has shape (N_channels, T_samples).
 
+    Ridge regression via the normal equations. `l2_reg` is expressed as a
+    fraction of the mean covariance eigenvalue, so the fit is invariant to the
+    signal's units (V vs uV) and to channel count.
+
+    The fit must be spectrally stable (every |eigenvalue(A)| < 1): "minimum
+    perturbation to destabilize" is undefined for an A that's already
+    unstable, and SEEG dynamics are inherently near-unit-root at kHz sampling
+    rates, so a too-small l2_reg leaves most windows on the wrong side of that
+    boundary. `l2_reg`'s default already clears that bar on real Bella
+    recordings; if a window still isn't stable, regularization is grown
+    geometrically and then bisected until it is.
+
     Parameters
     ----------
     X : np.ndarray
         Multi-channel time series window of shape (N, T).
     l2_reg : float
-        L2 Ridge regularization, expressed as a fraction of the mean covariance
-        eigenvalue so the fit is invariant to the signal's units (V vs uV).
-        Needed whenever T <= N or channels are collinear -- note a common-average
-        montage makes X1 rank-deficient by construction.
+        Starting L2 ridge fraction (see above).
+    max_bisect : int
+        Bisection iterations to refine the escalated regularization, if
+        `l2_reg` alone isn't stable.
 
     Returns
     -------
@@ -67,16 +80,36 @@ def fit_ltv_model(
     X2 = X[:, 1:]   # Shape (N, T-1)
 
     cov = X1 @ X1.T
-    if l2_reg > 0:
-        cov_scale = float(np.trace(cov)) / n_channels
-        if cov_scale > 0:
-            cov += (l2_reg * cov_scale) * np.eye(n_channels, dtype=cov.dtype)
+    cross = X1 @ X2.T
+    eye = np.eye(n_channels, dtype=cov.dtype)
+    cov_scale = float(np.trace(cov)) / n_channels
 
-    try:
-        A_T = scipy.linalg.solve(cov, X1 @ X2.T, assume_a="pos")
-        A = A_T.T
-    except (scipy.linalg.LinAlgError, ValueError):
-        A = X2 @ np.linalg.pinv(X1)
+    def fit_at(l2: float) -> np.ndarray:
+        c = cov + (l2 * cov_scale) * eye if (l2 > 0 and cov_scale > 0) else cov
+        try:
+            return scipy.linalg.solve(c, cross, assume_a="pos").T
+        except (scipy.linalg.LinAlgError, ValueError):
+            return X2 @ np.linalg.pinv(X1)
+
+    def spectral_radius(A: np.ndarray) -> float:
+        return float(np.max(np.abs(scipy.linalg.eigvals(A))))
+
+    A = fit_at(l2_reg)
+    rho = spectral_radius(A)
+    if rho >= 1.0:
+        lo, hi = l2_reg, max(l2_reg, 1e-6)
+        while rho >= 1.0 and hi < 1e6:
+            lo, hi = hi, hi * 10.0
+            A = fit_at(hi)
+            rho = spectral_radius(A)
+        for _ in range(max_bisect):
+            mid = (lo + hi) * 0.5
+            A_try = fit_at(mid)
+            rho_try = spectral_radius(A_try)
+            if rho_try < 1.0:
+                hi, A, rho = mid, A_try, rho_try
+            else:
+                lo = mid
 
     X2_pred = A @ X1
     ss_res = float(np.sum((X2 - X2_pred) ** 2))
@@ -237,7 +270,7 @@ def compute_window_fragility(
     X_win: np.ndarray,
     radius: float = 1.0,
     num_freqs: int = 16,
-    l2_reg: float = 1e-5,
+    l2_reg: float = 0.3,
 ) -> tuple[np.ndarray, float]:
     """Compute neural fragility vector for a single time window.
 
@@ -250,7 +283,7 @@ def compute_window_fragility(
     num_freqs : int
         Number of discrete frequencies in [0, pi].
     l2_reg : float
-        Ridge regularizer for LTV model fitting.
+        Ridge regularizer for `fit_ltv_model`'s stability search.
 
     Returns
     -------
@@ -280,7 +313,7 @@ def compute_fragility_pipeline(
     step_s: float = 0.125,
     radius: float = 1.0,
     num_freqs: int = 16,
-    l2_reg: float = 1e-5,
+    l2_reg: float = 0.3,
     eval_window_s: tuple[float, float] | None = None,
     onset_s: float | None = None,
     device: str = "auto",
@@ -304,7 +337,7 @@ def compute_fragility_pipeline(
     num_freqs : int
         Number of frequency bins in [0, pi] for perturbation search.
     l2_reg : float
-        Ridge regularization coefficient.
+        Ridge regularizer for `fit_ltv_model`'s stability search.
     eval_window_s : tuple[float, float] or None
         Optional (t_start, t_end) window in seconds (relative to onset_s if provided,
         or relative to recording start) over which to average fragility for the summary score.
@@ -343,7 +376,7 @@ def compute_fragility_pipeline(
     if win_samples - 1 <= n_channels:
         warnings.warn(
             f"Window has {win_samples - 1} regressors for {n_channels} channels; the LTV fit "
-            f"is underdetermined and driven by l2_reg. Lengthen win_s or reduce channels.",
+            f"is underdetermined and relies on the stability search. Lengthen win_s or reduce channels.",
             stacklevel=2,
         )
 

@@ -58,10 +58,16 @@ def test_cuda_and_numpy_parity():
 
 
 def test_fit_ltv_model_exact_recovery():
-    """Verify that a known linear system is accurately recovered from clean data."""
+    """Verify a known linear system is recovered from persistently-excited data.
+
+    A purely autonomous (noise-free) trajectory decays to numerical zero within a
+    few dozen steps for a stable A_true, leaving nothing but rounding noise to fit
+    against once the signal underflows. A driven VAR(1) process keeps every sample
+    informative, matching what real SEEG looks like.
+    """
     rng = np.random.default_rng(42)
     n_channels = 4
-    n_samples = 200
+    n_samples = 5000
 
     # Create a stable transition matrix with spectral radius < 1
     A_true = np.array([
@@ -71,16 +77,42 @@ def test_fit_ltv_model_exact_recovery():
         [0.1, 0.0, 0.0, 0.4],
     ])
 
-    # Generate autonomous trajectory: x[t+1] = A x[t]
     X = np.zeros((n_channels, n_samples))
     X[:, 0] = rng.normal(size=n_channels)
     for t in range(n_samples - 1):
-        X[:, t + 1] = A_true @ X[:, t]
+        X[:, t + 1] = A_true @ X[:, t] + rng.normal(size=n_channels)
 
-    A_est, r2 = fit_ltv_model(X, l2_reg=1e-8)
+    # l2_reg's default (0.3) is tuned to guarantee stability on real SEEG, which
+    # biases a clean synthetic recovery test; push it near zero to isolate the
+    # regression math itself from that production-tuned bias.
+    A_est, r2 = fit_ltv_model(X, l2_reg=1e-6)
 
-    assert r2 > 0.9999
-    np.testing.assert_allclose(A_est, A_true, atol=1e-3)
+    assert r2 > 0.3
+    np.testing.assert_allclose(A_est, A_true, atol=0.05)
+
+
+def test_fit_ltv_model_enforces_stability():
+    """The default fit must always be spectrally stable, even where an
+    unregularized OLS fit would not be.
+
+    "Minimum perturbation to destabilize" is undefined for an already-unstable
+    A. A common-average montage makes X1 rank-deficient by construction, and
+    real SEEG windows are barely overdetermined (T-1 samples vs N channels) --
+    exactly the regime where a naive fit tends to land on the wrong side of
+    the |eigenvalue| = 1 boundary.
+    """
+    rng = np.random.default_rng(7)
+    n_channels, n_samples = 60, 62  # barely overdetermined, like a real window
+
+    latent = rng.normal(size=(3, n_samples)).cumsum(axis=1)
+    data = (rng.normal(size=(n_channels, 3)) @ latent) * 5 + rng.normal(scale=20.0, size=(n_channels, n_samples))
+    data -= data.mean(axis=0, keepdims=True)  # CAR -> rank deficient by construction
+
+    A_naive = data[:, 1:] @ np.linalg.pinv(data[:, :-1])
+    assert np.max(np.abs(np.linalg.eigvals(A_naive))) >= 1.0, "test data must be pathological to start with"
+
+    A, _ = fit_ltv_model(data)
+    assert np.max(np.abs(np.linalg.eigvals(A))) < 1.0
 
 
 def test_perturbation_destabilizes_system():
@@ -158,7 +190,7 @@ def test_compute_window_fragility_bounds_and_ranking():
     for t in range(n_samples - 1):
         X[:, t + 1] = A @ X[:, t] + rng.normal(scale=0.01, size=n_channels)
 
-    frag, r2 = compute_window_fragility(X, radius=1.0, num_freqs=16, l2_reg=1e-5)
+    frag, r2 = compute_window_fragility(X, radius=1.0, num_freqs=16)
 
     assert frag.shape == (n_channels,)
     assert 0.0 <= np.min(frag)

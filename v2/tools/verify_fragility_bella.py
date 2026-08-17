@@ -170,7 +170,6 @@ def main():
             step_s=0.125,
             radius=1.0,
             num_freqs=16,
-            l2_reg=1e-5,
             eval_window_s=EVAL_WINDOW_S,
             onset_s=crop_pre,  # data starts at -crop_pre relative to onset
         )
