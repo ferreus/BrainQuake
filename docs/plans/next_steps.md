@@ -15,9 +15,9 @@ flowchart TD
         B --> C["Integrate into BrainQuake sigproc pipeline"]
     end
 
-    subgraph Step1_5 ["Step 1.5: Fix LTV Identifiability (dimensionality, not regularization)"]
-        K["Longer window: 500 ms doubles T"] --> L["Re-measure rho(A), needed lambda, dynamic range"]
-        L --> M["Re-check parity vs EZFragility and the Bella shaft ranking"]
+    subgraph Step1_5 ["Step 1.5: LTV Identifiability -- RESOLVED, it was a unit root"]
+        K["Swept T and N: 61x more obs/param, still 63% unstable"] --> L["rho converges TO 1 from above = non-stationary drift"]
+        L --> M["0.5 Hz high-pass restores dynamic range (2.5% -> 9.3% CV)"]
     end
 
     subgraph Step2 ["Step 2: Spike-HFO & PAC Interictal Localization"]
@@ -52,16 +52,112 @@ flowchart TD
   - Verify exact ranking parity against Bella's 8 seizures (`data/ezfragility_result.txt` where shaft D dominates with 4.83 votes/ch).
   - Run full benchmark on OpenNeuro `ds004100` (213 seizure runs).
 
-### Phase 1.5: Fix the LTV fit's identifiability — dimensionality, not regularization
-- **The lead to chase next is dimensionality, not regularization: a longer window (500 ms doubles T at the cost of time resolution).**
-- **Why:** at 184 channels and a 250 ms window, each row of $A$ is fit from 249 sample pairs — **1.35 observations per parameter**. The fit nearly interpolates, so its eigenvalues scatter across the unit circle: measured on Bella, **100% of windows are spectrally unstable under OLS** (median $\rho \approx 1.014$) and 52–77% remain unstable at the $\lambda \approx 10^{-4}$ that both Li et al. and `EZFragility` use. No choice of $\lambda$ fixes an under-constrained fit; it only trades instability for shrinkage.
-- **Ruled out (2026-08-18):** missing preprocessing is *not* the cause. Li et al. specify notch + 0.5 Hz–Nyquist 4th-order Butterworth before CAR, which `export_edf.py` omits. Applying it leaves $\rho_{OLS}$ unchanged (1.0124–1.0156) and makes $\lambda=10^{-4}$ instability *worse* (75–91%). The problem is the $N \approx T$ regime itself.
-- **Cost of the current workaround:** `l2_reg = 0.3` clears stability on every window but parks them all at $\rho \approx 0.998$, compressing the shaft-mean fragility range to CV 2.49% vs R's 8.25% — a 3.3× loss of discriminability — and dropping contact-level Spearman vs `EZFragility` by 0.142 across all 8 seizures.
-- **Candidate fixes, in order of expected payoff:**
-  1. **Longer window** (500 ms → T = 499, 2.7 obs/param) at the cost of time resolution; the direct test.
-  2. **Per-shaft or regional fits** instead of all 184 channels jointly, cutting N rather than raising T.
-  3. Low-rank / factor-structured $A$, if 1 and 2 are insufficient.
-- **Success criterion:** stability at a $\lambda$ near the paper's without the escalation search, with dynamic range at or above R's.
+### Phase 1.5: LTV identifiability — RESOLVED 2026-08-18, hypothesis rejected
+
+**The dimensionality hypothesis is wrong.** Measured with
+[`v2/tools/fragility/ltv_identifiability.py`](../../v2/tools/fragility/ltv_identifiability.py)
+over all 8 Bella seizures, at fixed lambda with the escalation search disabled:
+
+| mode | win | obs/param | % unstable @ OLS | @ 1e-4 | rho median @ OLS |
+|---|---|---|---|---|---|
+| joint | 0.25 s | 1.35 | 100.0 | 65.3 | 1.0144 |
+| joint | 0.50 s | 2.71 | 99.7 | 72.4 | 1.0049 |
+| joint | 1.00 s | 5.43 | 99.2 | 73.0 | 1.0025 |
+| per-shaft | 0.25 s | 20.75 | 78.2 | 59.2 | 1.0017 |
+| per-shaft | 0.50 s | 41.58 | 72.0 | 52.2 | 1.0005 |
+| per-shaft | 1.00 s | 83.25 | 62.7 | 43.6 | 1.0001 |
+
+Going from 1.35 to **83 observations per parameter** — 61x, far past any
+under-determination — still leaves 63% of windows unstable. Raising T or cutting N
+does not fix it.
+
+**The actual cause is a unit root.** Under OLS, rho median converges *to* 1.0 from
+above as T grows (1.0144 -> 1.0049 -> 1.0025 joint; 1.0017 -> 1.0005 -> 1.0001
+per-shaft). That is the signature of an integrated / non-stationary process: more
+data does not move rho away from 1, it converges there. The fit was estimating a
+genuine near-unit root, not scattering on noise.
+
+**The fix is the preprocessing Li et al. specify and `export_edf.py` omits.** A
+4th-order 0.5 Hz Butterworth high-pass, applied before the fit:
+
+| win (joint, lambda=1e-2) | shaft CV% unfiltered | + 0.5 Hz high-pass |
+|---|---|---|
+| 0.25 s | 2.52 (= the 2.49 baseline) | 4.50 |
+| 1.00 s | 2.19 | 7.37 |
+| 2.00 s | 2.62 | **9.33** |
+
+Window length alone does nothing (2.19-2.62% across an 8x range). With the high-pass,
+dynamic range scales with window and passes R's 8.25% at a 2 s window, at 2.0% of
+windows unstable and R^2 0.998 — versus production's R^2 0.926 at lambda=0.3.
+
+This does *not* contradict `cf03c79`'s "preprocessing ruled out": at the 250 ms
+window that commit tested, the high-pass really does nothing (100.0% -> 99.6%
+unstable). Its effect only appears once there are enough observations per parameter
+for the drift term to be separable.
+
+**Candidate fix #2 (per-shaft) is rejected on ranking, not stability.** It gives the
+best conditioning in the grid and the worst localization: shaft CV 2.64-3.49%, and the
+clinical onset shafts A and I fall to ranks 18 and 19. `size_delta_rho` goes negative
+(-0.24), confirming the predicted artifact — the min-perturbation norm shrinks with
+block size, so pooling deltas across 6- and 12-contact shafts ranks by shaft size.
+Fitting shafts independently discards the cross-shaft coupling fragility is built on.
+
+**Caveat — dynamic range is not quality.** Pushing the cutoff higher keeps inflating
+CV while the clinical ranking degrades: 0.5 Hz -> CV 9.33% with A at rank 12; 1 Hz ->
+9.95% at rank 13; 2 Hz -> 11.07% at rank 14. CV can be raised by deleting signal, so
+0.5 Hz (Li et al.'s own figure) is the principled stopping point, not the CV maximum.
+
+**What this does and does not settle.** It settles the measured deficiency: the
+compressed dynamic range and the need for the lambda=0.3 escalation workaround are
+both artifacts of fitting unfiltered, drift-dominated data. It does **not** improve
+localization — shaft D holds rank 1 in every configuration and A/I never climb above
+6-9. That is a separate open problem, and candidate fix #3 (low-rank A) is not
+indicated by this evidence.
+
+**Parity, measured against a regenerated EZFragility reference** (all 8 seizures
+re-run; each reproduces `docs/bella_fragility_resection_analysis.md`'s R2 medians and
+frag ranges exactly, so this is the same reference the earlier numbers came from):
+
+| config | Spearman vs R | shaft CV% | % unstable | R^2 |
+|---|---|---|---|---|
+| 0.25 s, lambda=0.3, **unfiltered** (production today) | 0.4231 | 2.52 | 0.7 | 0.926 |
+| 0.25 s, lambda=0.3, + 0.5 Hz high-pass | **0.794** | 4.50 | 0.8 | 0.991 |
+| 0.25 s, lambda=1e-2, + high-pass | **0.811** | 4.44 | 27.5 | 0.999 |
+| 1.00 s, lambda=1e-2, + high-pass | 0.764 | 7.37 | 7.9 | 0.999 |
+| 2.00 s, lambda=1e-2, + high-pass | 0.752 | 9.33 | 2.0 | 0.998 |
+
+Adding the high-pass and changing nothing else -- same 250 ms window, same
+lambda=0.3 -- takes contact-level parity from **0.423 to 0.794**; lambda=1e-2 reaches
+0.811. For scale, `verify_fragility_bella.py` gates at 0.8, though on the shaft-level
+ranking rather than this contact-level figure, so the two are not interchangeable.
+Every row here uses a fixed lambda with the escalation search disabled, including the
+lambda=0.3 one -- so the 0.423 baseline row differs from production only in that.
+
+Note the trade-off: parity peaks at R's own 250 ms window while dynamic range peaks
+at 2 s. That is expected rather than contradictory -- Spearman-vs-R rewards matching
+R's parameterisation, so 0.25 s is the honest parity figure and the longer windows are
+a different question, not a better answer to the same one.
+
+**Found while regenerating the reference: our ridge is not EZFragility's.**
+`EZFragility:::ridge` scales the penalty per row by the inverse RMS of that
+channel's target:
+
+```r
+lmbd <- n * lambda
+Lscaled <- lmbd * sum(y^2/n)^-0.5   # y = row i of xtp1
+dw <- d/(d^2 + Lscaled)
+```
+
+High-amplitude channels get *less* shrinkage, low-amplitude channels get *more*.
+`fit_ltv_model` applies one global `l2 * trace(cov)/N` to every row identically.
+Fragility ranks channels by nearness to instability, so per-channel differential
+shrinkage shapes the ranking. It is closed-form and cheap (no per-electrode search,
+contra the scheme rejected in `d983528`), and worth testing as a parity lever.
+
+Two related corrections: EZFragility *does* enforce stability (bisecting lambda over
+[1e-4, 10], 20 iterations), so that is not the difference; and its lambda is not
+comparable to ours in absolute terms. Its realised lambdas on SZ1P are median 1e-4,
+max 2.76e-3 -- it essentially never escalates, against our 0.3.
 
 ### Phase 2: Interictal Spike-Ripple Co-occurrence & Phase-Amplitude Coupling (PAC)
 - **Scientific Foundation:** Dimakopoulos et al. 2023 (*Nat Comms*), Weiss et al. 2023, pyHFO 2025.
