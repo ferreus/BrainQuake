@@ -5,6 +5,9 @@ import pytest
 
 from app.sigproc.fragility import (
     _CUDA_AVAILABLE,
+    _contour,
+    fit_ltv_ez,
+    standardize_ieeg,
     compute_fragility_batch_gpu,
     compute_fragility_pipeline,
     compute_min_perturbations,
@@ -190,7 +193,9 @@ def test_compute_window_fragility_bounds_and_ranking():
     for t in range(n_samples - 1):
         X[:, t + 1] = A @ X[:, t] + rng.normal(scale=0.01, size=n_channels)
 
-    frag, r2 = compute_window_fragility(X, radius=1.0, num_freqs=16)
+    # "extended": this system's mode sits at +0.95 on the real axis, which is the
+    # one place EZFragility's contour cannot see (it drops omega = 0).
+    frag, r2 = compute_window_fragility(X, radius=1.0, num_freqs=16, method="extended")
 
     assert frag.shape == (n_channels,)
     assert 0.0 <= np.min(frag)
@@ -260,3 +265,58 @@ def test_fragility_is_invariant_to_signal_units():
         rtol=1e-6,
         atol=1e-9,
     )
+
+
+def test_standardize_ieeg_matches_r_formula():
+    """EZFragility divides by the power of ten just below the maximum."""
+    data = np.array([[1.0, 250.0], [-40.0, 999.0]])
+    np.testing.assert_allclose(standardize_ieeg(data), data / 100.0)
+    assert standardize_ieeg(data * 1e-6).max() == pytest.approx(standardize_ieeg(data).max())
+
+
+def test_contour_matches_r_grid():
+    """R: omvec <- seq(0, 1, length.out = nSearch + 1)[-1]; z <- sqrt(1-om^2) + om*1i."""
+    z = _contour(100, quarter=True)
+    om = np.linspace(0.0, 1.0, 101)[1:]
+    np.testing.assert_allclose(z, np.sqrt(1 - om**2) + 1j * om)
+    assert np.all(z.imag > 0), "R's grid never samples a real z"
+    assert _contour(16, quarter=False)[0] == pytest.approx(1.0), "extended includes z = 1"
+
+
+def test_fit_ltv_ez_is_per_row_ridge():
+    """Each row is an independent ridge with penalty n * lambda / rms(that row's target)."""
+    rng = np.random.default_rng(5)
+    n_ch, n_t = 6, 80
+    X = rng.normal(size=(n_ch, n_t))
+    X[0] *= 50.0  # one loud channel, so the per-row penalties differ a lot
+    lam = 1e-3
+
+    A, _, used = fit_ltv_ez(X, lam=lam)
+    assert used == lam
+
+    X1, X2 = X[:, :-1], X[:, 1:]
+    n = X1.shape[1]
+    gram = X1 @ X1.T
+    for i in range(n_ch):
+        pen = n * lam / np.sqrt(np.sum(X2[i] ** 2) / n)
+        expected = np.linalg.solve(gram + pen * np.eye(n_ch), X1 @ X2[i])
+        np.testing.assert_allclose(A[i], expected, rtol=1e-8, atol=1e-10)
+
+
+def test_ezfragility_contour_cannot_see_a_dc_mode():
+    """Pins the reference's blind spot, so nobody 'fixes' the extended path to match.
+
+    A near-unstable mode on the positive real axis needs a tiny perturbation (the
+    imaginary constraint is vacuous at z = 1), but EZFragility's grid drops omega = 0
+    and its nearest sample makes that channel look the *least* fragile.
+    """
+    rng = np.random.default_rng(1)
+    A = np.diag([0.95, 0.2, 0.2, 0.2, 0.2, 0.2]) + 0.02 * rng.normal(size=(6, 6))
+    assert np.max(np.abs(np.linalg.eigvals(A))) < 1.0
+
+    extended = compute_min_perturbations(A, num_freqs=512)
+    quarter = compute_min_perturbations(A, num_freqs=512, quarter=True)
+
+    assert np.argmin(extended) == 0
+    assert np.argmin(quarter) != 0
+    assert quarter[0] > 100 * extended[0]

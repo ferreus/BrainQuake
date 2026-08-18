@@ -112,6 +112,7 @@ def compare_to_reference(ranked_shafts: list[tuple[str, float]], ref_path: str) 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ref", default=DEFAULT_REF, help="EZFragility shaft-ranking table")
+    parser.add_argument("--method", choices=["ezfragility", "extended"], default="extended")
     args = parser.parse_args()
 
     print(f"Loading Bella EDFs from: {BELLA_DIR}", flush=True)
@@ -169,7 +170,7 @@ def main():
             win_s=0.25,
             step_s=0.125,
             radius=1.0,
-            num_freqs=16,
+            method=args.method,
             eval_window_s=EVAL_WINDOW_S,
             onset_s=crop_pre,  # data starts at -crop_pre relative to onset
         )

@@ -23,9 +23,88 @@ try:
 except ImportError:
     pass
 
-# Below this |sin(theta)| the contour point is real, so the imaginary constraint
-# vanishes instead of pinning Delta to a rounding-error direction.
+# Below this ratio of |b|^2 to |a|^2 the resolvent row is effectively real, so the
+# imaginary constraint is vacuous and sqrt(bb/det) is a 0/0 whose limit is 1/||a||.
+# Guarding on conditioning rather than on Im(z) == 0 matters for the quarter contour,
+# which never samples a real z and would otherwise return garbage on weakly coupled
+# systems. EZFragility has this hole; real 184-channel data never exercises it.
 _REAL_Z_TOL = 1e-12
+
+
+# Li et al. / EZFragility search the positive-real quarter arc sampled uniformly in
+# Im(z), explicitly dropping omega = 0; "extended" sweeps the whole upper half circle
+# uniformly in angle and includes z = 1. The arc, not its resolution, is what separates
+# the two rankings -- see the omega = 0 note in compute_min_perturbations.
+def _contour(num_freqs: int, quarter: bool, radius: float = 1.0) -> np.ndarray:
+    if quarter:
+        om = np.linspace(0.0, 1.0, num_freqs + 1)[1:]
+        return radius * (np.sqrt(1.0 - om ** 2) + 1j * om)
+    return radius * np.exp(1j * np.linspace(0.0, np.pi, num_freqs))
+
+
+def _spectral_radius(A: np.ndarray) -> float:
+    return float(np.max(np.abs(scipy.linalg.eigvals(A))))
+
+
+def standardize_ieeg(data: np.ndarray) -> np.ndarray:
+    """EZFragility's pre-scaling: divide by the power of ten below the maximum.
+
+    Required by `fit_ltv_ez`, whose penalty is not scale-invariant.
+    """
+    peak = float(np.max(data))
+    if not np.isfinite(peak) or peak <= 0:
+        return data
+    return data / 10.0 ** math.floor(math.log10(peak))
+
+
+def fit_ltv_ez(
+    X: np.ndarray,
+    lam: float | None = None,
+    max_bisect: int = 20,
+) -> tuple[np.ndarray, float, float]:
+    """EZFragility's estimator: a per-row ridge penalised by n * lam / rms(target).
+
+    Each row of A is fit separately, so a high-amplitude channel is shrunk less than
+    a quiet one. That differential is not scale-invariant, so `standardize_ieeg` must
+    have been applied first. With `lam=None` the penalty is searched exactly as
+    EZFragility's ridgeSearch does: start at 1e-4, and if A is unstable bisect
+    towards 10, keeping the smallest stable value found in 20 steps.
+
+    Returns (A, r2, lam_used).
+    """
+    if X.ndim != 2:
+        raise ValueError(f"X must be 2D of shape (N_channels, T_samples), got {X.shape}")
+    X1, X2 = X[:, :-1], X[:, 1:]
+    n = X1.shape[1]
+    if n < 1:
+        raise ValueError(f"Window must contain at least 2 samples, got {X.shape[1]}")
+
+    U, d, Vt = np.linalg.svd(X1, full_matrices=False)
+    rms = np.sqrt(np.sum(X2 ** 2, axis=1) / n)
+    W = Vt @ X2.T
+
+    def fit_at(value: float) -> np.ndarray:
+        pen = (n * value) / np.maximum(rms, 1e-300)
+        dw = d[:, None] / (d[:, None] ** 2 + pen[None, :])
+        return (U @ (dw * W)).T
+
+    lam_used = 1e-4 if lam is None else lam
+    A = fit_at(lam_used)
+    if lam is None and _spectral_radius(A) >= 1.0:
+        lo, hi = 1e-4, 10.0
+        for _ in range(max_bisect):
+            mid = (lo + hi) * 0.5
+            A_try = fit_at(mid)
+            if _spectral_radius(A_try) < 1.0:
+                hi = lam_used = mid
+                A = A_try
+            else:
+                lo = mid
+
+    ss_res = float(np.sum((X2 - A @ X1) ** 2))
+    ss_tot = float(np.sum((X2 - np.mean(X2, axis=1, keepdims=True)) ** 2))
+    r2 = max(0.0, 1.0 - ss_res / ss_tot) if ss_tot > 1e-12 else 0.0
+    return A, r2, lam_used
 
 
 def fit_ltv_model(
@@ -129,6 +208,7 @@ def compute_fragility_batch_gpu(
     radius: float = 1.0,
     num_freqs: int = 16,
     batch_size: int = 16,
+    quarter: bool = False,
 ) -> np.ndarray:
     """Batched, GPU-accelerated equivalent of `compute_min_perturbations`, normalized.
 
@@ -153,9 +233,8 @@ def compute_fragility_batch_gpu(
     n_windows, n_channels, _ = A_batch.shape
     device = torch.device("cuda")
 
-    thetas = torch.linspace(0.0, math.pi, num_freqs, dtype=torch.float64, device=device)
-    z_points = torch.polar(torch.full_like(thetas, radius), thetas)  # (M,)
-    is_real_z = torch.abs(torch.sin(thetas)) < _REAL_Z_TOL  # (M,)
+    z_np = _contour(num_freqs, quarter, radius)
+    z_points = torch.tensor(z_np, dtype=torch.complex128, device=device)  # (M,)
     I_mat = torch.eye(n_channels, dtype=torch.complex128, device=device)
 
     all_frags = []
@@ -178,7 +257,7 @@ def compute_fragility_batch_gpu(
         ok = det > 0
         deltas[ok] = torch.sqrt(bb[ok] / det[ok])
 
-        real_rows = is_real_z[None, :, None].expand_as(deltas) & (aa > 0)
+        real_rows = (bb <= _REAL_Z_TOL * aa) & (aa > 0)
         deltas = torch.where(real_rows, torch.rsqrt(torch.clamp(aa, min=1e-300)), deltas)
 
         min_deltas = torch.min(deltas, dim=1).values  # (cur_b, N)
@@ -195,6 +274,7 @@ def compute_min_perturbations(
     A: np.ndarray,
     radius: float = 1.0,
     num_freqs: int = 16,
+    quarter: bool = False,
 ) -> np.ndarray:
     """Compute the minimum column perturbation norm required to destabilize the system.
 
@@ -229,7 +309,7 @@ def compute_min_perturbations(
     if A.shape != (n_channels, n_channels):
         raise ValueError(f"A must be square, got {A.shape}")
 
-    thetas = np.linspace(0.0, np.pi, num_freqs)
+    z_points = _contour(num_freqs, quarter, radius)
 
     # One Schur factorization per matrix, reused across frequencies: with A = Q T Q^H,
     # (zI - A)^-1 = Q (zI - T)^-1 Q^H is a triangular solve plus a matmul. Both are
@@ -240,8 +320,7 @@ def compute_min_perturbations(
     I_mat = np.eye(n_channels, dtype=np.complex128)
 
     perturbation_norms = np.full(n_channels, np.inf)
-    for theta in thetas:
-        z = radius * np.exp(1j * theta)
+    for z in z_points:
         try:
             M_inv = Q @ scipy.linalg.solve_triangular(z * I_mat - T_mat, QH)
         except (scipy.linalg.LinAlgError, ValueError):
@@ -249,17 +328,16 @@ def compute_min_perturbations(
 
         a, b = M_inv.real, M_inv.imag
         aa = np.einsum("kn,kn->k", a, a)
+        bb = np.einsum("kn,kn->k", b, b)
+        ab = np.einsum("kn,kn->k", a, b)
+        det = aa * bb - ab * ab  # >= 0 by Cauchy-Schwarz; 0 means z is unreachable
 
-        if abs(math.sin(theta)) < _REAL_Z_TOL:
-            # z is real, so the imaginary constraint vanishes and ||Delta|| = 1/||a||
-            deltas = np.where(aa > 0, 1.0 / np.sqrt(np.maximum(aa, 1e-300)), np.inf)
-        else:
-            bb = np.einsum("kn,kn->k", b, b)
-            ab = np.einsum("kn,kn->k", a, b)
-            det = aa * bb - ab * ab  # >= 0 by Cauchy-Schwarz; 0 means z is unreachable
-            deltas = np.full(n_channels, np.inf)
-            ok = det > 0
-            deltas[ok] = np.sqrt(bb[ok] / det[ok])
+        deltas = np.full(n_channels, np.inf)
+        real_row = bb <= _REAL_Z_TOL * aa
+        ok = (~real_row) & (det > 0)
+        deltas[ok] = np.sqrt(bb[ok] / det[ok])
+        pure = real_row & (aa > 0)
+        deltas[pure] = 1.0 / np.sqrt(aa[pure])
 
         np.minimum(perturbation_norms, deltas, out=perturbation_norms)
 
@@ -269,8 +347,9 @@ def compute_min_perturbations(
 def compute_window_fragility(
     X_win: np.ndarray,
     radius: float = 1.0,
-    num_freqs: int = 16,
+    num_freqs: int | None = None,
     l2_reg: float = 0.3,
+    method: str = "extended",
 ) -> tuple[np.ndarray, float]:
     """Compute neural fragility vector for a single time window.
 
@@ -293,8 +372,13 @@ def compute_window_fragility(
     r2 : float
         LTV model goodness-of-fit R^2.
     """
-    A, r2 = fit_ltv_model(X_win, l2_reg=l2_reg)
-    deltas = compute_min_perturbations(A, radius=radius, num_freqs=num_freqs)
+    quarter = method == "ezfragility"
+    num_freqs = (100 if quarter else 16) if num_freqs is None else num_freqs
+    if quarter:
+        A, r2, _ = fit_ltv_ez(standardize_ieeg(X_win))
+    else:
+        A, r2 = fit_ltv_model(X_win, l2_reg=l2_reg)
+    deltas = compute_min_perturbations(A, radius=radius, num_freqs=num_freqs, quarter=quarter)
 
     max_delta = float(np.max(deltas))
     if max_delta > 1e-12:
@@ -312,8 +396,9 @@ def compute_fragility_pipeline(
     win_s: float = 0.25,
     step_s: float = 0.125,
     radius: float = 1.0,
-    num_freqs: int = 16,
+    num_freqs: int | None = None,
     l2_reg: float = 0.3,
+    method: str = "extended",
     eval_window_s: tuple[float, float] | None = None,
     onset_s: float | None = None,
     device: str = "auto",
@@ -361,6 +446,14 @@ def compute_fragility_pipeline(
         - "win_s": float
         - "step_s": float
     """
+    if method not in ("ezfragility", "extended"):
+        raise ValueError(f"method must be 'ezfragility' or 'extended', got {method!r}")
+    quarter = method == "ezfragility"
+    if num_freqs is None:
+        num_freqs = 100 if quarter else 16
+    if quarter:
+        data = standardize_ieeg(data)
+
     n_channels, total_samples = data.shape
     if ch_names is None:
         ch_names = [f"CH{i}" for i in range(n_channels)]
@@ -373,7 +466,7 @@ def compute_fragility_pipeline(
     if win_samples > total_samples:
         raise ValueError(f"Recording duration ({total_samples} samples) is shorter than window ({win_samples} samples)")
 
-    if win_samples - 1 <= n_channels:
+    if not quarter and win_samples - 1 <= n_channels:
         warnings.warn(
             f"Window has {win_samples - 1} regressors for {n_channels} channels; the LTV fit "
             f"is underdetermined and relies on the stability search. Lengthen win_s or reduce channels.",
@@ -389,9 +482,13 @@ def compute_fragility_pipeline(
     A_batch = np.zeros((n_windows, n_channels, n_channels), dtype=np.float64)
     r2_vector = np.zeros(n_windows, dtype=np.float64)
 
+    lambdas = np.zeros(n_windows, dtype=np.float64)
     for w_idx, start_idx in enumerate(starts):
         X_win = data[:, start_idx : start_idx + win_samples]
-        A, r2 = fit_ltv_model(X_win, l2_reg=l2_reg)
+        if quarter:
+            A, r2, lambdas[w_idx] = fit_ltv_ez(X_win)
+        else:
+            A, r2 = fit_ltv_model(X_win, l2_reg=l2_reg)
         A_batch[w_idx] = A
         r2_vector[w_idx] = r2
 
@@ -406,6 +503,7 @@ def compute_fragility_pipeline(
                 radius=radius,
                 num_freqs=num_freqs,
                 batch_size=16,
+                quarter=quarter,
             )
         except Exception as exc:
             warnings.warn(f"GPU fragility failed ({exc!r}); falling back to CPU.", stacklevel=2)
@@ -415,7 +513,8 @@ def compute_fragility_pipeline(
         # Fallback to pure NumPy LAPACK window-by-window
         frag_matrix = np.zeros((n_channels, n_windows), dtype=np.float64)
         for w_idx in range(n_windows):
-            deltas = compute_min_perturbations(A_batch[w_idx], radius=radius, num_freqs=num_freqs)
+            deltas = compute_min_perturbations(
+                A_batch[w_idx], radius=radius, num_freqs=num_freqs, quarter=quarter)
             max_delta = float(np.max(deltas))
             if max_delta > 1e-12:
                 frag_matrix[:, w_idx] = 1.0 - (deltas / max_delta)
@@ -441,6 +540,8 @@ def compute_fragility_pipeline(
         "channel_scores": channel_scores,
         "ranked_channels": ranked_channels,
         "median_r2": float(np.median(r2_vector)) if n_windows > 0 else 0.0,
+        "lambdas": lambdas,
+        "method": method,
         "fs": fs,
         "win_s": win_s,
         "step_s": step_s,

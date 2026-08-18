@@ -73,6 +73,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", default=os.path.join(REPO, "..", "data", "fragility", "export"))
     ap.add_argument("--labels", nargs="*", default=[f"SZ{i}P" for i in range(1, 9)])
+    ap.add_argument("--method", choices=["ezfragility", "extended"], default="extended")
     args = ap.parse_args()
 
     data_dir = os.path.abspath(args.data_dir)
@@ -101,6 +102,7 @@ def main():
         res = compute_fragility_pipeline(
             data=data, fs=FS, ch_names=contacts,
             win_s=WIN_S, step_s=STEP_S, eval_window_s=ICTAL, onset_s=PRE,
+            method=args.method,
         )
         elapsed = time.time() - t0
         py = res["channel_scores"]

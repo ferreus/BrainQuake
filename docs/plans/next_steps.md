@@ -152,12 +152,101 @@ High-amplitude channels get *less* shrinkage, low-amplitude channels get *more*.
 `fit_ltv_model` applies one global `l2 * trace(cov)/N` to every row identically.
 Fragility ranks channels by nearness to instability, so per-channel differential
 shrinkage shapes the ranking. It is closed-form and cheap (no per-electrode search,
-contra the scheme rejected in `d983528`), and worth testing as a parity lever.
+contra the scheme rejected in `d983528`). **But it turned out to be the smallest of
+the three differences** -- see Phase 1.6, where the contour dominates and the ridge
+alone made one seizure worse.
 
 Two related corrections: EZFragility *does* enforce stability (bisecting lambda over
 [1e-4, 10], 20 iterations), so that is not the difference; and its lambda is not
 comparable to ours in absolute terms. Its realised lambdas on SZ1P are median 1e-4,
 max 2.76e-3 -- it essentially never escalates, against our 0.3.
+
+### Phase 1.6: EZFragility parity — RESOLVED 2026-08-18
+
+`app/sigproc/fragility.py` now takes `method=`:
+
+- **`"extended"` (default)** — our estimator: scale-invariant global ridge, and a
+  contour sweeping the whole upper half circle *including* `z = 1`. Default because it
+  is the one that sees DC modes, and this data has a unit root (Phase 1.5).
+- **`"ezfragility"`** — a verified port of EZFragility/Li et al.: `standardize_ieeg`
+  pre-scaling, a per-row ridge penalised by `n*lambda/rms(target)` with their
+  1e-4-to-10 bisection, and their quarter-arc contour. Reproduces R's full 184x239
+  fragility matrix to **~1e-12** and its per-window lambdas to ~1e-18. Use it for
+  cross-validation and for comparability with published Li et al. results.
+
+The cost of that default: our numbers are no longer directly comparable to the
+literature without passing `method="ezfragility"`, and `"extended"` is validated only
+by its own unit tests -- there is no external implementation that agrees with it.
+
+**What actually caused the divergence.** Ablating each difference from our baseline
+(SZ1P / SZ5P contact-level Spearman vs R):
+
+| variant | SZ1P | SZ5P |
+|---|---|---|
+| ours before | 0.389 | 0.752 |
+| + EZ ridge & scaling only | 0.672 | 0.715 (worse) |
+| + EZ contour only | 0.884 | 0.956 |
+| all three | **1.000** | **1.000** |
+
+The per-row ridge was the *smallest* factor and on its own made SZ5P worse. The
+**contour** dominates.
+
+**Parity means inheriting a defect, which is why both paths are kept.** Li et al.'s
+grid is `seq(0, 1, length.out = nSearch+1)[-1]` -- it drops `omega = 0`, so `z = 1` is
+never sampled. That matters because the minimum real perturbation is *discontinuous*
+there: at exactly `z = 1` the imaginary constraint is vacuous and `||Delta|| = 1/||a||`,
+while at the nearest sampled point a real Delta must place an eigenvalue on a
+slightly-complex target, which costs orders of magnitude more. On a test system whose
+near-unstable mode sits at +0.95 on the real axis, `extended` correctly ranks that
+channel most fragile (delta 0.044) while the quarter arc ranks it *least* (delta 18.2).
+The omission is most likely numerical -- at `omega = 0` R's `solve(B %*% t(B))` is
+singular -- but the consequence is real, and it lands exactly on the near-unit-root
+dynamics Phase 1.5 found in this data. `test_ezfragility_contour_cannot_see_a_dc_mode`
+pins it so nobody "fixes" `extended` to match.
+
+Also fixed while here: the degenerate-resolvent guard now tests conditioning
+(`bb <= tol*aa`) rather than `Im(z) == 0`, since the quarter arc never samples a real
+z. No behaviour change on real data; parity is unaffected.
+
+**Three-way, all 8 seizures** (contact-level, mean; ictal window [0,5]s):
+
+| pair | Spearman | top10 | top20 |
+|---|---|---|---|
+| Ours `extended` vs R | 0.4231 | 1.6/10 | 5.1/20 |
+| Ours `ezfragility` vs R | **1.0000** | **10.0/10** | **20.0/20** |
+| Ours `extended` vs Ours `ezfragility` | 0.4231 | 1.6/10 | 5.1/20 |
+
+Shaft-level, averaged over 8 seizures: `ezfragility` and R agree to four decimals on
+all 20 shafts with identical ranks. All three rank **D** first. Clinical shafts sit
+slightly higher under `extended` (I at 4 vs 6, A at 8 vs 10) -- the direction you would
+want, and consistent with it seeing DC modes the quarter arc drops, but a two-rank
+shift on n=1 is suggestive, not evidence.
+
+| | shaft CV | top shaft | rank A | rank I |
+|---|---|---|---|---|
+| Ours `extended` | 2.50% | D | 8 | 4 |
+| Ours `ezfragility` | 8.25% | D | 10 | 6 |
+| R (EZFragility) | 8.25% | D | 10 | 6 |
+
+**High-pass re-measured under `extended`** (Phase 1.5's open item). Unchanged by the
+contour work, which also confirms the degenerate-resolvent guard is a no-op on real data:
+
+| win | shaft CV% unfilt -> +0.5 Hz | R^2 unfilt -> +0.5 Hz | size-artifact rho |
+|---|---|---|---|
+| 0.25 s | 2.53 -> 4.50 | 0.926 -> 0.991 | 0.71 -> 0.36 |
+| 1.00 s | 2.18 -> 7.37 | 0.993 -> 0.999 | 0.70 -> 0.28 |
+| 2.00 s | 2.61 -> 9.32 | 0.992 -> 0.998 | 0.63 -> 0.08 |
+
+The Phase 1.5 parity gain (0.423 -> 0.794) should now be read with care: it means the
+high-pass makes `extended` behave *more like R*, which is ambiguous given R's blind
+spot. The case for the high-pass instead rests on the estimator-internal columns, and
+`size_delta_rho` is the strongest: **unfiltered, `extended`'s shaft ranking correlates
+0.71 with shaft size** -- it is substantially ranking electrodes by contact count. The
+high-pass drops that to 0.08 at a 2 s window. That is a defect worth fixing regardless
+of what R does.
+
+**Still not done:** the high-pass is measured, not shipped -- `export_edf.py` and the
+fragility entry path are unchanged.
 
 ### Phase 2: Interictal Spike-Ripple Co-occurrence & Phase-Amplitude Coupling (PAC)
 - **Scientific Foundation:** Dimakopoulos et al. 2023 (*Nat Comms*), Weiss et al. 2023, pyHFO 2025.
