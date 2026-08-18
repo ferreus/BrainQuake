@@ -320,3 +320,21 @@ def test_ezfragility_contour_cannot_see_a_dc_mode():
     assert np.argmin(extended) == 0
     assert np.argmin(quarter) != 0
     assert quarter[0] > 100 * extended[0]
+
+
+def test_highpass_default_is_method_aware():
+    """extended filters by default; ezfragility must not, or it stops reproducing R."""
+    rng = np.random.default_rng(21)
+    fs, n_ch, n_t = 1000.0, 10, 4000
+    drift = np.linspace(0.0, 300.0, n_t)  # the near-unit-root component being removed
+    data = rng.normal(scale=20.0, size=(n_ch, n_t)) + drift
+    data -= data.mean(axis=0, keepdims=True)
+
+    kw = dict(fs=fs, win_s=0.25, step_s=0.125, device="cpu")
+    assert compute_fragility_pipeline(data=data, method="extended", **kw)["highpass_hz"] == 0.5
+    assert compute_fragility_pipeline(data=data, method="ezfragility", **kw)["highpass_hz"] is None
+
+    # Explicitly off must differ from the filtered default, or the filter is a no-op.
+    on = compute_fragility_pipeline(data=data, method="extended", **kw)["channel_scores"]
+    off = compute_fragility_pipeline(data=data, method="extended", highpass_hz=None, **kw)["channel_scores"]
+    assert not np.allclose([on[c] for c in on], [off[c] for c in on])

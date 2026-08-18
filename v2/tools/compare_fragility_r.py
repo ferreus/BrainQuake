@@ -74,6 +74,9 @@ def main():
     ap.add_argument("--data-dir", default=os.path.join(REPO, "..", "data", "fragility", "export"))
     ap.add_argument("--labels", nargs="*", default=[f"SZ{i}P" for i in range(1, 9)])
     ap.add_argument("--method", choices=["ezfragility", "extended"], default="extended")
+    ap.add_argument("--highpass", default="auto",
+                    help="high-pass Hz before fitting; 'auto' (0.5 for extended, off for "
+                         "ezfragility) or 'off'")
     args = ap.parse_args()
 
     data_dir = os.path.abspath(args.data_dir)
@@ -103,6 +106,8 @@ def main():
             data=data, fs=FS, ch_names=contacts,
             win_s=WIN_S, step_s=STEP_S, eval_window_s=ICTAL, onset_s=PRE,
             method=args.method,
+            highpass_hz=None if args.highpass == "off" else
+                        (args.highpass if args.highpass == "auto" else float(args.highpass)),
         )
         elapsed = time.time() - t0
         py = res["channel_scores"]

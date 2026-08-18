@@ -245,8 +245,15 @@ spot. The case for the high-pass instead rests on the estimator-internal columns
 high-pass drops that to 0.08 at a 2 s window. That is a defect worth fixing regardless
 of what R does.
 
-**Still not done:** the high-pass is measured, not shipped -- `export_edf.py` and the
-fragility entry path are unchanged.
+**Shipped.** `compute_fragility_pipeline` takes `highpass_hz`, defaulting to `"auto"`:
+0.5 Hz for `extended`, off for `ezfragility` (which must stay unfiltered to keep
+reproducing R, since R runs on raw data). Filtering happens once on the whole recording
+before windowing -- a 0.5 Hz filter is meaningless inside a 250 ms window, which is why
+`compute_window_fragility` has no equivalent. `export_edf.py` deliberately still writes
+raw clips, so the exports stay the shared input for both paths and for R.
+
+Every `extended` number recorded above and in Phase 1.5 predates this default and was
+measured with the filter applied explicitly; `--highpass off` reproduces the old ones.
 
 ### Phase 2: Interictal Spike-Ripple Co-occurrence & Phase-Amplitude Coupling (PAC)
 - **Scientific Foundation:** Dimakopoulos et al. 2023 (*Nat Comms*), Weiss et al. 2023, pyHFO 2025.

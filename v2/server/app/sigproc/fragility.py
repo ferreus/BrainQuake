@@ -16,6 +16,8 @@ from typing import Any
 import numpy as np
 import scipy.linalg
 
+from .filters import bandpass
+
 _CUDA_AVAILABLE = False
 try:
     import torch
@@ -399,6 +401,7 @@ def compute_fragility_pipeline(
     num_freqs: int | None = None,
     l2_reg: float = 0.3,
     method: str = "extended",
+    highpass_hz: float | str | None = "auto",
     eval_window_s: tuple[float, float] | None = None,
     onset_s: float | None = None,
     device: str = "auto",
@@ -451,6 +454,16 @@ def compute_fragility_pipeline(
     quarter = method == "ezfragility"
     if num_freqs is None:
         num_freqs = 100 if quarter else 16
+
+    # Unfiltered, near-unit-root drift dominates the fit and the shaft ranking ends up
+    # tracking contact count (rank-vs-size rho 0.71, versus 0.08 filtered). "ezfragility"
+    # stays unfiltered so it keeps reproducing R, which runs on raw data.
+    if highpass_hz == "auto":
+        highpass_hz = None if quarter else 0.5
+    if highpass_hz:
+        # Whole recording, before windowing: a 0.5 Hz filter is meaningless inside a
+        # 250 ms window, which is why compute_window_fragility has no equivalent.
+        data = bandpass(data, fs, float(highpass_hz), fs / 2.0, order=4, context="fragility")
     if quarter:
         data = standardize_ieeg(data)
 
@@ -542,6 +555,7 @@ def compute_fragility_pipeline(
         "median_r2": float(np.median(r2_vector)) if n_windows > 0 else 0.0,
         "lambdas": lambdas,
         "method": method,
+        "highpass_hz": highpass_hz,
         "fs": fs,
         "win_s": win_s,
         "step_s": step_s,
