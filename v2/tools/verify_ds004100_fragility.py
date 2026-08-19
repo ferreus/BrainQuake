@@ -7,7 +7,7 @@ indistinguishable. The statistic is EZFragility's `fragStat` ratio,
 I = mean_t F_SOZ(90th) / mean_t F_REF(90th), scored over the first 5% of each seizure.
 
 Runs both estimators so they can be compared on the paper's own dataset:
-  --method extended      ours (default): full upper-half contour, global ridge, 0.5 Hz high-pass
+  --method extended      ours (default): upper-half contour (real z excluded), global ridge, 0.5 Hz high-pass
   --method ezfragility   the verified port of EZFragility/Li et al.
 
     python verify_ds004100_fragility.py --method extended ezfragility --jobs 12
@@ -85,7 +85,7 @@ def auc(scores, positive_mask):
 
 
 def process(job):
-    edf, methods, root = job
+    edf, methods, root, opts = job
     base = edf[: -len("_ieeg.edf")]
     sub = parse_entity(base, "sub")
     rec = {"sub": sub, "run": parse_entity(base, "run"), "acq": parse_entity(base, "acq")}
@@ -129,7 +129,7 @@ def process(job):
             r = compute_fragility_pipeline(
                 data=data, fs=fs, ch_names=ch, win_s=WIN_S, step_s=STEP_S,
                 onset_s=onset - span0, eval_window_s=(0.0, score_s),
-                method=m, device="cpu",
+                method=m, device="cpu", **opts,
             )
             t = r["start_times"]
             sel = np.where((t >= 0.0) & (t <= score_s))[0]
@@ -198,6 +198,10 @@ def main():
     ap.add_argument("--dataset", default=DEFAULT_DATASET_DIR)
     ap.add_argument("--method", nargs="+", default=["extended", "ezfragility"])
     ap.add_argument("--jobs", type=int, default=12)
+    # the three axes "extended" bundles, so a sweep can attribute a change to one of them
+    ap.add_argument("--l2-reg", type=float, help="override fit_ltv_model's ridge")
+    ap.add_argument("--num-freqs", type=int, help="override the contour resolution")
+    ap.add_argument("--highpass", help="high-pass in Hz, or 'none'/'auto'")
     ap.add_argument("--limit", type=int, help="process only the first N runs (smoke test)")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "..",
                                                   "verification_results",
@@ -210,7 +214,15 @@ def main():
         runs = runs[: args.limit]
     print(f"{len(runs)} ictal runs, methods={args.method}, {args.jobs} workers", flush=True)
 
-    jobs = [(p, args.method, args.dataset) for p in runs]
+    opts = {}
+    if args.l2_reg is not None:
+        opts["l2_reg"] = args.l2_reg
+    if args.num_freqs is not None:
+        opts["num_freqs"] = args.num_freqs
+    if args.highpass is not None:
+        opts["highpass_hz"] = None if args.highpass == "none" else (
+            args.highpass if args.highpass == "auto" else float(args.highpass))
+    jobs = [(p, args.method, args.dataset, opts) for p in runs]
     rows = []
     t0 = time.time()
     with Pool(args.jobs) as pool:

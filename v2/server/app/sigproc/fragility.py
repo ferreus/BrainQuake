@@ -25,23 +25,16 @@ try:
 except ImportError:
     pass
 
-# Below this ratio of |b|^2 to |a|^2 the resolvent row is effectively real, so the
-# imaginary constraint is vacuous and sqrt(bb/det) is a 0/0 whose limit is 1/||a||.
-# Guarding on conditioning rather than on Im(z) == 0 matters for the quarter contour,
-# which never samples a real z and would otherwise return garbage on weakly coupled
-# systems. EZFragility has this hole; real 184-channel data never exercises it.
-_REAL_Z_TOL = 1e-12
-
-
-# Li et al. / EZFragility search the positive-real quarter arc sampled uniformly in
-# Im(z), explicitly dropping omega = 0; "extended" sweeps the whole upper half circle
-# uniformly in angle and includes z = 1. The arc, not its resolution, is what separates
-# the two rankings -- see the omega = 0 note in compute_min_perturbations.
+# Neither arc may sample a real z: there b vanishes, the imaginary constraint is
+# vacuous, and the resulting 1/||a|| ranks channels by DC gain instead of by minimum
+# perturbation. Li et al. / EZFragility take the quarter arc uniform in Im(z) dropping
+# omega = 0; "extended" sweeps the upper half circle uniform in angle, endpoints
+# excluded. Measured on ds004100, including z = 1 costs 11-14 pp of SOZ recall.
 def _contour(num_freqs: int, quarter: bool, radius: float = 1.0) -> np.ndarray:
     if quarter:
         om = np.linspace(0.0, 1.0, num_freqs + 1)[1:]
         return radius * (np.sqrt(1.0 - om ** 2) + 1j * om)
-    return radius * np.exp(1j * np.linspace(0.0, np.pi, num_freqs))
+    return radius * np.exp(1j * np.linspace(0.0, np.pi, num_freqs + 2)[1:-1])
 
 
 def _spectral_radius(A: np.ndarray) -> float:
@@ -259,9 +252,6 @@ def compute_fragility_batch_gpu(
         ok = det > 0
         deltas[ok] = torch.sqrt(bb[ok] / det[ok])
 
-        real_rows = (bb <= _REAL_Z_TOL * aa) & (aa > 0)
-        deltas = torch.where(real_rows, torch.rsqrt(torch.clamp(aa, min=1e-300)), deltas)
-
         min_deltas = torch.min(deltas, dim=1).values  # (cur_b, N)
         max_deltas = torch.max(min_deltas, dim=-1, keepdim=True).values
 
@@ -288,8 +278,8 @@ def compute_min_perturbations(
 
         ||Delta_k(theta)|| = sqrt( (b.b) / ((a.a)(b.b) - (a.b)^2) )
 
-    and ||Delta_k|| is the minimum over theta. Real z (theta = 0, pi) drops the second
-    constraint, giving 1/||a||. Restricting Delta to the reals matters: the complex
+    and ||Delta_k|| is the minimum over theta, taken over a contour that excludes real
+    z -- see `_contour`. Restricting Delta to the reals matters: the complex
     relaxation 1/||a + jb|| is strictly smaller whenever the critical theta is
     interior, i.e. exactly the oscillatory onsets of interest.
 
@@ -335,11 +325,8 @@ def compute_min_perturbations(
         det = aa * bb - ab * ab  # >= 0 by Cauchy-Schwarz; 0 means z is unreachable
 
         deltas = np.full(n_channels, np.inf)
-        real_row = bb <= _REAL_Z_TOL * aa
-        ok = (~real_row) & (det > 0)
+        ok = det > 0
         deltas[ok] = np.sqrt(bb[ok] / det[ok])
-        pure = real_row & (aa > 0)
-        deltas[pure] = 1.0 / np.sqrt(aa[pure])
 
         np.minimum(perturbation_norms, deltas, out=perturbation_norms)
 
@@ -479,10 +466,16 @@ def compute_fragility_pipeline(
     if win_samples > total_samples:
         raise ValueError(f"Recording duration ({total_samples} samples) is shorter than window ({win_samples} samples)")
 
-    if not quarter and win_samples - 1 <= n_channels:
+    # Both estimators share this: Li et al.'s 250 ms window gives ~1.3 observations per
+    # parameter on a modern implant, and fewer than 1 below ~512 Hz. Lengthening the
+    # window does not fix it -- 61x more observations still left 63% of windows unstable,
+    # because the process has a unit root (see docs/plans/next_steps.md); the high-pass is
+    # the lever. Reported so a run's numbers can be read with that in mind.
+    if win_samples - 1 <= n_channels:
         warnings.warn(
-            f"Window has {win_samples - 1} regressors for {n_channels} channels; the LTV fit "
-            f"is underdetermined and relies on the stability search. Lengthen win_s or reduce channels.",
+            f"Window has {win_samples - 1} regressors for {n_channels} channels: the LTV fit "
+            f"is underdetermined and rests on the ridge. Raising win_s trades time resolution "
+            f"for conditioning without fixing the near-unit root.",
             stacklevel=2,
         )
 

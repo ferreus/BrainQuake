@@ -17,16 +17,16 @@ from app.sigproc.fragility import (
 
 
 def _oracle_min_real_perturbation(A, k, radius=1.0, num_freqs=512):
-    """Independent min-norm real perturbation, via lstsq rather than the closed form."""
+    """Independent min-norm real perturbation, via lstsq rather than the closed form.
+
+    Searches `_contour`, not [0, pi], so it validates the closed form rather than the
+    contour choice; no real z is sampled, so both constraints always apply.
+    """
     n = A.shape[0]
     best_norm, best_delta = np.inf, None
-    for theta in np.linspace(0.0, np.pi, num_freqs):
-        z = radius * np.exp(1j * theta)
+    for z in _contour(num_freqs, quarter=False, radius=radius):
         r = np.linalg.inv(z * np.eye(n) - A)[k, :]
-        if abs(np.sin(theta)) < 1e-12:  # real z: the imaginary constraint drops out
-            B, c = r.real[None, :], np.array([1.0])
-        else:
-            B, c = np.vstack([r.real, r.imag]), np.array([1.0, 0.0])
+        B, c = np.vstack([r.real, r.imag]), np.array([1.0, 0.0])
         delta = np.linalg.lstsq(B, c, rcond=None)[0]
         norm = float(np.linalg.norm(delta))
         if norm < best_norm:
@@ -118,25 +118,23 @@ def test_fit_ltv_model_enforces_stability():
     assert np.max(np.abs(np.linalg.eigvals(A))) < 1.0
 
 
-def test_perturbation_destabilizes_system():
-    """Verify that the minimum column perturbation moves the spectral radius of the system to >= 1.0."""
-    n_channels = 5
+def test_dc_only_system_is_unreachable():
+    """Documents the accepted cost of excluding real z.
+
+    Every mode here is real, so the cheap destabilisation is the DC route (0.3 for the
+    0.7 mode). Off the real axis the resolvent rows are near-degenerate -- a and b are
+    almost parallel -- so satisfying b.Delta = 0 as well costs orders of magnitude more.
+    Real iEEG is not this system; see `test_no_contour_samples_a_real_z`.
+    """
     A = np.diag([0.7, 0.5, 0.4, 0.3, 0.2])
     A[0, 1] = 0.2
     A[1, 2] = 0.2
 
-    num_freqs = 64
-    radius = 1.0
-    perturbation_norms = compute_min_perturbations(A, radius=radius, num_freqs=num_freqs)
-
-    assert len(perturbation_norms) == n_channels
-    assert np.all(perturbation_norms > 0)
-    assert 0.25 < perturbation_norms[0] < 0.30
-
-    # Test pure diagonal decoupled node
-    A_diag = np.diag([0.8, 0.5, 0.4, 0.3, 0.2])
-    norms_diag = compute_min_perturbations(A_diag, radius=1.0, num_freqs=64)
-    assert pytest.approx(0.2, abs=1e-3) == norms_diag[0]
+    norms = compute_min_perturbations(A, radius=1.0, num_freqs=512)
+    assert len(norms) == 5
+    dc = 1.0 / np.linalg.norm(np.linalg.inv(np.eye(5) - A), axis=1)
+    assert np.all(norms > dc), "off-axis always costs more than the DC route here"
+    assert np.all(norms[2:] > 1e6), "a decoupled real mode is unreachable off the axis"
 
 
 def test_perturbation_destabilizes_oscillatory_system():
@@ -186,22 +184,24 @@ def test_compute_window_fragility_bounds_and_ranking():
     n_channels = 6
     n_samples = 250
 
-    # Node 0 has strong self-excitation close to instability (0.95), while other nodes are well-damped (0.2)
-    A = np.diag([0.95, 0.2, 0.2, 0.2, 0.2, 0.2])
+    # Nodes 0-1 carry a rotational mode at |lambda| = 0.97, everything else is damped.
+    # The mode is oscillatory on purpose: a real mode's cheapest destabilisation is the
+    # DC route, which no contour here samples.
+    A = np.diag([0.0, 0.0, 0.2, 0.2, 0.2, 0.2])
+    th = 0.35
+    A[:2, :2] = 0.97 * np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
     X = np.zeros((n_channels, n_samples))
     X[:, 0] = rng.normal(size=n_channels)
     for t in range(n_samples - 1):
         X[:, t + 1] = A @ X[:, t] + rng.normal(scale=0.01, size=n_channels)
 
-    # "extended": this system's mode sits at +0.95 on the real axis, which is the
-    # one place EZFragility's contour cannot see (it drops omega = 0).
     frag, r2 = compute_window_fragility(X, radius=1.0, num_freqs=16, method="extended")
 
     assert frag.shape == (n_channels,)
     assert 0.0 <= np.min(frag)
     assert np.max(frag) <= 1.0
     assert r2 > 0.8
-    assert np.argmax(frag) == 0
+    assert np.argmax(frag) in (0, 1)
 
 
 def test_compute_fragility_pipeline_shapes_and_timing():
@@ -280,7 +280,6 @@ def test_contour_matches_r_grid():
     om = np.linspace(0.0, 1.0, 101)[1:]
     np.testing.assert_allclose(z, np.sqrt(1 - om**2) + 1j * om)
     assert np.all(z.imag > 0), "R's grid never samples a real z"
-    assert _contour(16, quarter=False)[0] == pytest.approx(1.0), "extended includes z = 1"
 
 
 def test_fit_ltv_ez_is_per_row_ridge():
@@ -303,23 +302,28 @@ def test_fit_ltv_ez_is_per_row_ridge():
         np.testing.assert_allclose(A[i], expected, rtol=1e-8, atol=1e-10)
 
 
-def test_ezfragility_contour_cannot_see_a_dc_mode():
-    """Pins the reference's blind spot, so nobody 'fixes' the extended path to match.
+def test_no_contour_samples_a_real_z():
+    """Both arcs must exclude real z, and neither may rank by DC gain.
 
-    A near-unstable mode on the positive real axis needs a tiny perturbation (the
-    imaginary constraint is vacuous at z = 1), but EZFragility's grid drops omega = 0
-    and its nearest sample makes that channel look the *least* fragile.
+    At real z the resolvent row is real, the imaginary constraint is vacuous, and the
+    norm collapses to 1/||a|| -- a DC-gain ranking. On near-unit-root iEEG that route is
+    common-mode across the implant, so sampling it cost 11-14 pp of SOZ recall on
+    ds004100 versus excluding it. The synthetic system below is the case that argues the
+    other way (a real mode nobody can see); real recordings do not look like it.
     """
+    for num_freqs in (16, 100, 512):
+        assert np.all(_contour(num_freqs, quarter=False).imag > 1e-9)
+        assert np.all(_contour(num_freqs, quarter=True).imag > 1e-9)
+
     rng = np.random.default_rng(1)
     A = np.diag([0.95, 0.2, 0.2, 0.2, 0.2, 0.2]) + 0.02 * rng.normal(size=(6, 6))
     assert np.max(np.abs(np.linalg.eigvals(A))) < 1.0
 
-    extended = compute_min_perturbations(A, num_freqs=512)
-    quarter = compute_min_perturbations(A, num_freqs=512, quarter=True)
-
-    assert np.argmin(extended) == 0
-    assert np.argmin(quarter) != 0
-    assert quarter[0] > 100 * extended[0]
+    dc_gain = 1.0 / np.linalg.norm(np.linalg.inv(np.eye(6) - A), axis=1)
+    assert np.argmin(dc_gain) == 0, "channel 0 is the DC-gain ranking's most fragile"
+    for quarter in (False, True):
+        norms = compute_min_perturbations(A, num_freqs=512, quarter=quarter)
+        assert np.argmin(norms) != 0, "neither contour may rank by DC gain"
 
 
 def test_highpass_default_is_method_aware():
