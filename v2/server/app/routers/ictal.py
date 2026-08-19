@@ -46,9 +46,9 @@ class EiRequest(BaseModel):
     target_start: float
     target_end: float
     band_low: float = 1.0  # Hz, bandpass filter applied before EI computation
-    # Clamped to just under Nyquist by signal_filters.clamp_band -- 500 Hz means
-    # "everything" but is exactly Nyquist on a 1 kHz recording, which butter() rejects.
-    band_high: float = 500.0
+    # None means "up to this recording's Nyquist"; a fixed number here would be a
+    # different band on every sampling rate in a mixed cohort.
+    band_high: float | None = None
     # Grid frequency the data was recorded on: 50 for Europe/Asia, 60 for North
     # America. Wrong value notches clean signal and leaves the interference.
     mains_freq: float = DEFAULT_MAINS_FREQ
@@ -79,7 +79,7 @@ class EiRequest(BaseModel):
                 raise ValueError(f"{label}_end ({e}) must be greater than {label}_start ({s})")
         if self.band_low <= 0:
             raise ValueError(f"band_low must be > 0, got {self.band_low}")
-        if self.band_high <= self.band_low:
+        if self.band_high is not None and self.band_high <= self.band_low:
             raise ValueError(
                 f"band_high ({self.band_high}) must be greater than band_low ({self.band_low})"
             )

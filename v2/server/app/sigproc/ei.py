@@ -10,7 +10,7 @@ from typing import NamedTuple
 import numpy as np
 from scipy.signal import convolve2d
 
-from app.sigproc.filters import DEFAULT_MAINS_FREQ, bandpass, filter_for_display
+from app.sigproc.filters import DEFAULT_MAINS_FREQ, bandpass, filter_for_display, max_band_high
 from app.sigproc.montage import apply_bipolar, project_pairs_to_contacts
 
 logger = logging.getLogger(__name__)
@@ -362,7 +362,7 @@ def compute_ei_pipeline(
     target_end: float,
     ei_method: str = "band_ratio",
     band_low: float = 1.0,
-    band_high: float = 500.0,
+    band_high: float | None = None,
     mains_freq: float = DEFAULT_MAINS_FREQ,
     low_band: tuple = BARTOLOMEI_LOW_BAND,
     high_band: tuple = BARTOLOMEI_HIGH_BAND,
@@ -379,7 +379,11 @@ def compute_ei_pipeline(
         baseline_start, baseline_end: Baseline window start/end in seconds.
         target_start, target_end: Target window start/end in seconds.
         ei_method: 'band_ratio' (default, Bartolomei et al. 2008) or 'broadband' (HFER).
-        band_low, band_high: Pre-filter band limits in Hz.
+        band_low, band_high: Pre-filter band limits in Hz. band_high defaults to just
+            under this recording's Nyquist. That makes the band sampling-rate dependent,
+            which `band_ratio` does not care about (its sub-bands top out at 97 Hz) but
+            `broadband` does -- pass an explicit band_high to compare broadband EI across
+            recordings with different fs.
         mains_freq: Mains notch frequency in Hz (50 or 60).
         low_band, high_band: Sub-bands for 'band_ratio' method.
         threshold_k: Robust sigma multiplier for onset detection.
@@ -417,6 +421,8 @@ def compute_ei_pipeline(
         if pairs is None:
             logger.warning("falling back to CAR: this recording cannot be paired")
             reference = "car"  # diagnostics must record what actually ran
+    if band_high is None:
+        band_high = max_band_high(fs)
     filtered = filter_for_display(
         raw_data, fs, band_low, band_high, mains_freq=mains_freq,
         reference="none" if reference == "bipolar" else "car",

@@ -302,7 +302,8 @@ def main():
     parser.add_argument("--mode", choices=["ei", "hfo", "fused"], default="fused",
                         help="Evaluation mode ('ei', 'hfo', or 'fused')")
     parser.add_argument("--band-low", type=float, default=1.0, help="Filter low corner frequency in Hz")
-    parser.add_argument("--band-high", type=float, default=500.0, help="Filter high corner frequency in Hz")
+    parser.add_argument("--band-high", type=float, default=None,
+                        help="Filter high corner frequency in Hz (default: this recording's Nyquist)")
     parser.add_argument("--mains-freq", type=float, default=DEFAULT_MAINS_FREQ, help="Mains notch frequency in Hz")
     parser.add_argument("--threshold-k", type=float, default=ONSET_THRESHOLD_K, help="Onset detection threshold k")
     parser.add_argument("--reference", choices=["car", "bipolar"], default="car",

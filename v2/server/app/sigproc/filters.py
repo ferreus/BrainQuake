@@ -35,6 +35,11 @@ def mains_harmonics(mains_freq, fs, up_to=None):
     return np.arange(mains_freq, limit, mains_freq)
 
 
+def max_band_high(fs):
+    """Highest band edge butter() accepts at this sampling rate."""
+    return _NYQ_MARGIN * fs / 2.0
+
+
 def clamp_band(band_low, band_high, fs, context=""):
     """Clamp a bandpass to something butter() will accept, loudly."""
     nyq = fs / 2.0

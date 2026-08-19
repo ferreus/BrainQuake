@@ -36,7 +36,8 @@ def run_ei_compute_job(db: Session, job: Job, log_file):
         raise FileNotFoundError(f"edf artifact {params.get('edf_artifact_id')} not found for this subject")
 
     band_low = float(params.get("band_low", 1.0))
-    band_high = float(params.get("band_high", 500.0))
+    band_high = params.get("band_high")
+    band_high = float(band_high) if band_high is not None else None
     baseline_start = float(params["baseline_start"])
     baseline_end = float(params["baseline_end"])
     target_start = float(params["target_start"])
