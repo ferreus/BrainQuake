@@ -1,18 +1,37 @@
-"""Nihon Kohden EEG-1200A (extended format) reader.
+"""Nihon Kohden reader: EEG-1100 series (legacy) and EEG-1200A (extended).
 
-Layout verified against DA6465AU.EEG: the datablock chain walks byte-exact
-to EOF with zero remainder.
+Datablock addresses come from the file's own tables -- nothing here is a
+fixed offset except the header fields below.
 
-datablock header:
-  +0x00  u8    0x01
-  +0x01  16s   "TIMEhhmmss000000"
-  +0x14  20s   "YYYYMMDDhhmmss000000"
-  +0x28  u32   sampling rate (Hz)
-  +0x2C  u32   duration in units of 0.1 s
-  +0x44  u32   n_channels
-  +0x48  ...   channel table, 10 bytes/entry, byte 0 = index into .21E
-  then          n_samples frames of (n_channels + 1) little-endian u16;
-                word 0 of each frame is the mark/event word.
+  0x91 / 0x92           legacy control block count (u8) + address (u32)
+  <ctl> + 0x11 / 0x12   legacy datablock count (u8) + addresses (u32, stride 20)
+
+EEG-1200A adds a second table after the legacy datablock, which it degrades to
+a 1-channel stub:
+
+  <legacy block end>    "EEG-1200A V01.00" at +0x01, u8 count at +0x11,
+                        extended control addresses at +0x12, stride 20
+  <ext ctl> + 0x11      u16 datablock count
+  <ext ctl> + 0x14      u64 datablock addresses, stride 24 (files exceed 4 GB)
+
+datablock header, legacy | extended:
+  +0x00  u8   | u8    0x01
+  +0x01  16s  | 16s   "TIMEhhmmss000000"
+  +0x14  6 B  | 20s   BCD YY MM DD hh mm ss | ASCII "YYYYMMDDhhmmss000000"
+  +0x1A  u16  |       sampling rate, mask 0x3FFF
+  +0x1C  u32  |       duration in units of 0.1 s
+  +0x26  u8   |       n_channels
+  +0x27  ...  |       channel table, 10 bytes/entry, byte 0 = index into .21E
+  +0x28       | u32   sampling rate (Hz)
+  +0x2C       | u32   duration in units of 0.1 s
+  +0x44       | u32   n_channels
+  +0x48       | ...   channel table, 10 bytes/entry
+
+Then n_samples frames of (n_channels + 1) little-endian u16. Words 0..n-1 are
+the channels in table order, offset-binary (subtract 32768). The **last** word
+is the event/marker word and is NOT offset-binary -- EDFbrowser's nk2edf.cpp
+reads `channels = n_ch + 1`, applies its high-byte fixup to the first
+`channels - 1` words only, and emits the last one as "Events/Markers".
 """
 import datetime as dt
 import os
@@ -23,8 +42,34 @@ import struct
 UV_PER_LSB = 6400.0 / 65536.0  # = 0.09765625
 DC_UV_PER_LSB = 12002.9 * 1000.0 * 2 / 65536.0  # DC inputs are +/-12002.9 mV
 
-# .21E indices that are DC / non-EEG inputs (per NK channel map)
-DC_RANGE = set(range(42, 74))
+# .21E indices carrying the DC scale. 76/77 are the mark inputs and take it too
+# (nk2edf.cpp:1262 excludes them from the uV branch alongside 42-73).
+DC_RANGE = set(range(42, 74)) | {76, 77}
+
+_FIXED_LABELS = {
+    0: "EEG FP1", 1: "EEG FP2", 2: "EEG F3", 3: "EEG F4", 4: "EEG C3",
+    5: "EEG C4", 6: "EEG P3", 7: "EEG P4", 8: "EEG O1", 9: "EEG O2",
+    10: "EEG F7", 11: "EEG F8", 12: "EEG T3", 13: "EEG T4", 14: "EEG T5",
+    15: "EEG T6", 16: "EEG FZ", 17: "EEG CZ", 18: "EEG PZ", 19: "EEG E",
+    20: "EEG PG1", 21: "EEG PG2", 22: "EEG A1", 23: "EEG A2", 24: "EEG T1",
+    25: "EEG T2", 74: "EEG BN1", 75: "EEG BN2", 76: "EEG Mark1",
+    77: "EEG Mark2", 100: "EEG X12/BP1", 101: "EEG X13/BP2",
+    102: "EEG X14/BP3", 103: "EEG X15/BP4", 255: "Z",
+}
+
+
+def fallback_label(i):
+    """Nihon Kohden's built-in name for a .21E index, used where the .21E has
+    no entry. Mirrors the table in EDFbrowser's nk2edf.cpp:416-470."""
+    if i in _FIXED_LABELS:
+        return _FIXED_LABELS[i]
+    if 26 <= i <= 36:
+        return f"EEG X{i - 25}"
+    if 42 <= i <= 73:
+        return f"DC{i - 41:02d}"
+    if 104 <= i <= 253:
+        return f"EEG X{i - 88}"
+    return None
 
 
 def read_21e(path):
@@ -53,43 +98,130 @@ def _e21_path(eeg_path):
     raise FileNotFoundError(f"no .21E next to {eeg_path}")
 
 
-def read_blocks(eeg_path, first=17403):
-    """Walk the datablock chain. Returns a list of block dicts."""
-    size = os.path.getsize(eeg_path)
+EXT_MARKER = b"EEG-1200A V01.00"
+
+
+def _u8(fh, at):
+    fh.seek(at)
+    return fh.read(1)[0]
+
+
+def _u16(fh, at):
+    fh.seek(at)
+    return struct.unpack("<H", fh.read(2))[0]
+
+
+def _u32(fh, at):
+    fh.seek(at)
+    return struct.unpack("<I", fh.read(4))[0]
+
+
+def _version(fh):
+    fh.seek(0)
+    return fh.read(16).decode("latin-1").strip()
+
+
+def _name(labels, i):
+    """.21E name, else Nihon Kohden's built-in one. A present-but-empty .21E
+    entry does not win -- EDFbrowser only overrides its table when the value is
+    non-empty (nk2edf.cpp read_21e_file, `if(n > 0)`)."""
+    return (labels.get(i) or "").strip() or fallback_label(i) or f"#{i}"
+
+
+def _legacy_addresses(fh):
+    """Datablock addresses from the legacy control table."""
+    out = []
+    for i in range(_u8(fh, 0x91)):
+        ctl = _u32(fh, 0x92 + i * 20)
+        for j in range(_u8(fh, ctl + 0x11)):
+            out.append(_u32(fh, ctl + 0x12 + j * 20))
+    return out
+
+
+def _legacy_block_end(fh):
+    """End of the last legacy datablock -- where an EEG-1200A extension starts."""
+    addrs = _legacy_addresses(fh)
+    if not addrs:
+        raise ValueError("no legacy datablock")
+    addr = addrs[-1]
+    sfreq = _u16(fh, addr + 0x1A) & 0x3FFF
+    dur10 = _u32(fh, addr + 0x1C)
+    n_ch = _u8(fh, addr + 0x26)
+    return addr + 0x27 + n_ch * 10 + (dur10 * sfreq // 10) * (n_ch + 1) * 2
+
+
+def _extension_at(fh):
+    """Offset of the EEG-1200A extension header, or None for a plain 1100."""
+    ext = _legacy_block_end(fh)
+    fh.seek(ext + 1)
+    return ext if fh.read(16) == EXT_MARKER else None
+
+
+def block_addresses(fh, ext):
+    """Addresses of every extended datablock, in file order."""
+    out = []
+    for i in range(_u8(fh, ext + 0x11)):
+        ctl = _u32(fh, ext + 0x12 + i * 20)
+        n = _u16(fh, ctl + 0x11)
+        fh.seek(ctl + 0x14)
+        table = fh.read(n * 24)
+        out += [struct.unpack_from("<Q", table, j * 24)[0] for j in range(n)]
+    return out
+
+
+def _read_legacy_block(fh, addr, labels):
+    fh.seek(addr)
+    head = fh.read(0x27)
+    if len(head) < 0x27 or head[0] != 1 or head[1:5] != b"TIME":
+        raise ValueError(f"no datablock at {addr}")
+    # BCD YY MM DD hh mm ss -- hex-formatting a BCD byte prints its digits.
+    stamp = "20" + "".join(f"{b:02x}" for b in head[0x14:0x1A]) + "000000"
+    sfreq = struct.unpack_from("<H", head, 0x1A)[0] & 0x3FFF
+    dur10 = struct.unpack_from("<I", head, 0x1C)[0]
+    n_ch = head[0x26]
+    return _block(fh, addr, addr + 0x27, stamp, sfreq, dur10, n_ch, labels)
+
+
+def _read_extended_block(fh, addr, labels):
+    fh.seek(addr)
+    head = fh.read(0x48)
+    if len(head) < 0x48 or head[0] != 1 or head[1:5] != b"TIME":
+        raise ValueError(f"no datablock at {addr}")
+    stamp = head[0x14:0x28].decode("latin-1")
+    sfreq = struct.unpack_from("<I", head, 0x28)[0]
+    dur10 = struct.unpack_from("<I", head, 0x2C)[0]
+    n_ch = struct.unpack_from("<I", head, 0x44)[0]
+    return _block(fh, addr, addr + 0x48, stamp, sfreq, dur10, n_ch, labels)
+
+
+def _block(fh, addr, table_at, stamp, sfreq, dur10, n_ch, labels):
+    fh.seek(table_at)
+    table = fh.read(n_ch * 10)
+    idx = [table[i * 10] for i in range(n_ch)]
+    return dict(
+        address=addr,
+        data_address=table_at + n_ch * 10,
+        start=stamp,
+        sfreq=sfreq,
+        duration=dur10 / 10.0,
+        n_channels=n_ch,
+        n_samples=dur10 * sfreq // 10,
+        e21_index=idx,
+        ch_names=[_name(labels, i) for i in idx],
+    )
+
+
+def read_blocks(eeg_path):
+    """Read every datablock listed in the file's tables. Returns a list of dicts.
+
+    EEG-1200A files are read from their extended table; everything else falls
+    back to the legacy EEG-1100 control table."""
     labels = read_21e(_e21_path(eeg_path))
-    blocks = []
-    addr = first
     with open(eeg_path, "rb") as fh:
-        while addr < size:
-            fh.seek(addr)
-            head = fh.read(0x48)
-            if len(head) < 0x48 or head[0] != 1 or head[1:5] != b"TIME":
-                raise ValueError(f"datablock chain broke at {addr}")
-            stamp = head[0x14:0x28].decode("latin-1")
-            sfreq = struct.unpack_from("<I", head, 0x28)[0]
-            dur10 = struct.unpack_from("<I", head, 0x2C)[0]
-            n_ch = struct.unpack_from("<I", head, 0x44)[0]
-            table = fh.read(n_ch * 10)
-            idx = [table[i * 10] for i in range(n_ch)]
-            n_samp = dur10 * sfreq // 10
-            data_at = addr + 0x48 + n_ch * 10
-            blocks.append(
-                dict(
-                    address=addr,
-                    data_address=data_at,
-                    start=stamp,
-                    sfreq=sfreq,
-                    duration=dur10 / 10.0,
-                    n_channels=n_ch,
-                    n_samples=n_samp,
-                    e21_index=idx,
-                    ch_names=[labels.get(i, f"#{i}") for i in idx],
-                )
-            )
-            addr = data_at + n_samp * (n_ch + 1) * 2
-    if addr != size:
-        raise ValueError(f"chain ended at {addr}, file is {size}")
-    return blocks
+        ext = _extension_at(fh)
+        if ext is None:
+            return [_read_legacy_block(fh, a, labels) for a in _legacy_addresses(fh)]
+        return [_read_extended_block(fh, a, labels) for a in block_addresses(fh, ext)]
 
 
 # An entry's timestamp field: "EEEEEE(YYMMDDhhmmss)" -- elapsed, then absolute.

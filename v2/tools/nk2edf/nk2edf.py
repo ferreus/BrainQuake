@@ -1,41 +1,108 @@
-"""Convert Nihon Kohden EEG-1200A (extended format) .EEG files to EDF+C.
+"""Convert Nihon Kohden .EEG files to EDF+C: EEG-1200A and the EEG-1100 series.
 
-The stock converters (nk2edf, MNE's read_raw_nihon) reject this header version
-and would misparse the datablock even if the whitelist were patched -- the
-EEG-1200A layout moved sfreq/duration/n_channels and widened them to u32.
-See nk.py for the layout.
+The stock converters reject the EEG-1200A header version, and would misparse
+the datablock even if the whitelist were patched -- the extended layout moved
+sfreq/duration/n_channels and widened them to u32. EEG-1100 files are the
+legacy layout that EDFbrowser's nk2edf handles; ours is checked against it.
+See nk.py for both layouts.
 
-Events from the .LOG and the per-sample mark word are written as EDF+
-annotations and a MARK signal respectively -- both were previously discarded.
+Events from the .LOG and the per-frame event word are written as EDF+
+annotations and an Events/Markers signal respectively -- both were previously
+discarded.
 The .LOG layout is unverified: run --dump-log and check it before trusting a
 converted file. See README.md.
+
+Every sidecar sharing the .EEG's stem is discovered and used (see nkmeta):
+montages from .PTN, DC channel units from .11D, sex/birth date from .PNT,
+clinician bookmarks from .sld. Any of them may be absent.
 
 Usage:
   python nk2edf.py INPUT.EEG OUTDIR [--blocks 0,1,5-9] [--all-channels]
                                     [--ascii-labels] [--list] [--dump-log]
                                     [--log PATH] [--no-log] [--annotations CSV]
-                                    [--no-mark-channel]
+                                    [--no-mark-channel] [--montage NAME|auto]
+                                    [--no-sidecar]
 """
 import argparse
 import datetime as dt
+import json
 import os
+import re
 
 import nk
+import nkmeta
 import numpy as np
 
 REC_SECS = 1  # EDF data record duration
 MIN_ANNOT_BYTES = 120  # floor for the EDF Annotations signal, per record
 
-EEG_PHYS_MAX = 3199.902  # uV, JE-120A/225A EEG inputs (+/-3200 uV full scale)
+EEG_PHYS_MAX = 3199.902  # uV, EEG inputs (+/-3200 uV full scale)
 EEG_PHYS_MIN = -3200.0
-DC_PHYS_MAX = 12002.9  # mV, DC inputs
+DC_PHYS_MAX = 12002.56  # mV, DC inputs; both match EDFbrowser's nk2edf exactly
 DC_PHYS_MIN = -12002.9
 
-# The mark/event word is a raw code, not a measurement, so it is written with
-# physical == digital and no unit. Its label deliberately does not look like an
-# SEEG contact (one letter, optional prime, a number), which is how the server
-# separates contacts from auxiliary traces.
-MARK_LABEL = "MARK"
+# The event word is a raw code, not a measurement. EDFbrowser names it exactly
+# this and gives it physical -1..1 over the full digital range; keeping the name
+# lets converted files be diffed against its output. It also does not look like
+# an SEEG contact (one letter, optional prime, a number), which is how the
+# server separates contacts from auxiliary traces.
+EVENT_LABEL = "Events/Markers"
+
+# A bipolar trace spans twice the single-ended range, so montage output is
+# halved into the int16 digital range rather than clipped.
+BIPOLAR_PHYS_MAX = (EEG_PHYS_MAX - EEG_PHYS_MIN) / 2
+
+_PLACEHOLDER = re.compile(r"^#\d+$")
+
+
+def dc_key(e21):
+    """.11D [ConvertDisplay] prefix for a DC input -- DC01 is .21E index 42."""
+    return f"DC{e21 - 41:02d}" if 42 <= e21 <= 73 else None
+
+
+def select_channels(blk, dc_cal, e21_labels):
+    """Channels the recording actually carries: DC inputs only where the .11D
+    enables them, and nothing whose .21E entry exists but is blank -- that is
+    the recording stating no electrode is connected there."""
+    keep = []
+    for i, e in enumerate(blk["e21_index"]):
+        if e in e21_labels and not e21_labels[e].strip():
+            continue
+        if _PLACEHOLDER.match(blk["ch_names"][i]):
+            continue
+        cal = dc_cal.get(dc_key(e) or "")
+        if cal is not None and not cal["enable"]:
+            continue
+        keep.append(i)
+    return keep
+
+
+def signal_spec(label, e21, dc_cal):
+    """(label, unit, phys_min, phys_max) for one data signal."""
+    cal = dc_cal.get(dc_key(e21) or "")
+    if cal and cal.get("unit") and cal["coefficient"]:
+        c, o = cal["coefficient"], cal["offset"]
+        lo, hi = DC_PHYS_MIN * c + o, DC_PHYS_MAX * c + o
+        return (label, cal["unit"], min(lo, hi), max(lo, hi))
+    if e21 in nk.DC_RANGE:
+        return (label, "mV", DC_PHYS_MIN, DC_PHYS_MAX)
+    return (label, "uV", EEG_PHYS_MIN, EEG_PHYS_MAX)
+
+
+def montage_columns(montage, blk):
+    """Map a montage onto (a, b) file-channel positions.
+
+    An electrode the recording does not carry -- notably the 0V reference --
+    contributes zero, which is what makes `0V-EKG1` come out as -EKG1.
+    """
+    pos = {e: i for i, e in enumerate(blk["e21_index"])}
+    out = []
+    for ch in montage["channels"]:
+        a, b = pos.get(ch["a"]), pos.get(ch["b"])
+        if a is None and b is None:
+            continue
+        out.append((ch["label"], a, b))
+    return out
 
 
 def _fld(text, width):
@@ -135,13 +202,22 @@ def events_for_block(log_events, start, duration):
 
 
 def convert_block(eeg_path, blk, out_path, keep, patient, recording, ascii_labels,
-                  events=(), keep_mark=True):
+                  events=(), keep_mark=True, dc_cal=None, montage=None):
+    dc_cal = dc_cal or {}
     sfreq = blk["sfreq"]
     n_ch_file = blk["n_channels"]
     frame = n_ch_file + 1
     n_records = blk["n_samples"] // (sfreq * REC_SECS)
 
-    names = [blk["ch_names"][i] for i in keep]
+    # One code path for both outputs: every signal is a pair (a, b) of file
+    # channel positions, and referential output simply has no b.
+    if montage:
+        cols = montage_columns(montage, blk)
+        names = [c[0] for c in cols]
+        pairs = [(c[1], c[2]) for c in cols]
+    else:
+        names = [blk["ch_names"][i] for i in keep]
+        pairs = [(i, None) for i in keep]
     if ascii_labels:
         names = [n.replace("'", "p") for n in names]
     # de-duplicate labels; EDF readers key on them
@@ -155,29 +231,36 @@ def convert_block(eeg_path, blk, out_path, keep, patient, recording, ascii_label
         else:
             seen[n] = 0
         names[i] = n
-    is_dc = [blk["e21_index"][i] in nk.DC_RANGE for i in keep]
 
     start = dt.datetime.strptime(blk["start"][:14], "%Y%m%d%H%M%S")
 
-    signals = [
-        (names[i],
-         "mV" if is_dc[i] else "uV",
-         DC_PHYS_MIN if is_dc[i] else EEG_PHYS_MIN,
-         DC_PHYS_MAX if is_dc[i] else EEG_PHYS_MAX)
-        for i in range(len(names))
-    ]
+    if montage:
+        signals = [(n, "uV", -BIPOLAR_PHYS_MAX, BIPOLAR_PHYS_MAX) for n in names]
+    else:
+        signals = [
+            signal_spec(names[i], blk["e21_index"][keep[i]], dc_cal)
+            for i in range(len(names))
+        ]
     if keep_mark:
-        signals.append((MARK_LABEL, "", -32768, 32767))
+        signals.append((EVENT_LABEL, "", -1, 1))
 
     per_record, annot_bytes = plan_annotations(events, n_records)
     header = build_header(
         signals, n_records, sfreq, start, patient, recording, annot_bytes
     )
 
-    # digital->physical is linear and identical for every channel of a kind,
-    # so the raw NK code maps straight onto the EDF digital range: subtract the
-    # 32768 offset and reinterpret as int16.
-    keep_arr = np.asarray(keep, dtype=np.intp) + 1  # +1 skips the mark word
+    # digital->physical is linear and identical for every channel of a kind, so
+    # the raw NK code maps straight onto the EDF digital range: subtract the
+    # 32768 offset and reinterpret as int16. Channels are words 0..n-1 in table
+    # order; an absent side reads word 0 and is zeroed out.
+    def _side(k):
+        idx = np.array([p[k] if p[k] is not None else 0 for p in pairs],
+                       dtype=np.intp)
+        on = np.array([p[k] is not None for p in pairs], dtype=np.int32)
+        return idx, on
+
+    a_idx, a_on = _side(0)
+    b_idx, b_on = _side(1)
 
     chunk_records = max(1, 64 // REC_SECS)
     written = 0
@@ -191,14 +274,19 @@ def convert_block(eeg_path, blk, out_path, keep, patient, recording, ascii_label
             if len(buf) < nsamp * frame * 2:
                 raise EOFError(f"short read in {blk['address']}")
             raw = np.frombuffer(buf, dtype="<u2").reshape(nsamp, frame)
-            cols = raw[:, keep_arr]
+            sig = (raw[:, a_idx].astype(np.int32) - 32768) * a_on
+            if montage:
+                sig -= (raw[:, b_idx].astype(np.int32) - 32768) * b_on
+                sig //= 2  # bipolar spans twice the single-ended range
             if keep_mark:
-                # Word 0 of every frame. Previously discarded outright, which
-                # threw away the hardware event line (patient button, technician
-                # marks) with no way to recover it short of re-converting.
-                cols = np.concatenate([cols, raw[:, :1]], axis=1)
-            sig = (cols.astype(np.int32) - 32768).astype("<i2")
-            sig = sig.reshape(nrec, sfreq * REC_SECS, cols.shape[1])
+                # The LAST word of every frame -- the hardware event line
+                # (patient button, technician marks). It is not offset-binary:
+                # EDFbrowser applies its high-byte fixup to the channel words
+                # only, so this one is reinterpreted as int16 unchanged.
+                ev = raw[:, n_ch_file : n_ch_file + 1].astype(np.int32)
+                sig = np.concatenate([sig, np.where(ev > 32767, ev - 65536, ev)], 1)
+            n_out = sig.shape[1]
+            sig = sig.astype("<i2").reshape(nrec, sfreq * REC_SECS, n_out)
             for r in range(nrec):
                 # EDF record = per-signal contiguous blocks
                 fout.write(np.ascontiguousarray(sig[r].T).tobytes())
@@ -265,6 +353,44 @@ def parse_sel(text, n):
     return out
 
 
+def write_sidecar(edf_path, blk, keep, e21, patient, dc_cal, montages, applied):
+    """The sidecar information EDF itself has nowhere to put."""
+    dob = patient.get("dob")
+    meta = {
+        "block": {
+            "start": blk["start"][:14],
+            "duration_s": blk["duration"],
+            "sfreq": blk["sfreq"],
+            "n_channels_in_file": blk["n_channels"],
+        },
+        "reference": e21.get("system_reference"),
+        "device": e21.get("device"),
+        "patient": {
+            "sex": patient.get("sex"),
+            "dob": dob.isoformat() if dob else None,
+            "age_at_recording": patient.get("age"),
+        },
+        "channels": [
+            {
+                "label": blk["ch_names"][i],
+                "e21_index": blk["e21_index"][i],
+                "unit": signal_spec(
+                    blk["ch_names"][i], blk["e21_index"][i], dc_cal
+                )[1],
+            }
+            for i in keep
+        ],
+        "montages": [
+            {"name": m["name"], "channels": [c["label"] for c in m["channels"]]}
+            for m in montages
+            if len({c["label"] for c in m["channels"]}) > 1
+        ],
+        "montage_applied": applied["name"] if applied else None,
+    }
+    with open(os.path.splitext(edf_path)[0] + ".json", "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
@@ -290,26 +416,47 @@ def main():
     ap.add_argument(
         "--no-mark-channel",
         action="store_true",
-        help="drop the per-sample mark/event word instead of writing it as a MARK signal",
+        help="drop the per-frame event word instead of writing it as an "
+             "Events/Markers signal",
+    )
+    ap.add_argument(
+        "--montage",
+        help="write a .PTN montage's bipolar traces instead of referential "
+             "channels; NAME (e.g. EMU1) or 'auto' to follow the .LOG",
+    )
+    ap.add_argument(
+        "--no-sidecar", action="store_true", help="skip the per-EDF .json metadata"
     )
     args = ap.parse_args()
 
     blocks = nk.read_blocks(args.input)
     n_file_ch = blocks[0]["n_channels"]
 
-    # Channels beyond the montage are unconnected inputs on the second amp
-    # box: they mutually correlate at ~0.999 and carry only mains pickup.
+    side = nkmeta.discover(args.input)
+    dc_cal = nkmeta.read_11d(side["11d"]) if "11d" in side else {}
+    patient_info = nkmeta.read_pnt(side["pnt"]) if "pnt" in side else {}
+    e21 = nkmeta.read_21e_sections(side["21e"]) if "21e" in side else {}
+    montages = (
+        nkmeta.read_ptn_dir(side["ptn"], nk.read_21e(side["21e"]), e21["reference"])
+        if "ptn" in side and "21e" in side
+        else []
+    )
+    by_name = {m["name"]: m for m in montages}
+
     if args.all_channels:
         keep = list(range(n_file_ch))
     else:
-        names = blocks[0]["ch_names"]
-        idx = blocks[0]["e21_index"]
-        last = max(i for i in range(n_file_ch) if idx[i] <= 253 and names[i])
-        # the montage runs until the .21E index sequence restarts
-        restart = next(
-            (i for i in range(1, n_file_ch) if idx[i] < idx[i - 1]), n_file_ch
-        )
-        keep = list(range(min(last + 1, restart)))
+        keep = select_channels(blocks[0], dc_cal, nk.read_21e(side["21e"]))
+    if not keep:
+        raise SystemExit("no channels selected -- try --all-channels")
+
+    # EDF+ patient field: sex and birth date only, never name or record number.
+    if args.patient == "X X X X" and patient_info.get("dob"):
+        d = patient_info["dob"]
+        mon = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+               "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"][d.month - 1]
+        args.patient = f"X {patient_info.get('sex') or 'X'} " \
+                       f"{d.day:02d}-{mon}-{d.year} X"
 
     log_events = []
     log_path = args.log or (None if args.no_log else default_log_path(args.input))
@@ -320,6 +467,11 @@ def main():
         print("no .LOG found next to the .EEG -- converting without log annotations")
     if args.annotations:
         log_events += read_annotation_csv(args.annotations)
+    if "sld" in side:
+        marks = nkmeta.read_sld(side["sld"])
+        if marks:
+            print(f"{os.path.basename(side['sld'])}: {len(marks)} clinician bookmarks")
+        log_events += marks
 
     if args.dump_log:
         placed = 0
@@ -343,6 +495,16 @@ def main():
     if args.list:
         print(f"{len(blocks)} datablocks in {args.input}")
         print(f"{n_file_ch} channels in file, exporting {len(keep)}")
+        print(f"sidecars: {', '.join(sorted(k for k in side if k != 'eeg')) or 'none'}")
+        if e21.get("system_reference"):
+            print(f"reference: {e21['system_reference']}  device: {e21.get('device')}")
+        if patient_info.get("dob"):
+            print(f"patient: sex {patient_info.get('sex')}  born {patient_info['dob']}"
+                  f"  age at recording {patient_info.get('age')}")
+        real = [m for m in montages if len({c["label"] for c in m["channels"]}) > 1]
+        if real:
+            print(f"montages ({len(real)}): "
+                  + ", ".join(f"{m['name']}[{len(m['channels'])}]" for m in real))
         print()
         print(f"{'#':>3} {'start':>20} {'dur(s)':>8} {'MB out':>8}")
         for i, b in enumerate(blocks):
@@ -381,14 +543,34 @@ def main():
             events += [(s, t) for s, t in relative if 0 <= s < b["duration"]]
         events.sort()
 
+        mont = None
+        if args.montage:
+            want = args.montage
+            if want.lower() == "auto":
+                want = nkmeta.montage_at(log_events, block_start, list(by_name))
+                if not want:
+                    raise SystemExit(
+                        f"block {i}: the .LOG names no montage at {block_start}; "
+                        "pass --montage NAME instead"
+                    )
+            mont = by_name.get(want)
+            if mont is None:
+                raise SystemExit(
+                    f"no montage {want!r} -- available: {', '.join(sorted(by_name))}"
+                )
+
         nrec, nch, start = convert_block(
             args.input, b, out, keep, args.patient, recording,
             args.ascii_labels, events=events, keep_mark=not args.no_mark_channel,
+            dc_cal=dc_cal, montage=mont,
         )
+        if not args.no_sidecar:
+            write_sidecar(out, b, keep, e21, patient_info, dc_cal, montages, mont)
         size = os.path.getsize(out)
         print(
             f"[{i:2d}/{len(blocks)-1}] {os.path.basename(out)}  "
-            f"{nch} ch  {nrec} s  {len(events)} annot  {size/1e6:.1f} MB",
+            f"{nch} ch  {nrec} s  {len(events)} annot  {size/1e6:.1f} MB"
+            + (f"  montage {mont['name']}" if mont else ""),
             flush=True,
         )
 
