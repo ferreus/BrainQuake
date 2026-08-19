@@ -147,33 +147,44 @@ This matches `nrveegimport.m` and the local `convert.py`, which both compute µV
 as `-raw × res`. The widely circulated `NicoletFile.m` does **not** negate, and
 is wrong here.
 
-Settled by converting segment 0 with the montage applied and comparing it in
-EDFbrowser against the same page in the Nicolet viewer (`Pedi 2(2)`, 30 mm/s,
+Two independent lines settle it.
+
+**1. Against the viewer.** Segment 0 converted with the montage applied, opened
+in EDFbrowser beside the same page in the Nicolet viewer (`Pedi 2(2)`, 30 mm/s,
 70 µV/cm). Negated output matches trace for trace — the distinctive `C4-Cz` /
 `Cz-C3` crossing pattern and the burst onset land in the same places.
 
-Note the file itself does not answer this; only the viewer does. Two automated
-attempts on `Bella.e` were **inconclusive and pointed the wrong way**, and are
-recorded here so nobody re-runs them expecting an answer:
+**2. Against a recording whose polarity is already known** — this one needs no
+viewer and no display convention at all. `datasets/BellaVEEG` is the same
+patient's scalp VEEG, converted by `../nk2edf`, whose output is true µV. Measure
+one signed statistic on the frontal-minus-occipital trace in both recordings;
+only the *side* matters, since negating a signal flips the skew and turns an
+x% positive peak rate into (100−x)%:
 
-| test | result |
-|---|---|
-| Frontal `(Fp1+Fp2)/2`, largest 50 excursions per segment | positive in 3 of 4 segments |
-| Eye dipole `frontal − occipital`, blink-like peaks (>6×MAD) | 100 of 170 positive (59%) |
-| Occipital `Oz` control | symmetric, ratio 1.00 — the method itself is unbiased |
+| | skew | large peaks positive |
+|---|---|---|
+| Nihon Kohden scalp, true µV, 92 clips / 193 min | **−0.173** (35/92 clips positive) | **41%** |
+| — night-only subset, matching Bella.e's hours | −0.209 | 41% |
+| Nicolet `raw × res`, 4 segments | **+0.395** (4/4 positive) | **59%** |
 
-Both assume eye blinks dominate the frontal channels, since a blink rolls the
-positive cornea toward Fp1/Fp2. That premise fails on this recording: it starts
-at 03:50 and the patient is largely asleep, so what those tests measured was
-slow eye movement and artifact, not blinks. A weak majority on the wrong
-premise is not evidence.
+Opposite sign on both statistics, and 41% / 59% are exact complements. That is
+a sign flip, so `raw × res` is inverted and negation is correct.
 
-> One confound worth ruling out if this is ever revisited: EDFbrowser and the
-> Nicolet viewer must be compared with the **same** vertical convention.
-> Clinical EEG plots negative upward; if the two disagree on that, matching the
-> pictures would invert the data rather than correct it. The numeric check that
-> settles it without reference to any display setting: read the µV value of one
-> identifiable deflection in both viewers and compare signs.
+Two dead ends recorded so nobody repeats them:
+
+- An earlier version of this argued from first principles that blinks are
+  frontal-positive, so a majority-positive peak rate meant correct polarity.
+  **That premise is false here** — ground-truth µV data from this patient reads
+  41%, not >50%. Calibrating against a known recording removes the need to know
+  why.
+- It was then suspected that the premise failed because `Bella.e` starts at
+  03:50 with the patient asleep. **Also wrong**: the night-only NKT subset gives
+  the same −0.209 / 41%. Time of day is not the variable.
+
+> EDFbrowser draws **positive upward** (a signal's own `-100 uV` gridline sits
+> below its baseline). Since negated output matches the Nicolet viewer there,
+> the Nicolet viewer must be positive-up too — worth knowing, as clinical EEG
+> convention is normally negative-up. Line 2 above does not depend on this.
 
 ## Montages
 
@@ -282,6 +293,10 @@ and `mne`:
 
 **Montage against the viewer.** The decoded montage reproduces
 `datasets/Nicolet/montage.txt` exactly: 22/22 labels, same order.
+
+**Polarity.** Confirmed twice — against the Nicolet viewer, and against the
+same patient's Nihon Kohden scalp VEEG whose polarity is already established.
+See [Scaling and polarity](#scaling-and-polarity) for the numbers.
 
 The physical residual is EDF's own limit, not a decode error: physical min/max
 are 8 ASCII characters, and `-5482.46` is all that fits of `-5482.4645…`.
