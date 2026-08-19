@@ -112,12 +112,17 @@ def _fld(text, width):
 
 
 def _num(value, width):
-    """EDF numeric field: as many significant digits as fit, no exponent."""
+    """EDF numeric field: as many significant digits as fit, no exponent.
+
+    Only montage output reaches the second branch: -3199.951 does not fit, and
+    the old decimal count left a character unused and wrote -3200 for it.
+    """
     s = f"{value:.8f}".rstrip("0").rstrip(".")
-    if len(s) > width:
-        s = f"{value:.{max(0, width - len(str(int(value))) - 2)}f}"
-        s = s.rstrip("0").rstrip(".")[:width]
-    return _fld(s, width)
+    for dec in range(width, -1, -1):
+        if len(s) <= width:
+            return _fld(s, width)
+        s = f"{value:.{dec}f}"
+    return _fld(s[:width], width)
 
 
 def build_header(signals, n_records, sfreq, start, patient, recording, annot_bytes):
