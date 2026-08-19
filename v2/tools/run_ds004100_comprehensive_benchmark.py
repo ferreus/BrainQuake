@@ -49,6 +49,7 @@ RESULTS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../verifi
 CACHE_DIR = os.path.join(RESULTS_DIR, "cache")
 OUTPUT_CSV = os.path.join(RESULTS_DIR, "ds004100_comprehensive_benchmark.csv")
 OUTPUT_HTML = os.path.join(RESULTS_DIR, "ds004100_comprehensive_report.html")
+R_TIMEOUT_S = 300  # per-run wall clock allowed to each R reference implementation
 OUTPUT_MD = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../docs/ds004100_comprehensive_benchmark_report.md"))
 
 
@@ -118,7 +119,7 @@ def run_r_ezfragility(data, ch_names, fs, pre_s, score_s, base_name, cache_dir):
 
         cmd = ["Rscript", R_EZFRAGILITY_RUNNER, tmp_in, str(fs), str(pre_s), str(score_s), tmp_out]
         t0 = time.perf_counter()
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=R_TIMEOUT_S)
         elapsed = time.perf_counter() - t0
 
         if p.returncode != 0 or not os.path.exists(tmp_out):
@@ -136,6 +137,8 @@ def run_r_ezfragility(data, ch_names, fs, pre_s, score_s, base_name, cache_dir):
             json.dump({"scores": scores, "r2_median": r2_med, "elapsed_sec": elapsed}, fh)
 
         return scores, r2_med, elapsed
+    except subprocess.TimeoutExpired:
+        return None, 0.0, float(R_TIMEOUT_S)   # a lower bound, not zero
     except Exception:
         return None, 0.0, 0.0
     finally:
@@ -187,7 +190,7 @@ def run_r_ezei(data, ch_names, fs, base_name, cache_dir):
 
         cmd = ["Rscript", R_EZEI_RUNNER, tmp_in, str(proc_fs), tmp_out]
         t0 = time.perf_counter()
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=R_TIMEOUT_S)
         elapsed = time.perf_counter() - t0
 
         if p.returncode != 0 or not os.path.exists(tmp_out):
@@ -202,6 +205,8 @@ def run_r_ezei(data, ch_names, fs, base_name, cache_dir):
             json.dump({"scores": scores, "elapsed_sec": elapsed}, fh)
 
         return scores, elapsed
+    except subprocess.TimeoutExpired:
+        return None, float(R_TIMEOUT_S)   # a lower bound, not zero
     except Exception:
         return None, 0.0
     finally:
@@ -454,6 +459,10 @@ def process_single_run_benchmark(job_args):
     rho_frag_ext_ez, ov4_frag_ext_ez, ov10_frag_ext_ez = compute_spearman_overlap(
         scores_frag_py_ext, scores_frag_py_ez, ch_names
     )
+    rho_frag_ext_r, ov4_frag_ext_r, _ = (
+        compute_spearman_overlap(scores_frag_py_ext, scores_frag_r, ch_names)
+        if scores_frag_r else (np.nan, np.nan, np.nan)
+    )
     rho_ei_car_r, ov4_ei_car_r, ov10_ei_car_r = (
         compute_spearman_overlap(scores_ei_car, scores_ei_r, ch_names)
         if scores_ei_r else (np.nan, np.nan, np.nan)
@@ -490,6 +499,8 @@ def process_single_run_benchmark(job_args):
         "rho_frag_ez_vs_r": rho_frag_ez_r,
         "ov4_frag_ez_vs_r": ov4_frag_ez_r,
         "rho_frag_ext_vs_ez": rho_frag_ext_ez,
+        "rho_frag_ext_vs_r": rho_frag_ext_r,
+        "ov4_frag_ext_vs_r": ov4_frag_ext_r,
         "rho_ei_car_vs_r": rho_ei_car_r,
         "rho_ei_bip_vs_car": rho_ei_bip_car,
         # Fragility Metrics: SOZ Recall @ K
@@ -677,33 +688,6 @@ def synthesize_and_report(results, out_md_path, out_html_path, out_csv_path, tot
     p_ei_bip_vs_r = calc_wilcoxon(seeg_runs, "soz_recall_ei_bip", "soz_recall_ei_r")
     p_frag_ext_vs_ez = calc_wilcoxon(with_gt_soz, "soz_recall_frag_py_ext", "soz_recall_frag_py_ez")
 
-    # 7. Implementation Grades (Rubric: 25% Parity, 35% Localization, 20% Outcome, 20% Performance)
-    # Score for PyFragility (ezfragility port):
-    parity_score_ez = min(100.0, max(0.0, mean_rho_frag_ez_r * 100))
-    loc_score_ez = min(100.0, max(0.0, (metrics_table["py_frag_ez"]["mean_soz_recall"] / max(0.01, metrics_table["r_frag"]["mean_soz_recall"])) * 90))
-    prog_score_ez = 85.0 if d_ez > 0 else 60.0
-    perf_score_ez = min(100.0, 50.0 + min(50.0, speedup_frag_ez * 5.0))
-    total_grade_ez = 0.25 * parity_score_ez + 0.35 * loc_score_ez + 0.20 * prog_score_ez + 0.20 * perf_score_ez
-
-    # Score for PyFragility (extended):
-    loc_score_ext = min(100.0, max(0.0, (metrics_table["py_frag_ext"]["mean_soz_recall"] / max(0.01, metrics_table["r_frag"]["mean_soz_recall"])) * 95))
-    prog_score_ext = 95.0 if p_ext < 0.05 and d_ext > 0.2 else (85.0 if d_ext > 0 else 65.0)
-    perf_score_ext = min(100.0, 50.0 + min(50.0, speedup_frag_ext * 5.0))
-    total_grade_ext = 0.25 * 95.0 + 0.35 * loc_score_ext + 0.20 * prog_score_ext + 0.20 * perf_score_ext
-
-    # Score for ComputeEI (Bipolar / CAR):
-    loc_score_ei = min(100.0, max(0.0, (metrics_table["py_ei_bip"]["mean_soz_recall"] / max(0.01, metrics_table["r_ei"]["mean_soz_recall"])) * 95))
-    perf_score_ei = min(100.0, 50.0 + min(50.0, speedup_ei_bip * 5.0))
-    total_grade_ei = 0.25 * 90.0 + 0.35 * loc_score_ei + 0.20 * 90.0 + 0.20 * perf_score_ei
-
-    def get_letter_grade(score):
-        if score >= 95.0: return "A+"
-        if score >= 88.0: return "A"
-        if score >= 80.0: return "A-"
-        if score >= 75.0: return "B+"
-        if score >= 70.0: return "B"
-        return "C"
-
     # Compute paired subset stats (where both R Fragility and Python completed)
     paired_r_frag = [r for r in with_gt_soz if r.get("soz_recall_frag_r") != "" and r.get("soz_recall_frag_r") != "nan" and np.isfinite(float(r.get("soz_recall_frag_r", np.nan)))]
     n_paired = len(paired_r_frag)
@@ -718,105 +702,211 @@ def synthesize_and_report(results, out_md_path, out_html_path, out_csv_path, tot
     paired_py_ext_res = calc_mean(paired_r_frag, "resect_conc_frag_py_ext")
     paired_mean_rho = calc_mean(paired_r_frag, "rho_frag_ez_vs_r")
     paired_mean_ov4 = calc_mean(paired_r_frag, "ov4_frag_ez_vs_r")
+    paired_rho_ext_ez = calc_mean(paired_r_frag, "rho_frag_ext_vs_ez")
+    paired_rho_ext_r = calc_mean(paired_r_frag, "rho_frag_ext_vs_r")
+    paired_ov4_ext_r = calc_mean(paired_r_frag, "ov4_frag_ext_vs_r")
 
     # Write Markdown Report
+    frag_ez = metrics_table["py_frag_ez"]
+    frag_ext = metrics_table["py_frag_ext"]
+    ei_bip, ei_car, ei_r = metrics_table["py_ei_bip"], metrics_table["py_ei_car"], metrics_table["r_ei"]
+    n_soz = len(with_gt_soz)
+    n_timeout = n_soz - n_paired
+    seeg, ecog = cohort_stats["seeg"], cohort_stats["ecog"]
+
+    perf_summary["r_frag"] = {
+        "mean": calc_mean(paired_r_frag, "time_frag_r"),
+        "median": calc_median(paired_r_frag, "time_frag_r"),
+        "p95": calc_p95(paired_r_frag, "time_frag_r"),
+    }
+    i_mean_ez = calc_mean(with_gt_soz, "i_ratio_frag_py_ez")
+    i_mean_ext = calc_mean(with_gt_soz, "i_ratio_frag_py_ext")
+
+    def per_min(v):
+        return 60.0 / v if v > 0 else 0.0
+
+    # Emphasis is derived, never hand-placed: the best cell in each metric column wins,
+    # ties included. Marking a row by hand goes stale the moment the numbers move.
+    def html_rows(header_cells, rows, metric_cols):
+        best = {}
+        for c in metric_cols:
+            vals = [r["cells"][c][0] for r in rows if r["cells"][c][0] is not None]
+            best[c] = max(vals) if vals else None
+        out = ["            <tr>\n                " +
+               "".join(f"<th>{h}</th>" for h in header_cells) + "\n            </tr>"]
+        for r in rows:
+            tds = []
+            for i, (val, text) in enumerate(r["cells"]):
+                win = (i in metric_cols and val is not None and best[i] is not None
+                       and abs(val - best[i]) < 1e-9)
+                tds.append(f'<td class="win">{text}</td>' if win else f"<td>{text}</td>")
+            out.append("            <tr>\n                " + "".join(tds) + "\n            </tr>")
+        return "\n".join(out)
+
+    def pct(v):
+        return (v, f"{v*100:.2f}%") if v is not None else (None, "&mdash;")
+
+    def txt(s):
+        return (None, s)
+
+    frag_paired_table = html_rows(
+        ["Method / Package", "Evaluated Runs", "Spearman vs R (&rho;)", "Top-4 Overlap vs R",
+         "SOZ Recall @ K", "Top-4 Hit Rate", "Resection Concordance"],
+        [
+            {"cells": [txt("<strong>PyFragility (ezfragility)</strong> <em>(Python Port)</em>"),
+                       txt(str(n_paired)), txt(f"{paired_mean_rho:.4f}"),
+                       txt(f"{paired_mean_ov4*100:.1f}%"),
+                       pct(paired_py_ez_recall), pct(paired_py_ez_hit), pct(paired_py_ez_res)]},
+            {"cells": [txt("<strong>R EZFragility Package</strong> <em>(Reference R)</em>"),
+                       txt(str(n_paired)), txt("&mdash;"), txt("&mdash;"),
+                       pct(paired_r_frag_recall), pct(paired_r_frag_hit), pct(paired_r_frag_res)]},
+            {"cells": [txt("<strong>PyFragility (extended)</strong> <em>(Ours)</em>"),
+                       txt(str(n_paired)), txt(f"{paired_rho_ext_r:.4f}"),
+                       txt(f"{paired_ov4_ext_r*100:.1f}%"),
+                       pct(paired_py_ext_recall), pct(paired_py_ext_hit), pct(paired_py_ext_res)]},
+        ],
+        metric_cols={4, 5, 6},
+    )
+
+    def cohort_row(label, m, secs, speed):
+        return {"cells": [txt(label), txt(str(n_soz)),
+                          pct(m["mean_soz_recall"]), pct(m["soz_hit_rate"]),
+                          pct(m["mean_resect_conc"]),
+                          (-secs, f"{secs:.2f}s"), txt(speed)]}
+
+    cohort_table = html_rows(
+        ["Method", "Evaluated Runs", "SOZ Recall @ K", "Top-4 Hit Rate",
+         "Resection Concordance", "Mean Latency", "Speedup vs R"],
+        [
+            cohort_row("<strong>BrainQuake EI (Bipolar)</strong> <em>(Ours)</em>", ei_bip,
+                       perf_summary["py_ei_bip"]["mean"], f"{speedup_ei_bip:.1f}x vs R EZEI"),
+            cohort_row("BrainQuake EI (CAR)", ei_car,
+                       perf_summary["py_ei_car"]["mean"], f"{speedup_ei_car:.1f}x vs R EZEI"),
+            cohort_row("R EZEI Package", ei_r, perf_summary["r_ei"]["mean"], "baseline"),
+            cohort_row("<strong>PyFragility (ezfragility)</strong> <em>(Python Port)</em>", frag_ez,
+                       perf_summary["py_frag_ez"]["mean"], f"{speedup_frag_ez:.1f}x vs R*"),
+            cohort_row("<strong>PyFragility (extended)</strong> <em>(Ours)</em>", frag_ext,
+                       perf_summary["py_frag_ext"]["mean"], f"{speedup_frag_ext:.1f}x vs R*"),
+        ],
+        metric_cols={2, 3, 4, 5},   # 5 is latency, stored negated so lowest wins
+    )
+
     report_md = f"""# Comprehensive Benchmark Report: PyFragility & ComputeEI vs R Packages (OpenNeuro ds004100)
 
 **Dataset:** OpenNeuro `ds004100` (Intracranial EEG from focal epilepsy patients)  
-**Evaluated Cohort:** {n_runs} ictal seizure recordings across {n_subs} subjects ({len(with_gt_soz)} runs with ground truth SOZ)  
+**Evaluated Cohort:** {n_runs} ictal seizure recordings across {n_subs} subjects ({n_soz} runs with ground truth SOZ)  
 **Benchmarked Implementations:**
 1. **PyFragility (ezfragility port):** Python reproduction of Li et al. 2021
-2. **PyFragility (extended):** BrainQuake scale-invariant LTV estimator + full contour + 0.5Hz highpass
+2. **PyFragility (extended):** BrainQuake scale-invariant LTV estimator + 0.5 Hz high-pass
 3. **R EZFragility Package:** Reference R implementation (`calcAdjFrag`)
 4. **BrainQuake ComputeEI (CAR):** Epileptogenicity Index under Common Average Reference
 5. **BrainQuake ComputeEI (Bipolar):** Epileptogenicity Index under adjacent shaft Bipolar derivation
 6. **R EZEI Package:** Reference Bartolomei et al. Multitaper EI implementation
+
+Every figure below is computed from `ds004100_comprehensive_benchmark.csv` at report time.
 
 ---
 
 ## 1. Executive Summary & Question Answers
 
 ### Q1: Our PyFragility (`ezfragility` estimator) accuracy compared to R EZFragility
-- **Exact Mathematical Parity on Paired Runs ($n={n_paired}$ completed runs):**
-  - **Mean Spearman Rank Correlation:** $\\rho = \\mathbf{{{paired_mean_rho:.4f}}}$ across all electrode contacts.
-  - **Top-4 Channel Overlap:** $\\mathbf{{{paired_mean_ov4*100:.1f}\\%}}$
-  - **Ground Truth SOZ Recall:** $\\mathbf{{{paired_py_ez_recall*100:.2f}\\%}}$ (Python) vs $\\mathbf{{{paired_r_frag_recall*100:.2f}\\%}}$ (R) — **Identical!**
-  - **SOZ Top-4 Hit Rate:** $\\mathbf{{{paired_py_ez_hit*100:.2f}\\%}}$ (Python) vs $\\mathbf{{{paired_r_frag_hit*100:.2f}\\%}}$ (R) — **Identical!**
-- **Full Dataset Performance (all {len(with_gt_soz)} runs):**
-  - Python `ezfragility` successfully completed all {len(with_gt_soz)} runs with **{metrics_table['py_frag_ez']['mean_soz_recall']*100:.2f}%** mean SOZ recall and **{metrics_table['py_frag_ez']['soz_hit_rate']*100:.2f}%** Top-4 Hit Rate.
-  - In contrast, R `EZFragility` timed out (>300s) on {len(with_gt_soz) - n_paired} high-channel runs ($N > 100$).
+- **Parity on paired runs ($n = {n_paired}$, the runs where R completed):**
+  - Mean Spearman rank correlation: $\\rho = \\mathbf{{{paired_mean_rho:.4f}}}$ across all contacts
+  - Top-4 channel overlap: $\\mathbf{{{paired_mean_ov4*100:.1f}\\%}}$
+  - SOZ recall @ K: {paired_py_ez_recall*100:.2f}% (Python) vs {paired_r_frag_recall*100:.2f}% (R)
+  - SOZ Top-4 hit rate: {paired_py_ez_hit*100:.2f}% (Python) vs {paired_r_frag_hit*100:.2f}% (R)
+- **Full dataset:** Python `ezfragility` completed all {n_soz} runs at {frag_ez['mean_soz_recall']*100:.2f}% mean SOZ
+  recall and {frag_ez['soz_hit_rate']*100:.2f}% Top-4 hit rate. R `EZFragility` timed out (>{R_TIMEOUT_S} s) on
+  {n_timeout} of {n_soz} runs.
+
+> **Caveat on every R comparison in this report.** The {n_paired} runs R completed are the
+> low-channel subset. Python scores {paired_py_ez_recall*100:.2f}% recall on them versus
+> {frag_ez['mean_soz_recall']*100:.2f}% across the full cohort, so R's paired-subset figures
+> measure an easier problem and are **not** comparable to any full-cohort number.
 
 ### Q2: How our own estimator (`extended`) compares with the `ezfragility` estimator
-- **SOZ Localization across all {len(with_gt_soz)} runs:** BrainQuake's `extended` estimator achieves **{metrics_table['py_frag_ext']['mean_soz_recall']*100:.2f}%** SOZ recall and **{metrics_table['py_frag_ext']['soz_hit_rate']*100:.2f}%** Top-4 Hit Rate (vs {metrics_table['py_frag_ez']['mean_soz_recall']*100:.2f}% recall and {metrics_table['py_frag_ez']['soz_hit_rate']*100:.2f}% hit rate for `ezfragility`).
-- **Resection Overlap:** Mean Resection Concordance of **{metrics_table['py_frag_ext']['mean_resect_conc']*100:.2f}%** vs {metrics_table['py_frag_ez']['mean_resect_conc']*100:.2f}%.
-- **Surgical Outcome Separation ($S$ vs $F$):**
-  - Extended Estimator: **Cohen's $d = {d_ext:+.3f}$**, Mann-Whitney $p = {p_ext:.4f}$ ($I_{{Success}} = 1.020$ vs $I_{{Failure}} = 0.997$)
-  - ezfragility Estimator: Cohen's $d = {d_ez:+.3f}$, Mann-Whitney $p = {p_ez:.4f}$ ($I_{{Success}} = 1.091$ vs $I_{{Failure}} = 1.048$)
-- **Fit Quality & Speed:** Scale-invariant LTV regression runs in **{perf_summary['py_frag_ext']['mean']:.2f}s** mean latency vs **{perf_summary['py_frag_ez']['mean']:.2f}s** for `ezfragility` (**{perf_summary['py_frag_ez']['mean']/perf_summary['py_frag_ext']['mean']:.1f}$\\times$ faster**).
+- **SOZ localization across all {n_soz} runs:** `extended` achieves
+  **{frag_ext['mean_soz_recall']*100:.2f}%** SOZ recall and **{frag_ext['soz_hit_rate']*100:.2f}%**
+  Top-4 hit rate, versus {frag_ez['mean_soz_recall']*100:.2f}% and {frag_ez['soz_hit_rate']*100:.2f}%
+  for `ezfragility` (paired Wilcoxon on recall, $p = {p_frag_ext_vs_ez:.3g}$).
+- **Resection overlap:** {frag_ext['mean_resect_conc']*100:.2f}% vs {frag_ez['mean_resect_conc']*100:.2f}%.
+- **Rank agreement between the two estimators:** mean Spearman $\\rho = {mean_rho_frag_ext_ez:.4f}$.
+- **Surgical outcome separation ($S$ vs $F$), Li et al. interpretability ratio $I$:**
+  - `extended`: Cohen's $d = {d_ext:+.3f}$, Mann-Whitney $p = {p_ext:.4f}$
+    ($I_{{Success}} = {i_s_ext:.3f}$ vs $I_{{Failure}} = {i_f_ext:.3f}$)
+  - `ezfragility`: Cohen's $d = {d_ez:+.3f}$, Mann-Whitney $p = {p_ez:.4f}$
+    ($I_{{Success}} = {i_s_ez:.3f}$ vs $I_{{Failure}} = {i_f_ez:.3f}$)
+  - Neither estimator separates surgical successes from failures on this cohort. Localization
+    accuracy and outcome prognosis are separate claims; only the former is supported here.
+- **Speed:** {perf_summary['py_frag_ext']['mean']:.2f} s mean latency vs
+  {perf_summary['py_frag_ez']['mean']:.2f} s for `ezfragility`.
 
-### Q3: Re-comparison of updated `compute_ei` vs R `EZEI`
-- **Clinical Advantage on SEEG ($n={cohort_stats['seeg']['n']}$):** BrainQuake EI (Bipolar) achieves **{cohort_stats['seeg']['py_ei_bip_recall']*100:.2f}%** SOZ recall vs **{cohort_stats['seeg']['r_ei_recall']*100:.2f}%** for R EZEI (**+18.10 pp advantage**, paired Wilcoxon $p < 0.0001$).
-- **Overall Dataset ({len(with_gt_soz)} runs):** Mean SOZ recall of **{metrics_table['py_ei_bip']['mean_soz_recall']*100:.2f}%** (Bipolar) and **{metrics_table['py_ei_car']['mean_soz_recall']*100:.2f}%** (CAR) vs **{metrics_table['r_ei']['mean_soz_recall']*100:.2f}%** for R EZEI.
-- **Performance:** BrainQuake EI runs in **{perf_summary['py_ei_bip']['mean']:.2f}s** per run vs **{perf_summary['r_ei']['mean']:.2f}s** for R EZEI (**{speedup_ei_bip:.1f}$\\times$ speedup**).
+### Q3: `compute_ei` vs R `EZEI`
+- **SEEG sub-cohort ($n = {seeg['n']}$):** BrainQuake EI (Bipolar) {seeg['py_ei_bip_recall']*100:.2f}%
+  SOZ recall vs {seeg['r_ei_recall']*100:.2f}% for R EZEI
+  ({(seeg['py_ei_bip_recall']-seeg['r_ei_recall'])*100:+.2f} pp, paired Wilcoxon $p = {p_ei_bip_vs_r:.3g}$).
+- **Overall ({n_soz} runs):** {ei_bip['mean_soz_recall']*100:.2f}% (Bipolar) and
+  {ei_car['mean_soz_recall']*100:.2f}% (CAR) vs {ei_r['mean_soz_recall']*100:.2f}% for R EZEI.
+- **Speed:** {perf_summary['py_ei_bip']['mean']:.2f} s per run vs {perf_summary['r_ei']['mean']:.2f} s
+  for R EZEI ({speedup_ei_bip:.1f}$\\times$).
 
 ---
 
-## 2. Head-to-Head Parity Comparison on Completed R Runs ($n={n_paired}$)
+## 2. Head-to-Head Comparison on the Runs R Completed ($n = {n_paired}$)
 
-| Method / Package | Evaluated Runs | Spearman Parity ($\\rho$) | Top-4 Overlap | SOZ Recall @ K | Top-4 Hit Rate | Resection Concordance |
+| Method / Package | Evaluated Runs | Spearman vs R ($\\rho$) | Top-4 Overlap vs R | SOZ Recall @ K | Top-4 Hit Rate | Resection Concordance |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **PyFragility (ezfragility)** *(Python Port)* | **{n_paired}** | **{paired_mean_rho:.4f}** | **{paired_mean_ov4*100:.1f}%** | **{paired_py_ez_recall*100:.2f}%** | **{paired_py_ez_hit*100:.2f}%** | **{paired_py_ez_res*100:.2f}%** |
-| **R EZFragility Package** *(Reference R)* | **{n_paired}** | 1.0000 | 100.0% | **{paired_r_frag_recall*100:.2f}%** | **{paired_r_frag_hit*100:.2f}%** | **{paired_r_frag_res*100:.2f}%** |
-| **PyFragility (extended)** *(Ours)* | **{n_paired}** | 0.8812 | 74.3% | {paired_py_ext_recall*100:.2f}% | {paired_py_ext_hit*100:.2f}% | {paired_py_ext_res*100:.2f}% |
+| **PyFragility (ezfragility)** *(Python Port)* | {n_paired} | **{paired_mean_rho:.4f}** | **{paired_mean_ov4*100:.1f}%** | {paired_py_ez_recall*100:.2f}% | {paired_py_ez_hit*100:.2f}% | {paired_py_ez_res*100:.2f}% |
+| **R EZFragility Package** *(Reference R)* | {n_paired} | — | — | {paired_r_frag_recall*100:.2f}% | {paired_r_frag_hit*100:.2f}% | {paired_r_frag_res*100:.2f}% |
+| **PyFragility (extended)** *(Ours)* | {n_paired} | {paired_rho_ext_r:.4f} | {paired_ov4_ext_r*100:.1f}% | {paired_py_ext_recall*100:.2f}% | {paired_py_ext_hit*100:.2f}% | {paired_py_ext_res*100:.2f}% |
 
-*Note: On this paired subset of {n_paired} runs where R calcAdjFrag completed without timeout, Python ezfragility matches R with exact 1.0000 parity across all metrics.*
+`extended` deliberately differs from Li et al., so its two parity columns measure divergence
+from R, not a target it is failing to hit. Its mean rank correlation with the `ezfragility`
+port on this subset is $\\rho = {paired_rho_ext_ez:.4f}$.
+This subset is the low-channel end of the cohort — see the caveat under Q1.
 
 ---
 
-## 3. Full Cohort Benchmark Table (All {len(with_gt_soz)} Seizure Runs)
+## 3. Full Cohort Benchmark Table (All {n_soz} Seizure Runs)
 
-| Method / Implementation | Evaluated Runs | Mean Latency | SOZ Recall @ K | Top-4 Hit Rate ($\ge 1$ Hit) | Resection Concordance | Li et al. Ratio ($I$) |
+| Method / Implementation | Evaluated Runs | Mean Latency | SOZ Recall @ K | Top-4 Hit Rate ($\\ge 1$ Hit) | Resection Concordance | Li et al. Ratio ($I$) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **BrainQuake EI (Bipolar)** *(Ours)* | **{len(with_gt_soz)}** | **{perf_summary['py_ei_bip']['mean']:.2f}s** | **{metrics_table['py_ei_bip']['mean_soz_recall']*100:.2f}%** | **{metrics_table['py_ei_bip']['soz_hit_rate']*100:.2f}%** | **{metrics_table['py_ei_bip']['mean_resect_conc']*100:.2f}%** | — |
-| **BrainQuake EI (CAR)** | **{len(with_gt_soz)}** | 10.07s | 26.51% | 59.62% | 28.95% | — |
-| **R EZEI Package** | **{len(with_gt_soz)}** | 74.38s | 20.57% | 44.23% | 21.94% | — |
-| **PyFragility (ezfragility)** *(Python)* | **{len(with_gt_soz)}** | 66.41s | **33.35%** | **71.15%** | **27.89%** | 1.076 |
-| **PyFragility (extended)** *(Python)* | **{len(with_gt_soz)}** | **14.09s** | 28.11% | 61.54% | 24.92% | 1.012 |
-| **R EZFragility Package** | {n_paired}* | >150.00s | N/A* (50.82% on n={n_paired}) | N/A* (88.57% on n={n_paired}) | N/A* (37.60% on n={n_paired}) | — |
+| **BrainQuake EI (Bipolar)** *(Ours)* | {n_soz} | {perf_summary['py_ei_bip']['mean']:.2f}s | {ei_bip['mean_soz_recall']*100:.2f}% | {ei_bip['soz_hit_rate']*100:.2f}% | {ei_bip['mean_resect_conc']*100:.2f}% | — |
+| **BrainQuake EI (CAR)** | {n_soz} | {perf_summary['py_ei_car']['mean']:.2f}s | {ei_car['mean_soz_recall']*100:.2f}% | {ei_car['soz_hit_rate']*100:.2f}% | {ei_car['mean_resect_conc']*100:.2f}% | — |
+| **R EZEI Package** | {n_soz} | {perf_summary['r_ei']['mean']:.2f}s | {ei_r['mean_soz_recall']*100:.2f}% | {ei_r['soz_hit_rate']*100:.2f}% | {ei_r['mean_resect_conc']*100:.2f}% | — |
+| **PyFragility (ezfragility)** *(Python)* | {n_soz} | {perf_summary['py_frag_ez']['mean']:.2f}s | {frag_ez['mean_soz_recall']*100:.2f}% | {frag_ez['soz_hit_rate']*100:.2f}% | {frag_ez['mean_resect_conc']*100:.2f}% | {i_mean_ez:.3f} |
+| **PyFragility (extended)** *(Python)* | {n_soz} | {perf_summary['py_frag_ext']['mean']:.2f}s | {frag_ext['mean_soz_recall']*100:.2f}% | {frag_ext['soz_hit_rate']*100:.2f}% | {frag_ext['mean_resect_conc']*100:.2f}% | {i_mean_ext:.3f} |
+| **R EZFragility Package** | {n_paired}* | {perf_summary['r_frag']['mean']:.2f}s | n/a* | n/a* | n/a* | — |
 
-*\*R EZFragility timed out (>300s) on {len(with_gt_soz) - n_paired} of the {len(with_gt_soz)} runs; full-cohort statistics are therefore not available for R.*
+*\\*R EZFragility timed out (>{R_TIMEOUT_S} s) on {n_timeout} of the {n_soz} runs, so it has no full-cohort
+statistics. Its paired-subset figures are in section 2 and are not comparable to this table.*
 
 ---
 
 ## 4. Sub-Cohort Analysis (SEEG vs ECoG)
 
+Mean SOZ recall @ K.
+
 | Modality | Cohort Size | BrainQuake EI (Bipolar) | BrainQuake EI (CAR) | R EZEI | PyFragility (extended) | PyFragility (ezfragility) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **SEEG (Depths)** | {cohort_stats['seeg']['n']} runs | **{cohort_stats['seeg']['py_ei_bip_recall']*100:.2f}%** | 27.66% | 17.85% | 26.60% | **31.55%** |
-| **ECoG (Grids)** | {cohort_stats['ecog']['n']} runs | 25.72% | 24.25% | **25.91%** | 31.09% | **36.89%** |
+| **SEEG (Depths)** | {seeg['n']} runs | {seeg['py_ei_bip_recall']*100:.2f}% | {seeg['py_ei_car_recall']*100:.2f}% | {seeg['r_ei_recall']*100:.2f}% | {seeg['py_frag_ext_recall']*100:.2f}% | {seeg['py_frag_ez_recall']*100:.2f}% |
+| **ECoG (Grids)** | {ecog['n']} runs | {ecog['py_ei_bip_recall']*100:.2f}% | {ecog['py_ei_car_recall']*100:.2f}% | {ecog['r_ei_recall']*100:.2f}% | {ecog['py_frag_ext_recall']*100:.2f}% | {ecog['py_frag_ez_recall']*100:.2f}% |
 
 ---
 
 ## 5. Execution Time & Performance Benchmark
 
-| Pipeline | Mean Latency | Median Latency | 95th Percentile | Throughput | Speedup vs Reference |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **BrainQuake EI (Bipolar)** | **{perf_summary['py_ei_bip']['mean']:.3f}s** | {perf_summary['py_ei_bip']['median']:.3f}s | {perf_summary['py_ei_bip']['p95']:.3f}s | {60.0/max(0.001, perf_summary['py_ei_bip']['mean']):.1f} runs/min | **8.6$\\times$ vs R EZEI** |
-| **BrainQuake EI (CAR)** | 10.068s | 6.173s | 32.534s | 6.0 runs/min | **7.4$\\times$ vs R EZEI** |
-| **R EZEI** | 74.379s | 76.034s | 98.829s | 0.8 runs/min | 1.0$\\times$ (baseline) |
-| **PyFragility (extended)** | **14.087s** | 11.203s | 33.065s | 4.3 runs/min | **4.7$\\times$ vs Py EZ / >20$\\times$ vs R** |
-| **PyFragility (ezfragility)** | 66.411s | 53.578s | 152.373s | 0.9 runs/min | **>5$\\times$ vs R** |
-| **R EZFragility** | >150.000s | >130.000s | >300.000s (timeout) | <0.4 runs/min | 1.0$\\times$ (baseline) |
+| Pipeline | Mean Latency | Median Latency | 95th Percentile | Throughput |
+| :--- | :---: | :---: | :---: | :---: |
+| **BrainQuake EI (Bipolar)** | {perf_summary['py_ei_bip']['mean']:.3f}s | {perf_summary['py_ei_bip']['median']:.3f}s | {perf_summary['py_ei_bip']['p95']:.3f}s | {per_min(perf_summary['py_ei_bip']['mean']):.1f} runs/min |
+| **BrainQuake EI (CAR)** | {perf_summary['py_ei_car']['mean']:.3f}s | {perf_summary['py_ei_car']['median']:.3f}s | {perf_summary['py_ei_car']['p95']:.3f}s | {per_min(perf_summary['py_ei_car']['mean']):.1f} runs/min |
+| **R EZEI** | {perf_summary['r_ei']['mean']:.3f}s | {perf_summary['r_ei']['median']:.3f}s | {perf_summary['r_ei']['p95']:.3f}s | {per_min(perf_summary['r_ei']['mean']):.1f} runs/min |
+| **PyFragility (extended)** | {perf_summary['py_frag_ext']['mean']:.3f}s | {perf_summary['py_frag_ext']['median']:.3f}s | {perf_summary['py_frag_ext']['p95']:.3f}s | {per_min(perf_summary['py_frag_ext']['mean']):.1f} runs/min |
+| **PyFragility (ezfragility)** | {perf_summary['py_frag_ez']['mean']:.3f}s | {perf_summary['py_frag_ez']['median']:.3f}s | {perf_summary['py_frag_ez']['p95']:.3f}s | {per_min(perf_summary['py_frag_ez']['mean']):.1f} runs/min |
+| **R EZFragility** *(completed runs only)* | {perf_summary['r_frag']['mean']:.3f}s | {perf_summary['r_frag']['median']:.3f}s | {perf_summary['r_frag']['p95']:.3f}s | {per_min(perf_summary['r_frag']['mean']):.1f} runs/min |
 
----
-
-## 6. Report Card & Implementation Grades
-
-| Implementation Component | Parity (25%) | Localization (35%) | Clinical Prognosis (20%) | Performance (20%) | Overall Score | Letter Grade |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **PyFragility (ezfragility Port)** | 100.0% | 88.5% | 75.0% | 85.0% | **88.0%** | **A** |
-| **PyFragility (extended Estimator)** | 95.0% | 80.0% | 90.0% | 95.0% | **89.3%** | **A** |
-| **BrainQuake ComputeEI (Bipolar/CAR)** | 90.0% | 98.0% | 90.0% | 95.0% | **94.1%** | **A+** |
+R EZFragility's timings cover only the {n_paired} runs it finished; the {n_timeout} it abandoned
+at the {R_TIMEOUT_S} s cap are excluded, so its true mean is higher than shown.
 """
 
     with open(out_md_path, "w", encoding="utf-8") as fh:
@@ -836,10 +926,9 @@ def synthesize_and_report(results, out_md_path, out_html_path, out_csv_path, tot
         table {{ width: 100%; border-collapse: collapse; margin: 15px 0 25px 0; }}
         th, td {{ padding: 12px 14px; text-align: left; border-bottom: 1px solid #e2e8f0; }}
         th {{ background: #f1f5f9; font-weight: 600; color: #334155; }}
-        .badge {{ padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 0.9em; }}
-        .badge-a {{ background: #dcfce7; color: #166534; }}
-        .badge-b {{ background: #fef9c3; color: #854d0e; }}
         .note {{ background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px 16px; margin: 15px 0; border-radius: 0 6px 6px 0; font-size: 0.95em; }}
+        .win {{ background: #dcfce7; color: #166534; font-weight: 600; }}
+        .legend {{ font-size: 0.85em; color: #64748b; margin: -15px 0 25px 0; }}
     </style>
 </head>
 <body>
@@ -849,47 +938,25 @@ def synthesize_and_report(results, out_md_path, out_html_path, out_csv_path, tot
         
         <h2>1. Head-to-Head Parity on Paired Completed R Runs (n = {n_paired})</h2>
         <div class="note">
-            <strong>Exact Parity Verified:</strong> On the {n_paired} runs where R <code>calcAdjFrag</code> completed without timeout, Python <code>ezfragility</code> port matches R with exact <strong>1.0000 Spearman rank correlation</strong> and <strong>100.0% Top-4 overlap</strong>.
+            On the {n_paired} runs where R <code>calcAdjFrag</code> completed within {R_TIMEOUT_S}s, the Python
+            <code>ezfragility</code> port reaches <strong>{paired_mean_rho:.4f}</strong> mean Spearman rank correlation
+            and <strong>{paired_mean_ov4*100:.1f}%</strong> Top-4 overlap against it. These runs are the low-channel
+            subset ({paired_py_ez_recall*100:.2f}% recall here vs {metrics_table['py_frag_ez']['mean_soz_recall']*100:.2f}%
+            over the full cohort), so they are not comparable to any full-cohort figure.
         </div>
         <table>
-            <tr>
-                <th>Method / Package</th><th>Evaluated Runs</th><th>Spearman Parity (&rho;)</th><th>Top-4 Overlap</th><th>SOZ Recall @ K</th><th>Top-4 Hit Rate</th><th>Resection Concordance</th>
-            </tr>
-            <tr style="background:#f0fdf4;">
-                <td><strong>PyFragility (ezfragility)</strong> <em>(Python Port)</em></td><td><strong>{n_paired}</strong></td><td><strong>{paired_mean_rho:.4f}</strong></td><td><strong>{paired_mean_ov4*100:.1f}%</strong></td><td><strong>{paired_py_ez_recall*100:.2f}%</strong></td><td><strong>{paired_py_ez_hit*100:.2f}%</strong></td><td><strong>{paired_py_ez_res*100:.2f}%</strong></td>
-            </tr>
-            <tr style="background:#f0fdf4;">
-                <td><strong>R EZFragility Package</strong> <em>(Reference R)</em></td><td><strong>{n_paired}</strong></td><td>1.0000</td><td>100.0%</td><td><strong>{paired_r_frag_recall*100:.2f}%</strong></td><td><strong>{paired_r_frag_hit*100:.2f}%</strong></td><td><strong>{paired_r_frag_res*100:.2f}%</strong></td>
-            </tr>
-            <tr>
-                <td>PyFragility (extended) <em>(Ours)</em></td><td>{n_paired}</td><td>0.8812</td><td>74.3%</td><td>{paired_py_ext_recall*100:.2f}%</td><td>{paired_py_ext_hit*100:.2f}%</td><td>{paired_py_ext_res*100:.2f}%</td>
-            </tr>
+{frag_paired_table}
         </table>
+        <p class="legend">Green marks the best value in each metric column; ties are all marked.</p>
 
         <h2>2. Full Cohort Benchmark Metrics (All {len(with_gt_soz)} Seizure Runs)</h2>
         <div class="note">
-            <strong>Full Cohort Coverage:</strong> Python implementations completed all {len(with_gt_soz)} runs without timeouts. R EZFragility timed out (>300s) on {len(with_gt_soz) - n_paired} runs.
+            <strong>Full Cohort Coverage:</strong> Python implementations completed all {len(with_gt_soz)} runs without timeouts. R EZFragility timed out (>{R_TIMEOUT_S}s) on {len(with_gt_soz) - n_paired} runs.
         </div>
         <table>
-            <tr>
-                <th>Method</th><th>Evaluated Runs</th><th>SOZ Recall @ K</th><th>Top-4 Hit Rate</th><th>Resection Concordance</th><th>Mean Latency</th><th>Speedup vs R</th>
-            </tr>
-            <tr style="background:#f0fdf4;">
-                <td><strong>BrainQuake EI (Bipolar)</strong> <em>(Ours)</em></td><td><strong>{len(with_gt_soz)}</strong></td><td><strong>{metrics_table['py_ei_bip']['mean_soz_recall']*100:.2f}%</strong></td><td><strong>{metrics_table['py_ei_bip']['soz_hit_rate']*100:.2f}%</strong></td><td><strong>{metrics_table['py_ei_bip']['mean_resect_conc']*100:.2f}%</strong></td><td>{perf_summary['py_ei_bip']['mean']:.2f}s</td><td><strong>8.6x vs R EZEI</strong></td>
-            </tr>
-            <tr>
-                <td>BrainQuake EI (CAR)</td><td>{len(with_gt_soz)}</td><td>{metrics_table['py_ei_car']['mean_soz_recall']*100:.2f}%</td><td>{metrics_table['py_ei_car']['soz_hit_rate']*100:.2f}%</td><td>{metrics_table['py_ei_car']['mean_resect_conc']*100:.2f}%</td><td>{perf_summary['py_ei_car']['mean']:.2f}s</td><td>7.4x vs R EZEI</td>
-            </tr>
-            <tr>
-                <td>R EZEI Package</td><td>{len(with_gt_soz)}</td><td>{metrics_table['r_ei']['mean_soz_recall']*100:.2f}%</td><td>{metrics_table['r_ei']['soz_hit_rate']*100:.2f}%</td><td>{metrics_table['r_ei']['mean_resect_conc']*100:.2f}%</td><td>{perf_summary['r_ei']['mean']:.2f}s</td><td>1.0x</td>
-            </tr>
-            <tr>
-                <td><strong>PyFragility (ezfragility)</strong> <em>(Python Port)</em></td><td><strong>{len(with_gt_soz)}</strong></td><td><strong>{metrics_table['py_frag_ez']['mean_soz_recall']*100:.2f}%</strong></td><td><strong>{metrics_table['py_frag_ez']['soz_hit_rate']*100:.2f}%</strong></td><td><strong>{metrics_table['py_frag_ez']['mean_resect_conc']*100:.2f}%</strong></td><td>{perf_summary['py_frag_ez']['mean']:.2f}s</td><td>>5x vs R</td>
-            </tr>
-            <tr>
-                <td><strong>PyFragility (extended)</strong> <em>(Ours)</em></td><td><strong>{len(with_gt_soz)}</strong></td><td>{metrics_table['py_frag_ext']['mean_soz_recall']*100:.2f}%</td><td>{metrics_table['py_frag_ext']['soz_hit_rate']*100:.2f}%</td><td>{metrics_table['py_frag_ext']['mean_resect_conc']*100:.2f}%</td><td><strong>{perf_summary['py_frag_ext']['mean']:.2f}s</strong></td><td><strong>4.7x vs Py EZ / >20x vs R</strong></td>
-            </tr>
+{cohort_table}
         </table>
+        <p class="legend">Green marks the best value in each metric column; ties are all marked.</p>
 
         <h2>3. SEEG Depths vs ECoG Grids Sub-Cohort Analysis</h2>
         <table>
@@ -904,21 +971,10 @@ def synthesize_and_report(results, out_md_path, out_html_path, out_csv_path, tot
             </tr>
         </table>
         
-        <h2>4. Final Implementation Report Card</h2>
-        <table>
-            <tr>
-                <th>Implementation Component</th><th>Numerical Parity (25%)</th><th>Clinical Localization (35%)</th><th>Outcome Prognosis (20%)</th><th>Performance & Speed (20%)</th><th>Overall Score</th><th>Grade</th>
-            </tr>
-            <tr>
-                <td><strong>PyFragility (ezfragility Port)</strong></td><td>100.0%</td><td>88.5%</td><td>75.0%</td><td>85.0%</td><td><strong>88.0%</strong></td><td><span class="badge badge-a">A</span></td>
-            </tr>
-            <tr>
-                <td><strong>PyFragility (extended Estimator)</strong></td><td>95.0%</td><td>80.0%</td><td>90.0%</td><td>95.0%</td><td><strong>89.3%</strong></td><td><span class="badge badge-a">A</span></td>
-            </tr>
-            <tr>
-                <td><strong>BrainQuake ComputeEI (Bipolar/CAR)</strong></td><td>90.0%</td><td>98.0%</td><td>90.0%</td><td>95.0%</td><td><strong>94.1%</strong></td><td><span class="badge badge-a">A+</span></td>
-            </tr>
-        </table>
+        <div class="note">
+            <strong>*R speedups are against the {n_paired} runs R completed</strong> — the low-channel
+            subset. R abandoned {len(with_gt_soz) - n_paired} runs at the {R_TIMEOUT_S} s cap, so its true mean is higher.
+        </div>
     </div>
 </body>
 </html>
@@ -936,7 +992,15 @@ def main():
     parser.add_argument("--out-csv", default=OUTPUT_CSV)
     parser.add_argument("--out-html", default=OUTPUT_HTML)
     parser.add_argument("--out-md", default=OUTPUT_MD)
+    parser.add_argument("--from-csv", action="store_true",
+                        help="regenerate the reports from an existing --out-csv, without re-running")
     args = parser.parse_args()
+
+    if args.from_csv:
+        with open(args.out_csv, newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+        synthesize_and_report(rows, args.out_md, args.out_html, args.out_csv, 0.0)
+        return
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
