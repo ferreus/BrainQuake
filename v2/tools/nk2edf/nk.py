@@ -255,6 +255,36 @@ def _parse_stamp(buf):
     return when, elapsed
 
 
+_MICROS = re.compile(rb"\d{4}(\d{6})\d{4}\1")
+
+
+def _sub_block(data, i, n_entries):
+    """Address of log block i's microsecond table, or None if the file has none.
+
+    Same block shape as the main log table at 0x92, addressed from 0x24A: count
+    at +0x12, then 45-byte entries parallel to the log's own. EEG-1100 files
+    have no such table, and then the whole-second stamp is all there is.
+    """
+    off = 0x24A + i * 20
+    if off + 4 > len(data):
+        return None
+    (addr,) = struct.unpack_from("<I", data, off)
+    if not (0 < addr < len(data) - 0x14) or data[addr + 0x12] != n_entries:
+        return None
+    return addr
+
+
+def _entry_micros(data, addr, j):
+    """Entry j's sub-second part, as "<4 digits><micros><4 digits><micros>".
+
+    Writing the value twice is what makes it self-checking: a record that does
+    not repeat is not this field, and the entry keeps its whole-second stamp.
+    """
+    lo = addr + 0x14 + j * 45 + 20
+    m = _MICROS.fullmatch(data[lo : lo + 20])
+    return int(m.group(1)) if m else 0
+
+
 def read_log(log_path):
     """Parse a Nihon Kohden .LOG into [{'when', 'elapsed', 'text'}] entries.
 
@@ -270,6 +300,10 @@ def read_log(log_path):
 
     The block count sits at 0x91, not 0x92; reading it one byte late yields 0
     and silently produces no events at all.
+
+    A stamp only resolves to the second. The sub-second part lives in a second
+    table of the same shape (see _sub_block), one entry per log entry -- without
+    it a mark lands up to half a second from where the viewer draws it.
     """
     with open(log_path, "rb") as fh:
         data = fh.read()
@@ -286,6 +320,7 @@ def read_log(log_path):
         if not (0 < addr < len(data) - 0x14):
             continue
         n_entries = data[addr + 0x12]
+        sub = _sub_block(data, i, n_entries)
         for j in range(n_entries):
             lo = addr + 0x14 + j * 45
             rec = data[lo : lo + 45]
@@ -298,6 +333,8 @@ def read_log(log_path):
             ).strip()
             when, elapsed = _parse_stamp(rec[20:])
             if text and when is not None:
+                if sub:
+                    when += dt.timedelta(microseconds=_entry_micros(data, sub, j))
                 events.append({"when": when, "elapsed": elapsed, "text": text})
     return events
 

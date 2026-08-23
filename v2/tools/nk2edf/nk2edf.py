@@ -165,6 +165,21 @@ def events_for_block(log_events, start, duration):
     return sorted(out)
 
 
+def drop_bookmarked(log_events, marks, tol=dt.timedelta(milliseconds=2)):
+    """Log entries the clinician also bookmarked, dropped in the bookmark's favour.
+
+    The same event is routinely in both. `tol` is not slack for a guess: the
+    .sld keeps true microseconds where the .LOG's table is milliseconds, so the
+    two copies of one event can differ below the millisecond.
+    """
+    seen = [(m["when"], m["text"]) for m in marks]
+    return [
+        e for e in log_events
+        if "when" not in e
+        or not any(t == e["text"] and abs(w - e["when"]) <= tol for w, t in seen)
+    ]
+
+
 def convert_block(eeg_path, blk, out_path, keep, patient, recording, ascii_labels,
                   events=(), keep_mark=True, dc_cal=None, montage=None):
     dc_cal = dc_cal or {}
@@ -423,7 +438,11 @@ def main():
         marks = nkmeta.read_sld(side["sld"])
         if marks:
             print(f"{os.path.basename(side['sld'])}: {len(marks)} clinician bookmarks")
-        log_events += marks
+        before = len(log_events)
+        log_events = drop_bookmarked(log_events, marks) + marks
+        if before + len(marks) > len(log_events):
+            print(f"  {before + len(marks) - len(log_events)} log entries also "
+                  "bookmarked; kept the bookmark's time")
 
     if args.dump_log:
         placed = 0
