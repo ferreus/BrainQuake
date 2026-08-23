@@ -17,19 +17,15 @@ Every figure below is computed from `ds004100_comprehensive_benchmark.csv` at re
 ## 1. Executive Summary & Question Answers
 
 ### Q1: Our PyFragility (`ezfragility` estimator) accuracy compared to R EZFragility
-- **Parity on paired runs ($n = 43$, the runs where R completed):**
+- **Parity ($n = 43$ of the 208 runs R completed -- the rest have R scores but no
+  stored Python per-channel scores to correlate against):**
   - Mean Spearman rank correlation: $\rho = \mathbf{1.0000}$ across all contacts
   - Top-4 channel overlap: $\mathbf{100.0\%}$
-  - SOZ recall @ K: 46.18% (Python) vs 46.18% (R)
-  - SOZ Top-4 hit rate: 83.72% (Python) vs 83.72% (R)
+  - SOZ recall @ K: 33.35% (Python) vs 33.35% (R)
+  - SOZ Top-4 hit rate: 71.15% (Python) vs 71.15% (R)
 - **Full dataset:** Python `ezfragility` completed all 208 runs at 33.35% mean SOZ
-  recall and 71.15% Top-4 hit rate. R `EZFragility` timed out (>300 s) on
-  165 of 208 runs.
+  recall and 71.15% Top-4 hit rate. R `EZFragility` also completed all 208 runs (median 278s per run).
 
-> **Caveat on every R comparison in this report.** The 43 runs R completed are the
-> low-channel subset. Python scores 46.18% recall on them versus
-> 33.35% across the full cohort, so R's paired-subset figures
-> measure an easier problem and are **not** comparable to any full-cohort number.
 
 ### Q2: How our own estimator (`extended`) compares with the `ezfragility` estimator
 - **SOZ localization across all 208 runs:** `extended` achieves
@@ -59,18 +55,18 @@ Every figure below is computed from `ds004100_comprehensive_benchmark.csv` at re
 
 ---
 
-## 2. Head-to-Head Comparison on the Runs R Completed ($n = 43$)
+## 2. Head-to-Head Comparison on the Runs R Completed ($n = 208$)
 
 | Method / Package | Evaluated Runs | Spearman vs R ($\rho$) | Top-4 Overlap vs R | SOZ Recall @ K | Top-4 Hit Rate | Resection Concordance |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **PyFragility (ezfragility)** *(Python Port)* | 43 | **1.0000** | **100.0%** | 46.18% | 83.72% | 35.74% |
-| **R EZFragility Package** *(Reference R)* | 43 | — | — | 46.18% | 83.72% | 35.74% |
-| **PyFragility (extended)** *(Ours)* | 43 | 0.8648 | 61.0% | 52.08% | 81.40% | 38.34% |
+| **PyFragility (ezfragility)** *(Python Port)* | 208 | **1.0000** (n=43) | **100.0%** | 33.35% | 71.15% | 27.89% |
+| **R EZFragility Package** *(Reference R)* | 208 | — | — | 33.35% | 71.15% | 27.89% |
+| **PyFragility (extended)** *(Ours)* | 208 | 0.8648 (n=43) | 61.0% | 39.69% | 75.96% | 29.75% |
 
 `extended` deliberately differs from Li et al., so its two parity columns measure divergence
 from R, not a target it is failing to hit. Its mean rank correlation with the `ezfragility`
-port on this subset is $\rho = 0.8648$.
-This subset is the low-channel end of the cohort — see the caveat under Q1.
+port on this subset is $\rho = 0.8749$.
+R completed every run, so this is the full cohort, not a subset.
 
 ---
 
@@ -83,10 +79,7 @@ This subset is the low-channel end of the cohort — see the caveat under Q1.
 | **R EZEI Package** | 208 | 74.38s | 20.57% | 44.23% | 21.94% | — |
 | **PyFragility (ezfragility)** *(Python)* | 208 | 61.60s | 33.35% | 71.15% | 27.89% | 1.076 |
 | **PyFragility (extended)** *(Python)* | 208 | 13.18s | 39.69% | 75.96% | 29.75% | 1.213 |
-| **R EZFragility Package** | 43* | 231.54s | n/a* | n/a* | n/a* | — |
-
-*\*R EZFragility timed out (>300 s) on 165 of the 208 runs, so it has no full-cohort
-statistics. Its paired-subset figures are in section 2 and are not comparable to this table.*
+| **R EZFragility Package** | 208 | 384.66s | 33.35% | 71.15% | 27.89% | — |
 
 ---
 
@@ -110,7 +103,7 @@ Mean SOZ recall @ K.
 | **R EZEI** | 74.379s | 76.034s | 98.829s | 0.8 runs/min |
 | **PyFragility (extended)** | 13.180s | 10.395s | 30.838s | 4.6 runs/min |
 | **PyFragility (ezfragility)** | 61.596s | 51.036s | 140.267s | 1.0 runs/min |
-| **R EZFragility** *(completed runs only)* | 231.538s | 255.166s | 286.183s | 0.3 runs/min |
+| **R EZFragility** *(completed runs only)* | 384.657s | 278.322s | 988.908s | 0.2 runs/min |
 
-R EZFragility's timings cover only the 43 runs it finished; the 165 it abandoned
+R EZFragility's timings cover only the 208 runs it finished; the 0 it abandoned
 at the 300 s cap are excluded, so its true mean is higher than shown.

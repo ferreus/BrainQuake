@@ -705,6 +705,12 @@ def synthesize_and_report(results, out_md_path, out_html_path, out_csv_path, tot
     paired_rho_ext_ez = calc_mean(paired_r_frag, "rho_frag_ext_vs_ez")
     paired_rho_ext_r = calc_mean(paired_r_frag, "rho_frag_ext_vs_r")
     paired_ov4_ext_r = calc_mean(paired_r_frag, "ov4_frag_ext_vs_r")
+    # A rank correlation needs both sides' per-channel scores, so it can cover fewer runs
+    # than R itself does -- e.g. when R is re-run alone and the Python arms are reused.
+    # Reporting it under n_paired would claim a sample it does not have.
+    n_parity = len([r for r in paired_r_frag
+                    if r.get("rho_frag_ez_vs_r") not in (None, "")
+                    and np.isfinite(float(r["rho_frag_ez_vs_r"]))])
 
     # Write Markdown Report
     frag_ez = metrics_table["py_frag_ez"]
@@ -719,6 +725,41 @@ def synthesize_and_report(results, out_md_path, out_html_path, out_csv_path, tot
         "median": calc_median(paired_r_frag, "time_frag_r"),
         "p95": calc_p95(paired_r_frag, "time_frag_r"),
     }
+    r_frag = metrics_table["r_frag"]
+    r_complete = n_timeout == 0
+    if r_complete:
+        r_coverage_md = (f"R `EZFragility` also completed all {n_soz} runs "
+                         f"(median {perf_summary['r_frag']['median']:.0f}s per run).")
+        r_caveat_md = ""
+        r_subset_md = "R completed every run, so this is the full cohort, not a subset."
+        r_footnote_md = ""
+        r_row_md = (f"| **R EZFragility Package** | {n_soz} | {perf_summary['r_frag']['mean']:.2f}s "
+                    f"| {r_frag['mean_soz_recall']*100:.2f}% | {r_frag['soz_hit_rate']*100:.2f}% "
+                    f"| {r_frag['mean_resect_conc']*100:.2f}% | \u2014 |")
+        r_coverage_html = f"All implementations completed all {n_soz} runs."
+        r_speed_html = ""
+    else:
+        r_coverage_md = (f"R `EZFragility` timed out (>{R_TIMEOUT_S} s) on {n_timeout} of "
+                         f"{n_soz} runs.")
+        r_caveat_md = (
+            f"\n> **Caveat on every R comparison in this report.** The {n_paired} runs R "
+            f"completed are the low-channel subset. Python scores "
+            f"{paired_py_ez_recall*100:.2f}% recall on them versus "
+            f"{frag_ez['mean_soz_recall']*100:.2f}% across the full cohort, so R's "
+            f"paired-subset figures measure an easier problem and are **not** comparable "
+            f"to any full-cohort number.\n")
+        r_subset_md = "This subset is the low-channel end of the cohort \u2014 see the caveat under Q1."
+        r_footnote_md = (f"\n*\\*R EZFragility timed out (>{R_TIMEOUT_S} s) on {n_timeout} of the "
+                         f"{n_soz} runs, so it has no full-cohort statistics. Its paired-subset "
+                         f"figures are in section 2 and are not comparable to this table.*\n")
+        r_row_md = (f"| **R EZFragility Package** | {n_paired}* | "
+                    f"{perf_summary['r_frag']['mean']:.2f}s | n/a* | n/a* | n/a* | \u2014 |")
+        r_coverage_html = (f"Python implementations completed all {n_soz} runs without timeouts. "
+                           f"R EZFragility timed out (&gt;{R_TIMEOUT_S}s) on {n_timeout} runs.")
+        r_speed_html = (f'<div class="note"><strong>*R speedups are against the {n_paired} runs R '
+                        f'completed</strong> \u2014 the low-channel subset. R abandoned {n_timeout} runs '
+                        f'at the {R_TIMEOUT_S} s cap, so its true mean is higher.</div>')
+
     i_mean_ez = calc_mean(with_gt_soz, "i_ratio_frag_py_ez")
     i_mean_ext = calc_mean(with_gt_soz, "i_ratio_frag_py_ext")
 
@@ -754,14 +795,14 @@ def synthesize_and_report(results, out_md_path, out_html_path, out_csv_path, tot
          "SOZ Recall @ K", "Top-4 Hit Rate", "Resection Concordance"],
         [
             {"cells": [txt("<strong>PyFragility (ezfragility)</strong> <em>(Python Port)</em>"),
-                       txt(str(n_paired)), txt(f"{paired_mean_rho:.4f}"),
+                       txt(str(n_paired)), txt(f"{paired_mean_rho:.4f} (n={n_parity})"),
                        txt(f"{paired_mean_ov4*100:.1f}%"),
                        pct(paired_py_ez_recall), pct(paired_py_ez_hit), pct(paired_py_ez_res)]},
             {"cells": [txt("<strong>R EZFragility Package</strong> <em>(Reference R)</em>"),
                        txt(str(n_paired)), txt("&mdash;"), txt("&mdash;"),
                        pct(paired_r_frag_recall), pct(paired_r_frag_hit), pct(paired_r_frag_res)]},
             {"cells": [txt("<strong>PyFragility (extended)</strong> <em>(Ours)</em>"),
-                       txt(str(n_paired)), txt(f"{paired_rho_ext_r:.4f}"),
+                       txt(str(n_paired)), txt(f"{paired_rho_ext_r:.4f} (n={n_parity})"),
                        txt(f"{paired_ov4_ext_r*100:.1f}%"),
                        pct(paired_py_ext_recall), pct(paired_py_ext_hit), pct(paired_py_ext_res)]},
         ],
@@ -810,20 +851,16 @@ Every figure below is computed from `ds004100_comprehensive_benchmark.csv` at re
 ## 1. Executive Summary & Question Answers
 
 ### Q1: Our PyFragility (`ezfragility` estimator) accuracy compared to R EZFragility
-- **Parity on paired runs ($n = {n_paired}$, the runs where R completed):**
+- **Parity ($n = {n_parity}$ of the {n_paired} runs R completed -- the rest have R scores but no
+  stored Python per-channel scores to correlate against):**
   - Mean Spearman rank correlation: $\\rho = \\mathbf{{{paired_mean_rho:.4f}}}$ across all contacts
   - Top-4 channel overlap: $\\mathbf{{{paired_mean_ov4*100:.1f}\\%}}$
   - SOZ recall @ K: {paired_py_ez_recall*100:.2f}% (Python) vs {paired_r_frag_recall*100:.2f}% (R)
   - SOZ Top-4 hit rate: {paired_py_ez_hit*100:.2f}% (Python) vs {paired_r_frag_hit*100:.2f}% (R)
 - **Full dataset:** Python `ezfragility` completed all {n_soz} runs at {frag_ez['mean_soz_recall']*100:.2f}% mean SOZ
-  recall and {frag_ez['soz_hit_rate']*100:.2f}% Top-4 hit rate. R `EZFragility` timed out (>{R_TIMEOUT_S} s) on
-  {n_timeout} of {n_soz} runs.
+  recall and {frag_ez['soz_hit_rate']*100:.2f}% Top-4 hit rate. {r_coverage_md}
 
-> **Caveat on every R comparison in this report.** The {n_paired} runs R completed are the
-> low-channel subset. Python scores {paired_py_ez_recall*100:.2f}% recall on them versus
-> {frag_ez['mean_soz_recall']*100:.2f}% across the full cohort, so R's paired-subset figures
-> measure an easier problem and are **not** comparable to any full-cohort number.
-
+{r_caveat_md}
 ### Q2: How our own estimator (`extended`) compares with the `ezfragility` estimator
 - **SOZ localization across all {n_soz} runs:** `extended` achieves
   **{frag_ext['mean_soz_recall']*100:.2f}%** SOZ recall and **{frag_ext['soz_hit_rate']*100:.2f}%**
@@ -856,14 +893,14 @@ Every figure below is computed from `ds004100_comprehensive_benchmark.csv` at re
 
 | Method / Package | Evaluated Runs | Spearman vs R ($\\rho$) | Top-4 Overlap vs R | SOZ Recall @ K | Top-4 Hit Rate | Resection Concordance |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **PyFragility (ezfragility)** *(Python Port)* | {n_paired} | **{paired_mean_rho:.4f}** | **{paired_mean_ov4*100:.1f}%** | {paired_py_ez_recall*100:.2f}% | {paired_py_ez_hit*100:.2f}% | {paired_py_ez_res*100:.2f}% |
+| **PyFragility (ezfragility)** *(Python Port)* | {n_paired} | **{paired_mean_rho:.4f}** (n={n_parity}) | **{paired_mean_ov4*100:.1f}%** | {paired_py_ez_recall*100:.2f}% | {paired_py_ez_hit*100:.2f}% | {paired_py_ez_res*100:.2f}% |
 | **R EZFragility Package** *(Reference R)* | {n_paired} | — | — | {paired_r_frag_recall*100:.2f}% | {paired_r_frag_hit*100:.2f}% | {paired_r_frag_res*100:.2f}% |
-| **PyFragility (extended)** *(Ours)* | {n_paired} | {paired_rho_ext_r:.4f} | {paired_ov4_ext_r*100:.1f}% | {paired_py_ext_recall*100:.2f}% | {paired_py_ext_hit*100:.2f}% | {paired_py_ext_res*100:.2f}% |
+| **PyFragility (extended)** *(Ours)* | {n_paired} | {paired_rho_ext_r:.4f} (n={n_parity}) | {paired_ov4_ext_r*100:.1f}% | {paired_py_ext_recall*100:.2f}% | {paired_py_ext_hit*100:.2f}% | {paired_py_ext_res*100:.2f}% |
 
 `extended` deliberately differs from Li et al., so its two parity columns measure divergence
 from R, not a target it is failing to hit. Its mean rank correlation with the `ezfragility`
 port on this subset is $\\rho = {paired_rho_ext_ez:.4f}$.
-This subset is the low-channel end of the cohort — see the caveat under Q1.
+{r_subset_md}
 
 ---
 
@@ -876,11 +913,8 @@ This subset is the low-channel end of the cohort — see the caveat under Q1.
 | **R EZEI Package** | {n_soz} | {perf_summary['r_ei']['mean']:.2f}s | {ei_r['mean_soz_recall']*100:.2f}% | {ei_r['soz_hit_rate']*100:.2f}% | {ei_r['mean_resect_conc']*100:.2f}% | — |
 | **PyFragility (ezfragility)** *(Python)* | {n_soz} | {perf_summary['py_frag_ez']['mean']:.2f}s | {frag_ez['mean_soz_recall']*100:.2f}% | {frag_ez['soz_hit_rate']*100:.2f}% | {frag_ez['mean_resect_conc']*100:.2f}% | {i_mean_ez:.3f} |
 | **PyFragility (extended)** *(Python)* | {n_soz} | {perf_summary['py_frag_ext']['mean']:.2f}s | {frag_ext['mean_soz_recall']*100:.2f}% | {frag_ext['soz_hit_rate']*100:.2f}% | {frag_ext['mean_resect_conc']*100:.2f}% | {i_mean_ext:.3f} |
-| **R EZFragility Package** | {n_paired}* | {perf_summary['r_frag']['mean']:.2f}s | n/a* | n/a* | n/a* | — |
-
-*\\*R EZFragility timed out (>{R_TIMEOUT_S} s) on {n_timeout} of the {n_soz} runs, so it has no full-cohort
-statistics. Its paired-subset figures are in section 2 and are not comparable to this table.*
-
+{r_row_md}
+{r_footnote_md}
 ---
 
 ## 4. Sub-Cohort Analysis (SEEG vs ECoG)
@@ -939,7 +973,7 @@ at the {R_TIMEOUT_S} s cap are excluded, so its true mean is higher than shown.
         <h2>1. Head-to-Head Parity on Paired Completed R Runs (n = {n_paired})</h2>
         <div class="note">
             On the {n_paired} runs where R <code>calcAdjFrag</code> completed within {R_TIMEOUT_S}s, the Python
-            <code>ezfragility</code> port reaches <strong>{paired_mean_rho:.4f}</strong> mean Spearman rank correlation
+            <code>ezfragility</code> port reaches <strong>{paired_mean_rho:.4f}</strong> mean Spearman rank correlation (over the {n_parity} of them with stored Python per-channel scores)
             and <strong>{paired_mean_ov4*100:.1f}%</strong> Top-4 overlap against it. These runs are the low-channel
             subset ({paired_py_ez_recall*100:.2f}% recall here vs {metrics_table['py_frag_ez']['mean_soz_recall']*100:.2f}%
             over the full cohort), so they are not comparable to any full-cohort figure.
@@ -951,7 +985,7 @@ at the {R_TIMEOUT_S} s cap are excluded, so its true mean is higher than shown.
 
         <h2>2. Full Cohort Benchmark Metrics (All {len(with_gt_soz)} Seizure Runs)</h2>
         <div class="note">
-            <strong>Full Cohort Coverage:</strong> Python implementations completed all {len(with_gt_soz)} runs without timeouts. R EZFragility timed out (>{R_TIMEOUT_S}s) on {len(with_gt_soz) - n_paired} runs.
+            <strong>Full Cohort Coverage:</strong> {r_coverage_html}
         </div>
         <table>
 {cohort_table}
@@ -971,10 +1005,7 @@ at the {R_TIMEOUT_S} s cap are excluded, so its true mean is higher than shown.
             </tr>
         </table>
         
-        <div class="note">
-            <strong>*R speedups are against the {n_paired} runs R completed</strong> — the low-channel
-            subset. R abandoned {len(with_gt_soz) - n_paired} runs at the {R_TIMEOUT_S} s cap, so its true mean is higher.
-        </div>
+{r_speed_html}
     </div>
 </body>
 </html>
