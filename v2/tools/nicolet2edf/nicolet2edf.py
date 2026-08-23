@@ -24,17 +24,17 @@ Usage:
 """
 import argparse
 import datetime as dt
-import json
 import os
+import sys
 
 import nicolet
 import numpy as np
 
-REC_SECS = 1  # EDF data record duration
-MIN_ANNOT_BYTES = 120  # floor for the EDF Annotations signal, per record
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import edfcommon  # noqa: E402
 
-MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
+REC_SECS = edfcommon.REC_SECS
+_fld, _num = edfcommon._fld, edfcommon._num
 
 # A derived trend (Rate/IBI/Bursts/Suppr) is a number the Nicolet software
 # computed, not a measurement; its resolution carries no documented dimension.
@@ -43,30 +43,8 @@ DERIVED_UNIT = ""
 
 
 # --- EDF writing -----------------------------------------------------------
-# _fld/_num/_tal/plan_annotations are copies of the same helpers in
-# ../nk2edf/nk2edf.py -- fix a bug in one and fix it in the other. build_header
-# differs: signals here carry their own samples-per-record, because a Nicolet
-# file mixes 512 Hz EEG with 1 Hz trends in one recording.
-
-def _fld(text, width):
-    """Left-justified fixed-width ASCII EDF header field."""
-    b = str(text).encode("ascii", "replace")[:width]
-    return b + b" " * (width - len(b))
-
-
-def _num(value, width):
-    """EDF numeric field: as many significant digits as fit, no exponent.
-
-    Nicolet resolutions are not round numbers, so the physical range lands on
-    something like -5481.90848 and every character of the field counts -- the
-    gain a reader recovers is only as good as what fits in these 8 bytes.
-    """
-    s = f"{value:.8f}".rstrip("0").rstrip(".")
-    for dec in range(width, -1, -1):
-        if len(s) <= width:
-            return _fld(s, width)
-        s = f"{value:.{dec}f}"
-    return _fld(s[:width], width)
+# build_header stays local: signals here carry their own samples-per-record,
+# because a Nicolet file mixes 512 Hz EEG with 1 Hz trends in one recording.
 
 
 def build_header(signals, n_records, start, patient, recording, annot_bytes):
@@ -98,30 +76,6 @@ def build_header(signals, n_records, start, patient, recording, annot_bytes):
     h += b"".join(_fld("", 32) for _ in range(ns))
     assert len(h) == 256 * (ns + 1), len(h)
     return bytes(h)
-
-
-def _tal(onset, text=None):
-    """One EDF+ Time-stamped Annotation List entry."""
-    head = f"+{onset:.3f}".rstrip("0").rstrip(".")
-    if text is None:  # the timekeeping TAL every record must start with
-        return (head + "\x14\x14\x00").encode("utf-8")
-    clean = text.replace("\x14", " ").replace("\x00", " ").strip()
-    return (head + "\x14" + clean + "\x14\x00").encode("utf-8")
-
-
-def plan_annotations(events, n_records):
-    """Group events into the record containing their onset, and size the
-    annotation signal so the fullest record fits. Returns (per_record, nbytes)."""
-    per_record = {}
-    for onset, text in events:
-        r = min(int(onset // REC_SECS), n_records - 1)
-        per_record.setdefault(r, []).append(_tal(onset, text))
-    widest = 0
-    for r in range(n_records):
-        used = len(_tal(r * REC_SECS)) + sum(len(t) for t in per_record.get(r, ()))
-        widest = max(widest, used)
-    nbytes = max(MIN_ANNOT_BYTES, widest + (widest % 2))
-    return per_record, nbytes
 
 
 # --- clips and events ------------------------------------------------------
@@ -291,79 +245,87 @@ def convert_clip(streams, header, pairs, out_path, start, offset_s, duration,
             block = (block.astype(np.int32) - take(b)) // 2
         views.append(np.ascontiguousarray(block, dtype="<i2").reshape(n_records, spr))
 
-    per_record, annot_bytes = plan_annotations(events, n_records)
+    per_record, annot_bytes = edfcommon.plan_annotations(events, n_records)
     header_bytes = build_header(signals, n_records, start, patient, recording, annot_bytes)
 
     with open(out_path, "wb") as fout:
         fout.write(header_bytes)
         for r in range(n_records):
             fout.write(b"".join(v[r].tobytes() for v in views))  # per-signal blocks
-            tals = _tal(r * REC_SECS) + b"".join(per_record.get(r, ()))
-            if len(tals) > annot_bytes:  # plan_annotations sized this
-                raise AssertionError(f"record {r}: {len(tals)} > {annot_bytes} annotation bytes")
-            fout.write(tals + b"\x00" * (annot_bytes - len(tals)))
+            fout.write(edfcommon.record_annotations(r, per_record, annot_bytes))
     return n_records, len(pairs)
 
 
-def write_sidecar(edf_path, header, keep, clip, invert, applied):
-    """The metadata EDF itself has nowhere to put."""
+def write_sidecar(edf_path, header, pairs, clip, invert, applied):
+    """The metadata EDF itself has nowhere to put. See ../SIDECAR.md."""
+    channels = header["channels"]
     montage = header["montage"]
-    meta = {
-        "source": os.path.basename(header["path"]),
-        "clip": {"start": clip[1].isoformat(), "offset_s": clip[2], "duration_s": clip[3],
-                 "segment": clip[0]},
-        "polarity_inverted": invert,
-        "montage": montage and {"name": montage["name"], "channels": montage["channels"]},
-        "montage_applied": bool(applied),
-        "segments": [{"start": s["start"].isoformat(), "duration_s": s["duration"]}
-                     for s in header["segments"]],
-        "channels": [
-            {
-                "label": header["channels"][c]["label"],
-                "active_sensor": header["channels"][c]["active"],
-                "reference": header["channels"][c]["reference"] or None,
-                "sfreq": header["channels"][c]["sfreq"],
-                "resolution_uv_per_lsb": header["channels"][c]["resolution"],
-                "low_cut": header["channels"][c]["low_cut"],
-                "high_cut": header["channels"][c]["high_cut"],
-                "notch": header["channels"][c]["notch"],
-                "derived": not header["channels"][c]["reference"],
-            }
-            for c in keep
-        ],
-        "events": [
-            {
-                "when": e["when"].isoformat(),
-                "stream_s": stream_seconds(header, e["when"]),
-                "duration_s": e["duration"],
-                "type": e["type"],
-                "guid": e["guid"],
-                "channel": e["channel"],
-                "label": e["label"],
-            }
-            for e in header["events"]
-        ],
-    }
-    with open(os.path.splitext(edf_path)[0] + ".json", "w", encoding="utf-8") as fh:
-        json.dump(meta, fh, indent=2)
+    pos = {c["label"]: i for i, c in enumerate(channels)}
+    _index, _start, offset_s, duration = clip
 
+    def channel(label, a, b):
+        ca = channels[a]
+        span = signal_spec(channels, label, a, b)
+        return {
+            "label": label,
+            "edf_label": label,
+            "source_index": a,
+            "unit": span[1],
+            "sfreq_hz": ca["sfreq"],
+            "reference": channels[b]["label"] if b is not None else (ca["reference"] or None),
+            "resolution_uv_per_lsb": (span[3] - span[2]) / 65535,
+            "low_cut": ca["low_cut"],
+            "high_cut": ca["high_cut"],
+            "notch": ca["notch"],
+            "derived": b is not None,
+            "active_sensor": ca["active"],
+            "trend": not ca["reference"],
+        }
 
-def parse_sel(text, n):
-    if text is None:
-        return list(range(n))
-    out = []
-    for part in text.split(","):
-        part = part.strip()
-        if "-" in part:
-            a, b = part.split("-")
-            out.extend(range(int(a), int(b) + 1))
-        elif part:
-            out.append(int(part))
-    bad = [i for i in out if not 0 <= i < n]
-    if bad:
-        raise SystemExit(f"segment index out of range: {bad}")
-    return out
+    def event(e):
+        at = stream_seconds(header, e["when"])
+        onset = None if at is None else at - offset_s
+        if onset is not None and not 0 <= onset < duration:
+            onset = None
+        return {
+            "onset_s": onset,
+            "duration_s": e["duration"],
+            "label": event_text(e),
+            "type": e["type"],
+            "source": "Events",
+            "channel": e["channel"],
+            "when": e["when"].isoformat(),
+            "stream_s": at,
+            "guid": e["guid"],
+        }
 
+    at = 0.0
+    segments = []
+    for i, seg in enumerate(header["segments"]):
+        segments.append({"index": i, "start": seg["start"].isoformat(),
+                         "offset_s": at, "duration_s": seg["duration"]})
+        at += seg["duration"]
+
+    meta = edfcommon.build_sidecar(
+        source_file=os.path.basename(header["path"]),
+        source_format="nicolet-nervus",
+        clip={"index": clip[0], "start": clip[1].isoformat(),
+              "offset_s": offset_s, "duration_s": duration},
+        channels=[channel(*pair) for pair in pairs],
+        montages=[{
+            "name": montage["name"],
+            "channels": [{"label": m["label"], "active": m["active"],
+                          "reference": m["reference"] or None,
+                          "active_index": pos.get(m["active"]),
+                          "reference_index": pos.get(m["reference"])}
+                         for m in montage["channels"]],
+        }] if montage else [],
+        montage_applied=montage["name"] if applied and montage else None,
+        segments=segments,
+        events=[event(e) for e in header["events"]],
+        polarity_inverted=invert,
+    )
+    edfcommon.write_sidecar(edf_path, meta)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -422,7 +384,7 @@ def main():
         raise SystemExit("outdir required (or use --list)")
     os.makedirs(args.outdir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(args.input))[0]
-    sel = parse_sel(args.segments, len(header["segments"]))
+    sel = edfcommon.parse_sel(args.segments, len(header["segments"]), "segment")
     if args.concat and args.segments:
         raise SystemExit("--concat writes every segment; drop --segments")
 
@@ -450,10 +412,7 @@ def main():
         i, start, offset_s, duration = clip
         name = stem if i is None else f"{stem}_{i:02d}_{start:%Y%m%d%H%M%S}"
         out = os.path.join(args.outdir, name + ".edf")
-        # EDF+ recording field is strictly
-        # "Startdate dd-MMM-yyyy <admin code> <investigator> <equipment>"
-        recording = (f"Startdate {start.day:02d}-{MONTHS[start.month - 1]}-{start.year} "
-                     f"{stem} X Nicolet/Nervus")
+        recording = edfcommon.recording_field(start, stem, "Nicolet/Nervus")
         events = clip_events(header, offset_s, duration)
         if args.concat:
             events = sorted(events + join_annotations(header, duration))
@@ -461,7 +420,7 @@ def main():
         nrec, nch = convert_clip(streams, header, pairs, out, start, offset_s, duration,
                                  args.patient, recording, events)
         if not args.no_sidecar:
-            write_sidecar(out, header, keep, clip, invert, args.montage)
+            write_sidecar(out, header, pairs, clip, invert, args.montage)
         print(f"[{done}/{len(todo)}] {os.path.basename(out)}  "
               f"{nch} ch  {nrec} s  {len(events)} annot  "
               f"{os.path.getsize(out)/1e6:.1f} MB", flush=True)

@@ -1,4 +1,10 @@
-"""Reader for the Micromed VWR subset implemented by libvwr."""
+"""Reader for the Micromed VWR/Brain-Quick format.
+
+The header, ORDER, LABCOD and NOTE areas are a Python port of libvwr. The
+MONTAGE, HISTORY, TRIGGER, TRONCA, FLAGS and EVENT areas were reverse
+engineered from a recording -- libvwr skips all of them. See README.md for the
+struct layouts.
+"""
 
 # Portions are derived from libvwr, Copyright (C) Franco Milicchio.
 # SPDX-License-Identifier: BSD-3-Clause
@@ -24,6 +30,22 @@ LABCOD_SIZE = 128
 NOTE_COUNT = 1000
 NOTE_SIZE = 44
 
+# MAX_CAN_VIEW is 64 here, not the 128 some Micromed notes assume; that is what
+# puts the name at +264 and makes the struct 4096 bytes.
+MONTAGE_SIZE = 4096
+MONTAGE_TRACES = 64
+MONTAGE_NAME = 264
+MONTAGE_NAME_SIZE = 64
+MONTAGE_INPUTS = 328
+HISTORY_TIMES = 512  # u32[128] montage-change samples, then montage slots
+
+TRIGGER_SIZE = 6  # u32 sample, u16 type
+TRONCA_SIZE = 8  # u32 original sample, u32 sample
+FLAGS_SIZE = 8  # u32 begin, u32 end
+EVENT_NAME_SIZE = 64
+EVENT_COUNT = 100
+NO_SAMPLE = 0xFFFFFFFF
+
 
 @dataclass(frozen=True)
 class Segment:
@@ -37,6 +59,7 @@ class Channel:
     index: int
     label: str
     ground: str
+    used: bool
     lmin: int
     lmax: int
     lground: int
@@ -57,6 +80,38 @@ class Note:
 
 
 @dataclass(frozen=True)
+class MontageTrace:
+    label: str
+    active: str
+    reference: str
+    active_index: int
+    reference_index: int
+
+
+@dataclass(frozen=True)
+class Montage:
+    name: str
+    notch: int
+    base_time: int
+    traces: tuple[MontageTrace, ...]
+
+
+@dataclass(frozen=True)
+class Marker:
+    frame: int
+    label: str
+    kind: str
+    source: str
+    end_frame: int | None = None
+
+
+@dataclass(frozen=True)
+class Part:
+    frame: int
+    original_frame: int
+
+
+@dataclass(frozen=True)
 class Header:
     path: Path
     size: int
@@ -70,12 +125,20 @@ class Header:
     file_type: int
     segments: tuple[Segment, ...]
     channels: tuple[Channel, ...]
+    labcod: tuple[Channel, ...]
     notes: tuple[Note, ...]
+    markers: tuple[Marker, ...]
+    parts: tuple[Part, ...]
+    montages: tuple[Montage, ...]
+    recorded_montage: str | None
     n_samples: int
 
     @property
     def duration(self) -> float:
         return self.n_samples / self.frequency
+
+    def montage(self, name: str) -> Montage | None:
+        return next((m for m in self.montages if m.name == name), None)
 
 
 def _cstring(raw: bytes) -> str:
@@ -87,6 +150,13 @@ def _read_exact(fh: BinaryIO, size: int, what: str) -> bytes:
     if len(data) != size:
         raise EOFError(f"truncated {what}")
     return data
+
+
+def _read_segment(fh: BinaryIO, segment: Segment | None) -> bytes:
+    if segment is None:
+        return b""
+    fh.seek(segment.offset)
+    return _read_exact(fh, segment.size, f"{segment.name} segment")
 
 
 def _segments(raw: bytes, size: int) -> tuple[Segment, ...]:
@@ -103,14 +173,13 @@ def _segments(raw: bytes, size: int) -> tuple[Segment, ...]:
     return tuple(out)
 
 
-def _channel_table(fh: BinaryIO, segment: Segment) -> tuple[Channel, ...]:
-    if segment.size < LABCOD_SIZE or segment.size % LABCOD_SIZE:
-        raise ValueError(f"LABCOD segment has invalid size {segment.size}")
-    raw = _read_exact(fh, segment.size, "LABCOD segment")
+def _channel_table(raw: bytes) -> tuple[Channel, ...]:
+    if len(raw) < LABCOD_SIZE or len(raw) % LABCOD_SIZE:
+        raise ValueError(f"LABCOD segment has invalid size {len(raw)}")
     out = []
-    for index in range(segment.size // LABCOD_SIZE):
+    for index in range(len(raw) // LABCOD_SIZE):
         at = index * LABCOD_SIZE
-        used, _unknown = struct.unpack_from("<BB", raw, at)
+        used = raw[at]
         label = _cstring(raw[at + 2:at + 8])
         ground = _cstring(raw[at + 8:at + 14])
         lmin, lmax, lground, pmin, pmax = struct.unpack_from("<iiiii", raw, at + 14)
@@ -118,23 +187,93 @@ def _channel_table(fh: BinaryIO, segment: Segment) -> tuple[Channel, ...]:
             raise ValueError(f"LABCOD channel {index} has a zero calibration range")
         factor = (pmax - pmin) / (lmax - lmin + 1)
         units = struct.unpack_from("<h", raw, at + 34)[0]
-        if used:
-            out.append(Channel(index, label, ground, lmin, lmax, lground, pmin, pmax, factor, units))
-        else:
-            out.append(Channel(index, label, ground, lmin, lmax, lground, pmin, pmax, factor, units))
+        out.append(Channel(index, label, ground, bool(used), lmin, lmax, lground,
+                           pmin, pmax, factor, units))
     return tuple(out)
 
 
-def _notes(fh: BinaryIO, segment: Segment) -> tuple[Note, ...]:
+def _notes(raw: bytes) -> tuple[Note, ...]:
     want = NOTE_COUNT * NOTE_SIZE
-    if segment.size < want:
-        raise ValueError(f"NOTE segment has {segment.size} bytes, expected at least {want}")
-    raw = _read_exact(fh, want, "NOTE segment")
-    return tuple(
-        Note(struct.unpack_from("<I", raw, at)[0], _cstring(raw[at + 4:at + NOTE_SIZE]))
-        for at in range(0, want, NOTE_SIZE)
-        if struct.unpack_from("<I", raw, at)[0] and _cstring(raw[at + 4:at + NOTE_SIZE])
-    )
+    if len(raw) < want:
+        raise ValueError(f"NOTE segment has {len(raw)} bytes, expected at least {want}")
+    out = []
+    for at in range(0, want, NOTE_SIZE):
+        frame = struct.unpack_from("<I", raw, at)[0]
+        text = _cstring(raw[at + 4:at + NOTE_SIZE])
+        if frame != NO_SAMPLE and text:
+            out.append(Note(frame, text))
+    return tuple(out)
+
+
+def _montages(raw: bytes, labcod: tuple[Channel, ...]) -> tuple[Montage, ...]:
+    def label_of(index: int) -> str:
+        return labcod[index].label if index < len(labcod) else f"#{index}"
+
+    out = []
+    for at in range(0, len(raw) - MONTAGE_SIZE + 1, MONTAGE_SIZE):
+        lines, _sectors, base_time, notch = struct.unpack_from("<4H", raw, at)
+        if not 1 <= lines <= MONTAGE_TRACES:
+            continue
+        name = _cstring(raw[at + MONTAGE_NAME:at + MONTAGE_NAME + MONTAGE_NAME_SIZE])
+        inputs = struct.unpack_from(f"<{MONTAGE_TRACES * 2}H", raw, at + MONTAGE_INPUTS)
+        traces = []
+        for trace in range(lines):
+            reference_index, active_index = inputs[trace * 2], inputs[trace * 2 + 1]
+            active = label_of(active_index)
+            # Input 0 is the recording ground: the viewer shows such a trace
+            # against the channel's own ground, e.g. ECG1+ against ECG1-.
+            if reference_index:
+                reference = label_of(reference_index)
+            elif active_index < len(labcod):
+                reference = labcod[active_index].ground
+            else:
+                reference = ""
+            traces.append(MontageTrace(
+                f"{active}-{reference}" if reference else active,
+                active, reference, active_index, reference_index,
+            ))
+        out.append(Montage(name, notch, base_time, tuple(traces)))
+    return tuple(out)
+
+
+def _triggers(raw: bytes) -> list[Marker]:
+    out = []
+    for at in range(0, len(raw) - TRIGGER_SIZE + 1, TRIGGER_SIZE):
+        frame, kind = struct.unpack_from("<IH", raw, at)
+        if frame != NO_SAMPLE:
+            out.append(Marker(frame, f"Trigger {kind}", "trigger", "TRIGGER"))
+    return out
+
+
+def _flags(raw: bytes) -> list[Marker]:
+    out = []
+    for index in range(len(raw) // FLAGS_SIZE):
+        begin, end = struct.unpack_from("<II", raw, index * FLAGS_SIZE)
+        if begin != end and begin != NO_SAMPLE:
+            out.append(Marker(begin, f"Flag {index + 1}", "flag", "FLAGS", end))
+    return out
+
+
+def _events(raw: bytes, source: str) -> list[Marker]:
+    if len(raw) < EVENT_NAME_SIZE + EVENT_COUNT * 8:
+        return []
+    name = _cstring(raw[:EVENT_NAME_SIZE]) or source
+    begins = struct.unpack_from(f"<{EVENT_COUNT}I", raw, EVENT_NAME_SIZE)
+    ends = struct.unpack_from(f"<{EVENT_COUNT}I", raw, EVENT_NAME_SIZE + EVENT_COUNT * 4)
+    return [
+        Marker(begin, name, "event", source, end)
+        for begin, end in zip(begins, ends)
+        if begin != end and begin != NO_SAMPLE
+    ]
+
+
+def _parts(raw: bytes) -> tuple[Part, ...]:
+    out = []
+    for at in range(0, len(raw) - TRONCA_SIZE + 1, TRONCA_SIZE):
+        original, frame = struct.unpack_from("<II", raw, at)
+        if original or frame:
+            out.append(Part(frame, original))
+    return tuple(out)
 
 
 def read_header(path: str | os.PathLike[str]) -> Header:
@@ -147,8 +286,10 @@ def read_header(path: str | os.PathLike[str]) -> Header:
     with source.open("rb") as fh:
         raw = _read_exact(fh, HEADER_SIZE, "VWR header")
         segments = _segments(raw, size)
-        if len(segments) < 3:
-            raise ValueError("VWR header lacks ORDER, LABCOD, or NOTE segments")
+        by_name = {segment.name: segment for segment in segments}
+        missing = [name for name in ("ORDER", "LABCOD", "NOTE") if name not in by_name]
+        if missing:
+            raise ValueError(f"VWR header lacks the {', '.join(missing)} segment(s)")
 
         data_offset = struct.unpack_from("<I", raw, 138)[0]
         order = struct.unpack_from("<H", raw, 142)[0]
@@ -163,17 +304,23 @@ def read_header(path: str | os.PathLike[str]) -> Header:
         if not HEADER_SIZE <= data_offset <= size:
             raise ValueError(f"invalid data offset {data_offset}")
 
-        order_segment, labcod_segment, note_segment = segments[:3]
-        if order_segment.size < ORDER_SIZE:
-            raise ValueError(f"ORDER segment has {order_segment.size} bytes, expected at least {ORDER_SIZE}")
-        fh.seek(order_segment.offset)
+        if by_name["ORDER"].size < ORDER_SIZE:
+            raise ValueError(f"ORDER segment has {by_name['ORDER'].size} bytes, "
+                             f"expected at least {ORDER_SIZE}")
+        fh.seek(by_name["ORDER"].offset)
         order_table = struct.unpack("<256H", _read_exact(fh, ORDER_SIZE, "ORDER segment"))
-        fh.seek(labcod_segment.offset)
-        labcod = _channel_table(fh, labcod_segment)
+        labcod = _channel_table(_read_segment(fh, by_name["LABCOD"]))
         if max(order_table[:order]) >= len(labcod):
             raise ValueError("ORDER references a missing LABCOD channel")
-        fh.seek(note_segment.offset)
-        notes = _notes(fh, note_segment)
+        notes = _notes(_read_segment(fh, by_name["NOTE"]))
+        montages = _montages(_read_segment(fh, by_name.get("MONTAGE")), labcod)
+        history = _montages(_read_segment(fh, by_name.get("HISTORY"))[HISTORY_TIMES:], labcod)
+        parts = _parts(_read_segment(fh, by_name.get("TRONCA")))
+        markers = [Marker(note.frame, note.description, "note", "NOTE") for note in notes]
+        markers += _triggers(_read_segment(fh, by_name.get("TRIGGER")))
+        markers += _flags(_read_segment(fh, by_name.get("FLAGS")))
+        markers += _events(_read_segment(fh, by_name.get("EVENT A")), "EVENT A")
+        markers += _events(_read_segment(fh, by_name.get("EVENT B")), "EVENT B")
 
     data_bytes = size - data_offset
     frame_bytes = order * int_size
@@ -202,7 +349,12 @@ def read_header(path: str | os.PathLike[str]) -> Header:
         file_type=raw[175],
         segments=segments,
         channels=channels,
+        labcod=labcod,
         notes=notes,
+        markers=tuple(sorted(markers, key=lambda m: (m.frame, m.label))),
+        parts=parts,
+        montages=montages,
+        recorded_montage=history[0].name if history else None,
         n_samples=n_samples,
     )
 

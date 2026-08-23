@@ -98,8 +98,9 @@ Ignored: `.CN2`/`.CN3` (duplicates the `.EEG` block table), `.BFT`/`.reg`/`.sd4`
 `.mg2*` (Persyst derivatives), `.EVT` (empty), `.TRD`, `.slf`, `.img`.
 
 A `<name>.json` is written next to each EDF with the montages, reference,
-per-channel units and demographics — everything EDF has nowhere to put.
-`--no-sidecar` skips it.
+per-channel units, demographics and log events — everything EDF has nowhere to
+put. It is the schema shared with `nicolet2edf` and `vwr2edf`, documented in
+[../SIDECAR.md](../SIDECAR.md). `--no-sidecar` skips it.
 
 ## Montages (`.PTN`)
 

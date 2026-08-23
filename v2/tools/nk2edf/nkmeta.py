@@ -108,7 +108,8 @@ def read_ptn_dir(dirpath, labels, refs=None):
                 continue
             a, b = d[o], d[o + 1]
             chans.append(
-                {"a": a, "b": b, "label": f"{name_of(a)}-{name_of(b)}",
+                {"a": a, "b": b, "active": name_of(a), "reference": name_of(b),
+                 "label": f"{name_of(a)}-{name_of(b)}",
                  "row": struct.unpack_from("<H", d, o + 12)[0]}
             )
         if name and chans:

@@ -25,16 +25,19 @@ Usage:
 """
 import argparse
 import datetime as dt
-import json
 import os
 import re
+import sys
 
 import nk
 import nkmeta
 import numpy as np
 
-REC_SECS = 1  # EDF data record duration
-MIN_ANNOT_BYTES = 120  # floor for the EDF Annotations signal, per record
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import edfcommon  # noqa: E402
+
+REC_SECS = edfcommon.REC_SECS
+_fld, _num = edfcommon._fld, edfcommon._num
 
 EEG_PHYS_MAX = 3199.902  # uV, EEG inputs (+/-3200 uV full scale)
 EEG_PHYS_MIN = -3200.0
@@ -105,26 +108,6 @@ def montage_columns(montage, blk):
     return out
 
 
-def _fld(text, width):
-    """Left-justified fixed-width ASCII EDF header field."""
-    b = str(text).encode("ascii", "replace")[:width]
-    return b + b" " * (width - len(b))
-
-
-def _num(value, width):
-    """EDF numeric field: as many significant digits as fit, no exponent.
-
-    Only montage output reaches the second branch: -3199.951 does not fit, and
-    the old decimal count left a character unused and wrote -3200 for it.
-    """
-    s = f"{value:.8f}".rstrip("0").rstrip(".")
-    for dec in range(width, -1, -1):
-        if len(s) <= width:
-            return _fld(s, width)
-        s = f"{value:.{dec}f}"
-    return _fld(s[:width], width)
-
-
 def build_header(signals, n_records, sfreq, start, patient, recording, annot_bytes):
     """`signals` is a list of (label, unit, phys_min, phys_max) for the data
     signals; the EDF Annotations signal is appended here."""
@@ -154,30 +137,6 @@ def build_header(signals, n_records, sfreq, start, patient, recording, annot_byt
     h += b"".join(_fld("", 32) for _ in range(ns))
     assert len(h) == 256 * (ns + 1), len(h)
     return bytes(h)
-
-
-def _tal(onset, text=None):
-    """One EDF+ Time-stamped Annotation List entry."""
-    head = f"+{onset:.3f}".rstrip("0").rstrip(".")
-    if text is None:  # the timekeeping TAL every record must start with
-        return (head + "\x14\x14\x00").encode("utf-8")
-    clean = text.replace("\x14", " ").replace("\x00", " ").strip()
-    return (head + "\x14" + clean + "\x14\x00").encode("utf-8")
-
-
-def plan_annotations(events, n_records):
-    """Group events into the record containing their onset, and size the
-    annotation signal so the fullest record fits. Returns (per_record, nbytes)."""
-    per_record = {}
-    for onset, text in events:
-        r = min(int(onset // REC_SECS), n_records - 1)
-        per_record.setdefault(r, []).append(_tal(onset, text))
-    widest = 0
-    for r in range(n_records):
-        used = len(_tal(r * REC_SECS)) + sum(len(t) for t in per_record.get(r, ()))
-        widest = max(widest, used)
-    nbytes = max(MIN_ANNOT_BYTES, widest + (widest % 2))
-    return per_record, nbytes
 
 
 def events_for_block(log_events, start, duration):
@@ -249,7 +208,7 @@ def convert_block(eeg_path, blk, out_path, keep, patient, recording, ascii_label
     if keep_mark:
         signals.append((EVENT_LABEL, "", -1, 1))
 
-    per_record, annot_bytes = plan_annotations(events, n_records)
+    per_record, annot_bytes = edfcommon.plan_annotations(events, n_records)
     header = build_header(
         signals, n_records, sfreq, start, patient, recording, annot_bytes
     )
@@ -295,13 +254,9 @@ def convert_block(eeg_path, blk, out_path, keep, patient, recording, ascii_label
             for r in range(nrec):
                 # EDF record = per-signal contiguous blocks
                 fout.write(np.ascontiguousarray(sig[r].T).tobytes())
-                rec_i = written + r
-                tals = _tal(rec_i * REC_SECS) + b"".join(per_record.get(rec_i, ()))
-                if len(tals) > annot_bytes:  # plan_annotations sized this
-                    raise AssertionError(f"record {rec_i}: {len(tals)} > {annot_bytes} annotation bytes")
-                fout.write(tals + b"\x00" * (annot_bytes - len(tals)))
+                fout.write(edfcommon.record_annotations(written + r, per_record, annot_bytes))
             written += nrec
-    return n_records, len(names), start
+    return n_records, names, pairs, signals, start
 
 
 def default_log_path(eeg_path):
@@ -341,59 +296,53 @@ def read_annotation_csv(path):
     return events
 
 
-def parse_sel(text, n):
-    if text is None:
-        return list(range(n))
-    out = []
-    for part in text.split(","):
-        part = part.strip()
-        if "-" in part:
-            a, b = part.split("-")
-            out.extend(range(int(a), int(b) + 1))
-        elif part:
-            out.append(int(part))
-    bad = [i for i in out if not 0 <= i < n]
-    if bad:
-        raise SystemExit(f"block index out of range: {bad}")
-    return out
-
-
-def write_sidecar(edf_path, blk, keep, e21, patient, dc_cal, montages, applied):
-    """The sidecar information EDF itself has nowhere to put."""
+def write_sidecar(edf_path, source, blk, names, pairs, signals, e21, patient,
+                  montages, applied, events):
+    """The sidecar information EDF itself has nowhere to put. See ../SIDECAR.md."""
     dob = patient.get("dob")
-    meta = {
-        "block": {
-            "start": blk["start"][:14],
-            "duration_s": blk["duration"],
-            "sfreq": blk["sfreq"],
-            "n_channels_in_file": blk["n_channels"],
-        },
-        "reference": e21.get("system_reference"),
-        "device": e21.get("device"),
-        "patient": {
-            "sex": patient.get("sex"),
-            "dob": dob.isoformat() if dob else None,
-            "age_at_recording": patient.get("age"),
-        },
-        "channels": [
-            {
-                "label": blk["ch_names"][i],
-                "e21_index": blk["e21_index"][i],
-                "unit": signal_spec(
-                    blk["ch_names"][i], blk["e21_index"][i], dc_cal
-                )[1],
-            }
-            for i in keep
-        ],
-        "montages": [
-            {"name": m["name"], "channels": [c["label"] for c in m["channels"]]}
+    start = dt.datetime.strptime(blk["start"][:14], "%Y%m%d%H%M%S")
+    e21_index = blk["e21_index"]
+
+    def channel(j):
+        label, unit, lo, hi = signals[j][:4]
+        a, b = pairs[j] if j < len(pairs) else (None, None)
+        return {
+            "label": label,
+            "edf_label": names[j] if j < len(names) else label,
+            "source_index": e21_index[a] if a is not None else None,
+            "unit": unit or None,
+            "sfreq_hz": blk["sfreq"],
+            "reference": (blk["ch_names"][b] if b is not None
+                          else e21.get("system_reference") if a is not None else None),
+            "resolution_uv_per_lsb": (hi - lo) / 65535,
+            "derived": b is not None,
+        }
+
+    return edfcommon.write_sidecar(edf_path, edfcommon.build_sidecar(
+        source_file=os.path.basename(source),
+        source_format="nihon-kohden",
+        clip={"index": None, "start": start.isoformat(), "offset_s": 0.0,
+              "duration_s": blk["duration"], "sfreq_hz": blk["sfreq"]},
+        device=e21.get("device"),
+        reference=e21.get("system_reference"),
+        patient={"sex": patient.get("sex"),
+                 "dob": dob.isoformat() if dob else None,
+                 "age_at_recording": patient.get("age")},
+        channels=[channel(j) for j in range(len(signals))],
+        montages=[
+            {"name": m["name"],
+             "channels": [{"label": c["label"], "active": c["active"],
+                           "reference": c["reference"],
+                           "active_index": c["a"], "reference_index": c["b"]}
+                          for c in m["channels"]]}
             for m in montages
             if len({c["label"] for c in m["channels"]}) > 1
         ],
-        "montage_applied": applied["name"] if applied else None,
-    }
-    with open(os.path.splitext(edf_path)[0] + ".json", "w", encoding="utf-8") as fh:
-        json.dump(meta, fh, indent=2)
+        montage_applied=applied["name"] if applied else None,
+        events=[{"onset_s": onset, "label": text, "type": "log", "source": "LOG"}
+                for onset, text in events],
+        n_channels_in_file=blk["n_channels"],
+    ))
 
 
 def main():
@@ -458,10 +407,8 @@ def main():
     # EDF+ patient field: sex and birth date only, never name or record number.
     if args.patient == "X X X X" and patient_info.get("dob"):
         d = patient_info["dob"]
-        mon = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-               "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"][d.month - 1]
         args.patient = f"X {patient_info.get('sex') or 'X'} " \
-                       f"{d.day:02d}-{mon}-{d.year} X"
+                       f"{d.day:02d}-{edfcommon.MONTHS[d.month - 1]}-{d.year} X"
 
     log_events = []
     log_path = args.log or (None if args.no_log else default_log_path(args.input))
@@ -522,18 +469,14 @@ def main():
     if not args.outdir:
         raise SystemExit("outdir required (or use --list)")
     os.makedirs(args.outdir, exist_ok=True)
-    sel = parse_sel(args.blocks, len(blocks))
+    sel = edfcommon.parse_sel(args.blocks, len(blocks), "block")
     stem = os.path.splitext(os.path.basename(args.input))[0]
 
     for i in sel:
         b = blocks[i]
         out = os.path.join(args.outdir, f"{stem}_{i:02d}_{b['start'][:14]}.edf")
-        # EDF+ recording field is strictly
-        # "Startdate dd-MMM-yyyy <admin code> <investigator> <equipment>"
         d = dt.datetime.strptime(b["start"][:8], "%Y%m%d")
-        mon = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-               "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"][d.month - 1]
-        recording = f"Startdate {d.day:02d}-{mon}-{d.year} {stem} X JE-120A/225A"
+        recording = edfcommon.recording_field(d, stem, "JE-120A/225A")
         block_start = dt.datetime.strptime(b["start"][:14], "%Y%m%d%H%M%S")
         events = events_for_block(
             [e for e in log_events if "when" in e], block_start, b["duration"]
@@ -564,17 +507,18 @@ def main():
                     f"no montage {want!r} -- available: {', '.join(sorted(by_name))}"
                 )
 
-        nrec, nch, start = convert_block(
+        nrec, names, pairs, signals, start = convert_block(
             args.input, b, out, keep, args.patient, recording,
             args.ascii_labels, events=events, keep_mark=not args.no_mark_channel,
             dc_cal=dc_cal, montage=mont,
         )
         if not args.no_sidecar:
-            write_sidecar(out, b, keep, e21, patient_info, dc_cal, montages, mont)
+            write_sidecar(out, args.input, b, names, pairs, signals, e21,
+                          patient_info, montages, mont, events)
         size = os.path.getsize(out)
         print(
             f"[{i:2d}/{len(blocks)-1}] {os.path.basename(out)}  "
-            f"{nch} ch  {nrec} s  {len(events)} annot  {size/1e6:.1f} MB"
+            f"{len(names)} ch  {nrec} s  {len(events)} annot  {size/1e6:.1f} MB"
             + (f"  montage {mont['name']}" if mont else ""),
             flush=True,
         )

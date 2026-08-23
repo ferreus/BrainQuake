@@ -257,7 +257,8 @@ python nicolet2edf.py Bella.e OUTDIR --no-sidecar
 Each EDF gets a `.json` next to it holding what EDF cannot express: the full
 segment table with wall-clock starts, every event with its type GUID, channel
 and label (including the ones not written as annotations), and per-channel
-resolution, active/reference sensor, filter and notch settings.
+resolution, active/reference sensor, filter and notch settings. It is the schema
+shared with `nk2edf` and `vwr2edf`, documented in [../SIDECAR.md](../SIDECAR.md).
 
 No patient name or identifier is read from the file into any output. The EDF
 patient field defaults to `X X X X`.
