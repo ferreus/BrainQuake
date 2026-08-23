@@ -1,6 +1,8 @@
 # Plan: scalp-EEG source imaging (ESI) mapped onto Bella's SEEG shafts
 
-**Status:** planned, not started. **Date:** 2026-08-17.
+**Status:** planned, not started. **Date:** 2026-08-17, amended 2026-08-23
+(per-file channel normalizer, consistency matrix, distance-to-focus; the
+superseded root-level `scalp_eeg.md` draft was folded in here and deleted).
 
 ## Context
 
@@ -76,12 +78,26 @@ checkpoint before any modelling investment.
   8 × 184). **Fragility is only a top-10 text dump** (`data/ezfragility_result.txt`);
   `run_frag.R:70` writes `frag_scores.rds` and no CSV — a per-contact export is a
   prerequisite (~3 lines of R).
-- **The scalp montage is already documented**:
-  `docs/seeg_slicer_contact_import_plan.md:190-197` records the 31 channels as
-  `Fp2 F4 C4 P4 O2 F8 FT10 T8 P8 Fz Cz Pz Fp1 F3 C3 P3 O1 F7 FT9 T7 P7 EKG F10
-  T10 P10 F9 T9 P9 Oz A1 A2`. All 30 non-EKG labels exist in MNE's
-  `standard_1020` (verified). The inferior chain (F9/T9/P9, F10/T10/P10) is
-  present, which is what makes temporal-source work viable at this density.
+- **The scalp montage varies per recording and is not a fixed contract.**
+  `docs/seeg_slicer_contact_import_plan.md:190-197` records one 31-channel
+  export as `Fp2 F4 C4 P4 O2 F8 FT10 T8 P8 Fz Cz Pz Fp1 F3 C3 P3 O1 F7 FT9 T7
+  P7 EKG F10 T10 P10 F9 T9 P9 Oz A1 A2` — 10-10 names, inferior chain present,
+  all 30 non-EKG labels in MNE's `standard_1020`. Other exports from the same
+  patient use legacy 10-20 names (`T3/T4/T5/T6`), carry the anterior-temporal
+  pair `T1/T2`, and have no inferior chain at all. Recordings will arrive from
+  three vendor formats across several years, so the channel set must be
+  **discovered per file**, not assumed — `scalp_montage.py`, Step 2. Two
+  verified facts pin the mapping: MNE's **`standard_1005`** contains every
+  legacy 10-20 name (`T3/T4/T5/T6` included) *and* `FT9/FT10`, so it is the
+  montage to build from; and **`T1`/`T2` exist in no MNE standard montage**,
+  with `FT9`/`FT10` (`[∓84.1, 14.5, −50.4]` mm) their conventional 10-10
+  equivalents.
+- **Converted EDFs now carry an `eeg2edf-sidecar/1` JSON** (the `eeg2edf/`
+  monorepo — `nk2edf`/`nicolet2edf`/`vwr2edf`). It records `channels[]` (label,
+  `reference`, unit, sfreq, filters), the stored `montages[]`, `events[]`,
+  `segments[]` and `patient.age_at_recording`. The normalizer reads this
+  structured metadata rather than regexing EDF label strings, and it answers
+  prerequisite 3 (recording reference) without asking.
 - **Installed**: mne 1.12.1, numpy, scipy, nibabel, scikit-learn, matplotlib
   (matplotlib is in the venv but *undeclared* in `pyproject.toml`). SimpleITK and
   pandas are absent and not needed.
@@ -133,8 +149,12 @@ Blocking for steps 3+; steps 0–2 need only items 1–3.
 envelope over `[onset, onset+5 s]` normalized to baseline, per channel, then
 
 - the 5 highest channels,
-- **left vs right inferior-temporal chain sums** (F9/T9/P9 vs F10/T10/P10 — the
-  channels that actually see temporal sources),
+- **left vs right lowest-available temporal chain sums** — `F9/T9/P9` vs
+  `F10/T10/P10` where the inferior chain exists, else `T1/T3/T5` vs `T2/T4/T6`
+  (with no inferior chain, `T1`/`T2` are the only inferior temporal sensors).
+  `scalp_montage.laterality_chains()` picks from what the file actually has and
+  prints the choice, so the contrast degrades with the montage instead of
+  failing on it.
 - per-channel onset latency.
 
 ~60 lines, far more robust than ESI, and it validates the export, the channel
@@ -175,19 +195,26 @@ Skull-conductivity error mostly biases depth and amplitude, much less tangential
 position, so the lobar/hemispheric claim should survive it while a
 "mesial vs lateral" claim may not — say that in the doc.
 
-**Coregistration** (28 channels: drop `EKG`, drop `A1`/`A2` — ear electrodes sit
-where the BEM scalp surface is least reliable, and if they are the reference
-their traces carry no independent information):
+**Coregistration** — channels come from `scalp_montage.classify_channels`, not a
+hardcoded list: its `eeg` set, minus `A1`/`A2` (ear electrodes sit where the BEM
+scalp surface is least reliable, and if they are the reference their traces carry
+no independent information). Typically 19–30 channels depending on the export.
 
 ```python
-raw.set_montage("standard_1020", on_missing="raise")
+names = scalp_montage.normalize_labels(raw.ch_names, sidecar)   # incl. T1/T2 -> FT9/FT10
+raw.rename_channels(names).pick(eeg_without_ears)
+raw.set_montage("standard_1005", on_missing="raise")            # 1005: legacy T3/T4 + FT9/FT10
 coreg = mne.coreg.Coregistration(raw.info, "Bella", subjects_dir, fiducials="estimated")
-coreg.set_scale_mode("uniform")          # not "3-axis": 3 fiducials + 28 template
+coreg.set_scale_mode("uniform")          # not "3-axis": 3 fiducials + a template cap
 coreg.fit_fiducials(nasion_weight=2.0)   # points cannot honestly constrain 3 axes
 coreg.fit_icp(n_iterations=40, nasion_weight=2.0, eeg_weight=1.0, hsp_weight=0.0)
 ```
 
-`standard_1020` is an adult template head; expect a uniform scale of ~0.90–0.97.
+`on_missing="raise"` is deliberate: after normalization every remaining label
+must have a template position, and a miss is a normalizer bug to fix, not a
+channel to skip.
+
+`standard_1005` is an adult template head; expect a uniform scale of ~0.90–0.97.
 We scale the montage-to-head fit, not the MRI — the anatomy is Bella's own, so
 `scale_mri` is neither used nor needed.
 
@@ -211,12 +238,25 @@ lobar-only caveat — decided here, once, not improvised later.
 
 Missing digitization costs ~5 mm of systematic electrode error → ~5–10 mm of
 source error, which is small next to the ~20–30 mm intrinsic resolution of
-31-channel ESI. **The channel count is the limiting factor, not the coregistration.**
+low-density ESI. **The channel count is the limiting factor, not the coregistration.**
 
 ## Step 2 — Sigproc modules + tests (2–3 days)
 
 Pure numpy/scipy/mne/nibabel; no `app.config`, no models, no sqlalchemy — the
 `sigproc/__init__.py:1-6` package rule.
+
+**`app/sigproc/scalp_montage.py`** — the per-file channel contract, because the
+montage is not fixed across recordings.
+`normalize_labels(edf_ch_names, sidecar=None) -> {edf_label: canonical | None}`
+strips the `-<ref>` suffix and `EEG ` prefix, case-folds, and maps onto
+`standard_1005` names — preferring the sidecar's `channels[].label` /
+`reference` when one is present, falling back to string parsing when it is not.
+`T1`/`T2` → `FT9`/`FT10`, recorded in the QC table.
+`classify_channels(...) -> (eeg, aux, unknown)` routes EMG/PNG/ECG/thor/abdo/
+MKR and every unmapped label to aux so none of them can reach the inverse.
+`laterality_chains(canonical)` returns the chain pair Step 0 contrasts.
+**Report, never guess** — unmapped labels are listed and excluded, never
+silently dropped or fuzzy-matched.
 
 **`app/sigproc/headmodel.py`** — `scalp_info(...)` → `mne.Info` with montage +
 average-reference projection; `coregister(...)` → `(trans, qc_dict)`;
@@ -232,12 +272,13 @@ invariant.
 
 **`app/sigproc/esi.py`** — `dominant_ictal_band`, `rhythm_events`,
 `spike_events`, `evoked_from_events`, `source_scalars`, `parcel_scores`,
-`contact_scores_by_parcel`, `contact_scores_by_vertex`, `parcel_name_from_aseg`.
+`contact_scores_by_parcel`, `contact_scores_by_vertex`, `parcel_name_from_aseg`,
+`distance_to_focus`.
 Contacts come in as plain dicts/arrays so `services/` stays out of `sigproc/`.
 
 **`app/sigproc/agreement.py`** — `spearman`, `kendall`,
 `block_permutation_test(x, y, blocks, statistic, n_perm=10000)`,
-`topk_overlap`, `reliability`. This is a real simplification win: the ad-hoc
+`topk_overlap`, `reliability`, `consistency_matrix`. This is a real simplification win: the ad-hoc
 ranking/overlap logic currently duplicated across `cei_bella.py`,
 `compare_ei_reference.py` and the fragility R scripts collapses into one tested
 place. Adopting it in those callers is opportunistic, **not** in this spike's
@@ -260,7 +301,7 @@ mains, Cleveland recording. Screen with `ei.find_saturated_channels`.
 3. Narrow-band to `[0.7·f0, 1.4·f0]`; events = GFP peaks in `[onset, onset+T]`.
 4. `Epochs(tmin=-0.5/f0, tmax=0.5/f0)` → `.average()`.
 
-**Average, don't invert raw samples.** 31-channel ictal EEG at onset has poor SNR
+**Average, don't invert raw samples.** Low-density ictal EEG at onset has poor SNR
 and heavy EMG; averaging 20–60 rhythm cycles buys ~5–8×. The same
 `evoked_from_events` path serves the interictal branch, which is the reason to
 build it this way.
@@ -275,7 +316,7 @@ envelope, threshold at 5× robust (MAD) baseline SD, require a 1–35 Hz amplitu
 peak within ±80 ms, ≥300 ms separation. Cluster by the peak topography
 (correlation distance; `sigproc/clustering.choose_kmeans_k` already exists),
 average within cluster, invert only clusters with ≥20 members, localize the
-rising phase (~50% of peak). **This is where 31-channel ESI is actually good** —
+rising phase (~50% of peak). **This is where low-density ESI is actually good** —
 averaged-spike ESI is far better validated than ictal ESI. If spikes exist this
 may become the headline and the ictal arm the confirmation.
 
@@ -286,9 +327,10 @@ non-negotiable details, because this is where EEG inverse pipelines break
 silently:
 - the average-reference **projection must be applied before** covariance
   estimation and be present in `info` at inverse time;
-- rank after average reference is **27** (28 − 1) — assert
-  `compute_rank(cov, info=info) == 27` and honour `rank="info"` through
-  `make_inverse_operator`;
+- rank after average reference is **`n_eeg − 1`** (e.g. 27 for a 28-channel cap,
+  20 for a 21-channel one) — assert
+  `compute_rank(cov, info=info) == len(info["ch_names"]) - 1` and honour
+  `rank="info"` through `make_inverse_operator`;
 - assert no baseline segment overlaps any annotation.
 
 **Inverse: eLORETA on a fixed `ico4` cortical surface source space**, `dSPM` as a
@@ -342,7 +384,7 @@ makes). Each contact takes its parcel from `anatomy.label_contacts(radius_mm=3.0
 `ctx-{lh,rh}-X` → `X-{lh,rh}`; otherwise fall back to
 `nearest_structure.label_name`; **subcortical → NaN. Do not invent a value.**
 Every contact in a parcel gets the same score — **that is the point, not a
-limitation**: 31-channel ESI cannot distinguish two contacts 5 mm apart, and
+limitation**: low-density ESI cannot distinguish two contacts 5 mm apart, and
 encoding that in the data structure prevents the reader from over-reading the
 ranking.
 
@@ -366,6 +408,13 @@ Use it **only** to answer "is there any mesial-temporal source at all", never fo
 contact ranking: 31 surface electrodes cannot resolve hippocampus from adjacent
 neocortex, and eLORETA on a deep-source arm over-reports deep sources. Caveat it
 hard; keep it out of the headline agreement statistic.
+
+**Peak source centroid.** Also emit, per seizure per head model, the
+`power_db`-weighted centroid of the top 5% of vertices, in tkrRAS mm. It is one
+3-vector, it costs nothing once `power_db` exists, and it is what Step 6's
+distance metric and the consistency matrix's spatial-variance term both consume.
+Report the spread of the top-5% set alongside it — a centroid computed over a
+bimodal source map is meaningless, and the spread is what reveals that.
 
 **A per-shaft coverage table is a required output**: n contacts, n with a parcel,
 n falling back to `nearest_structure`, n NaN. **If >30% are NaN the parcel arm
@@ -421,18 +470,40 @@ null.
   block null — not hypergeometric. (Hypergeometric is the singleton-block special
   case, which makes a nice unit test.) This is the only metric fragility can join
   on until the per-contact CSV exists.
+- **Distance to focus, in millimetres.** Euclidean distance from the Step-4 peak
+  source centroid to (a) the top-ranked SEEG contact and (b) the centroid of the
+  top-ranked shaft, per seizure per head model. Every other statistic here is
+  ordinal; this is the one physical quantity in the analysis, it is the unit the
+  medical team thinks in, and it sits in the same sentence as the numbers already
+  computed — `bella_fragility_resection_analysis.md` puts shaft D **16.9–19.5 mm
+  outside the resection cavity**. **The caveat travels with the number, always:**
+  ESI's intrinsic resolution here is ~20–30 mm, so this is a summary of where the
+  map is centred, *not* a localization accuracy. Report it against the spread of
+  the top-5% vertex set and never to sub-centimetre precision. A distance smaller
+  than the resolution means "consistent with", not "hits".
 
 ### Reliability ceiling — the gate before any cross-modality number
 
 Cross-modality agreement is meaningless without each modality's own test-retest
 agreement.
 
-1. Between-seizure Spearman of the ESI shaft vector across the ~3 scalp seizures.
-2. Same for EI, cEI, fragility across the 8 SEEG seizures (`cei_bella.py -o`
-   already has everything needed for EI/cEI).
-3. **Gate: if ESI between-seizure median ρ < 0.5, stop.** A ranking that is not
-   reproducible against itself cannot meaningfully agree or disagree with
-   anything.
+1. **The consistency matrix** — `agreement.consistency_matrix`, the N×N pairwise
+   comparison of the ESI shaft vector across all N scalp recordings. Three
+   layers on the same pairs: Spearman ρ, Jaccard overlap of the top-K shafts
+   (K ∈ {3, 5}), and the distance in mm between the two peak source centroids.
+   Rows and columns ordered by recording date and **blocked by pre- vs
+   post-lobectomy**.
+
+   A matrix rather than a single median, because the structure is the finding:
+   pre-op recordings should agree with each other and *disagree* with post-op
+   ones, and a median hides exactly that. It also makes drift over a multi-year
+   span visible, and it identifies one bad recording instead of letting it drag
+   an aggregate down anonymously. Same cost to compute, strictly more to read.
+2. Same for EI, cEI, fragility across the 8 SEEG seizures.
+3. **Gate: if the median off-diagonal ρ within the pre-op block is < 0.5,
+   stop.** A ranking that is not reproducible against itself cannot meaningfully
+   agree or disagree with anything. Judge the gate on the pre-op block alone —
+   pre-vs-post disagreement is a result, not unreliability.
 4. Report every cross-modality ρ **as a fraction of the geometric mean of the two
    within-modality reliabilities**. "ESI vs fragility ρ = 0.42, ceiling 0.55" is
    honest; "ρ = 0.42" alone is not.
@@ -445,7 +516,8 @@ agreement.
 - A clear ESI result pointing outside the right temporal lobe on pre-surgical
   scalp seizures speaks directly to question 1 — subject to the controls and the
   five head models.
-- A methods statement: "with 31 channels, a template montage and a subject BEM,
+- A methods statement: "with N channels (stated per recording), a template
+  montage and a subject BEM,
   scalp ESI reproduces / does not reproduce the SEEG shaft ranking at ρ = X."
 
 **Cannot:**
@@ -469,15 +541,16 @@ agreement.
 
 | Path | What |
 |---|---|
+| `v2/server/app/sigproc/scalp_montage.py` | **new** — per-file label normalizer, `T1/T2`→`FT9/FT10`, channel classification, laterality chains |
 | `v2/server/app/sigproc/headmodel.py` | **new** — scalp `Info`, coreg + QC, forward solutions, tkrRAS assertion |
-| `v2/server/app/sigproc/esi.py` | **new** — band/event detection, evoked, inverse scalars, parcel/vertex contact mapping |
-| `v2/server/app/sigproc/agreement.py` | **new** — Spearman/Kendall, block-permutation null, top-K overlap, reliability |
+| `v2/server/app/sigproc/esi.py` | **new** — band/event detection, evoked, inverse scalars, parcel/vertex contact mapping, peak centroid + distance-to-focus |
+| `v2/server/app/sigproc/agreement.py` | **new** — Spearman/Kendall, block-permutation null, top-K overlap, reliability, consistency matrix |
 | `v2/tools/esi/README.md` | **new** — Docker one-liner, prerequisites, file contract, matplotlib note |
 | `v2/tools/esi/scalp_onset.py` | **new** — Step 0, no head model |
 | `v2/tools/esi/headmodel_bella.py` | **new** — the checkpoint artifact |
 | `v2/tools/esi/esi_bella.py` | **new** — per-seizure ESI → long CSV |
 | `v2/tools/esi/esi_vs_seeg.py` | **new** — the agreement tables |
-| `v2/server/tests/test_esi.py`, `tests/test_agreement.py` | **new** — see Verification |
+| `v2/server/tests/test_scalp_montage.py`, `test_esi.py`, `test_agreement.py` | **new** — see Verification |
 | `docs/esi_evaluation.md` | **new** — evaluation doc + decision gates, shaped like `docs/cei_evaluation.md` |
 
 A `v2/tools/esi/` subdir (mirroring `v2/tools/fragility/`) because this is a
@@ -504,22 +577,39 @@ adding a server dependency for a plot.
 
 1. **Head-model QC** — the six checks in Step 1, plus `plot_bem` slices showing
    nested, anatomically correct inner-skull / outer-skull / scalp surfaces.
-2. **`tests/test_esi.py`**
+2. **`tests/test_scalp_montage.py`** — the normalizer is the one module every
+   recording passes through, so it is the one that must not guess.
+   - `test_legacy_1020_names_resolve` — `T3/T4/T5/T6` and `-G2`-suffixed labels
+     (`Fp1-G2`) land on `standard_1005` positions.
+   - `test_t1_t2_map_to_ft9_ft10` — pins the substitution *and its side*; a
+     left/right swap here inverts the lateralization answer silently.
+   - `test_unmapped_labels_are_reported_not_dropped` — `elA24`, `MKR`,
+     `thor+-thor-` reach `aux`/`unknown` and appear in the report; assert
+     nothing unmapped reaches the `eeg` list.
+   - `test_laterality_chains_degrade_without_inferior_chain` — a 10-10 list
+     yields `F9/T9/P9` vs `F10/T10/P10`; a legacy list with `T1/T2` yields
+     `T1/T3/T5` vs `T2/T4/T6`; a list with neither raises rather than guessing.
+   - `test_sidecar_reference_beats_string_parsing` — given a sidecar, the
+     `channels[].reference` field wins over whatever the EDF label suffix says.
+3. **`tests/test_esi.py`**
    - `test_src_rr_is_tkrras_millimetres` — synthetic src; asserts ×1000 and that
      nothing else is applied. (The real-subject version is an assertion inside
      `headmodel.py`, not a test, since `data/` is gitignored.)
    - `test_parcel_name_from_aseg_round_trip` — `ctx-rh-superiortemporal` →
      `superiortemporal-rh`; `Right-Hippocampus` → `None`.
    - `test_contact_scores_by_vertex_matches_reference` — plain readable loop
-     pinning the vectorized version. The `test_batch_h2_matches_the_scalar_reference`
-     pattern from `test_connectivity.py`.
+     pinning the vectorized version, following the readable-reference pattern in
+     `tests/test_sigproc_fragility.py`.
    - `test_dominant_ictal_band_finds_injected_rhythm` — 6 Hz sine + 1/f noise →
      `f0` within 0.5 Hz; `rhythm_events` count ≈ duration × 6.
+   - `test_distance_to_focus_is_zero_for_colocated_peak` — and grows linearly
+     with a translated source map; pins the mm units and the tkrRAS frame.
    - `test_scalp_montage_excludes_seeg_lookalikes` — the regression guard: assert
-     `scalp_info` yields 28 channels *and* that `channels.seeg_contacts` on the
-     same list would wrongly return F3/C4/T7/A1, pinning the hazard so nobody
-     "simplifies" the two paths together later.
-3. **`tests/test_agreement.py`**
+     `scalp_info` yields exactly the normalizer's `eeg` list *and* that
+     `channels.seeg_contacts` on the same labels would wrongly return
+     F3/C4/T3/A1, pinning the hazard so nobody "simplifies" the two paths
+     together later.
+4. **`tests/test_agreement.py`**
    - `test_spearman_matches_scipy`.
    - `test_block_permutation_reduces_to_hypergeometric_for_singleton_blocks` —
      the readable-reference pin.
@@ -528,7 +618,10 @@ adding a server dependency for a plot.
      autocorrelated blocks gives mean p ≪ 0.5. This test documents why the block
      null exists.
    - `test_reliability_of_identical_vectors_is_one`.
-4. **Synthetic dipole round-trip** — place a known dipole, simulate scalp data
+   - `test_consistency_matrix_is_symmetric_with_unit_diagonal` — and that a
+     two-block input (identical within block, anti-correlated across) produces
+     the visible block structure the pre/post split depends on.
+5. **Synthetic dipole round-trip** — place a known dipole, simulate scalp data
    through the same forward solution, add noise, run inverse + contact mapping,
    assert the top-scoring contact is nearest the true dipole within a stated
    tolerance. Pins the whole frame/unit chain end to end.
@@ -545,9 +638,11 @@ adding a server dependency for a plot.
 - **G2 — controls.** Baseline surrogate within noise; anatomy-only sham does not
   match ESI's agreement; midline flip collapses it. **Fail → the "agreement" is
   geometry, not physiology; stop.**
-- **G3 — reliability.** ESI between-seizure median ρ ≥ 0.5. **Fail → "31-channel
-  ictal ESI is not reproducible enough on this data to compare" — a legitimate
-  answer to question 2.**
+- **G3 — reliability.** Read off the consistency matrix: median off-diagonal ρ
+  **within the pre-op block** ≥ 0.5. Judge on that block alone — pre-vs-post
+  disagreement is a result, not unreliability. **Fail → "low-density ictal ESI
+  is not reproducible enough on this data to compare" — a legitimate answer to
+  question 2.**
 - **G4 — the actual question.** Only if G0–G3 pass: shaft-level ρ with CIs and
   ceilings, and the lobar/hemispheric answer to question 1, phrased "supported /
   did not support".
@@ -557,7 +652,7 @@ adding a server dependency for a plot.
 
 ## Things to refuse
 
-1. Any contact-level or millimetre-level claim from 31-channel ESI. The mapping
+1. Any contact-level or millimetre-level claim from low-density ESI. The mapping
    is built so this is structurally hard, not merely discouraged in prose.
 2. A contact-level correlation or top-K test without a shaft-block null.
 3. Reading a negative ESI result as evidence *against* right temporal.
