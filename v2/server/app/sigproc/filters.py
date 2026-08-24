@@ -1,7 +1,7 @@
 import logging
 
 import numpy as np
-from scipy.signal import butter, filtfilt, iirnotch, sosfiltfilt
+from scipy.signal import butter, filtfilt, iirnotch, lfilter, lfilter_zi, sosfiltfilt
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,38 @@ def bandpass(data, fs, band_low, band_high, order=5, context=""):
     return sosfiltfilt(sos, data)
 
 
+def _reference_and_notch(data, fs, mains_freq, reference):
+    """Common-average reference (or nothing) then the mains-harmonic notch --
+    the shared prologue of filter_for_display and filter_for_review.
+
+    One implementation on purpose: two copies of a re-reference is how the
+    viewer and the numerics end up disagreeing about what a trace is.
+
+    CAR is taken over whatever the caller passed. The numeric callers pass
+    contacts only (channels.load_seeg); the viewers pass what the user selected.
+    Skipped below two channels: the average of one channel is that channel, so
+    subtracting it returns exactly zero -- which is what the web client's
+    single-channel drill-down was plotting. 'none' is for data already
+    re-referenced by the caller (montage.apply_bipolar), or left as recorded.
+    """
+    if reference not in ("car", "none"):
+        raise ValueError(f"unknown reference {reference!r}; expected 'car' or 'none'")
+    if reference == "none":
+        pass
+    elif np.ndim(data) > 1 and np.shape(data)[0] > 1:
+        data = data - np.mean(data, axis=0)
+    else:
+        logger.info("single channel: returning it unreferenced (a common average of one is itself)")
+    # NOTE(v1-quirk): the legacy app notched 50/100/150 Hz only, and this keeps
+    # that reach (3 harmonics) rather than sweeping to Nyquist. Harmonics above
+    # the 3rd are left in the signal; whether that matters depends on how much
+    # mains interference the recording actually carries.
+    for nf in mains_harmonics(mains_freq, fs, up_to=mains_freq * 3.5):
+        tb, ta = iirnotch(nf / (fs / 2), 30)
+        data = filtfilt(tb, ta, data, axis=-1)
+    return data
+
+
 def filter_for_display(data, fs, band_low, band_high, mains_freq=DEFAULT_MAINS_FREQ,
                        reference="car"):
     """Common-average reference, then a mains-harmonic notch, then a
@@ -97,29 +129,65 @@ def filter_for_display(data, fs, band_low, band_high, mains_freq=DEFAULT_MAINS_F
     filter order) and untouched here to avoid drifting already-verified
     HFO output.
     """
-    if reference not in ("car", "none"):
-        raise ValueError(f"unknown reference {reference!r}; expected 'car' or 'none'")
     band_low, band_high = clamp_band(band_low, band_high, fs, "filter_for_display")
-    # Common-average reference over whatever the caller passed. The numeric
-    # callers pass contacts only (edf_common.load_seeg); the viewer passes what
-    # the user selected. Skipped below two channels: the average of one channel
-    # is that channel, so subtracting it returns exactly zero -- which is what
-    # the web client's single-channel drill-down was plotting.
-    # 'none' is for data already re-referenced by the caller (montage.apply_bipolar).
-    if reference == "none":
-        pass
-    elif np.ndim(data) > 1 and np.shape(data)[0] > 1:
-        data = data - np.mean(data, axis=0)
-    else:
-        logger.info("single channel: returning it unreferenced (a common average of one is itself)")
-    # NOTE(v1-quirk): the legacy app notched 50/100/150 Hz only, and this keeps
-    # that reach (3 harmonics) rather than sweeping to Nyquist. Harmonics above
-    # the 3rd are left in the signal; whether that matters depends on how much
-    # mains interference the recording actually carries.
-    for nf in mains_harmonics(mains_freq, fs, up_to=mains_freq * 3.5):
-        tb, ta = iirnotch(nf / (fs / 2), 30)
-        data = filtfilt(tb, ta, data, axis=-1)
+    data = _reference_and_notch(data, fs, mains_freq, reference)
     nyq = fs / 2
     b, a = butter(5, np.array([band_low / nyq, band_high / nyq]), btype="bandpass")
     data = filtfilt(b, a, data)
+    return data
+
+
+def rc_highpass(data, fs, tc):
+    """Nihon Kohden's TC filter: a causal one-pole RC high-pass, -6 dB/oct,
+    corner 1/(2*pi*tc) Hz (0.1 s = 1.6 Hz).
+
+    Deliberately not zero-phase: a 4-pole filtfilt high-pass at the same corner
+    eats far more slow activity and the review traces come out flat. Ported from
+    v2/tools/show_edf.py, which is the reference for the clinical view.
+
+    Started in steady state rather than from rest -- the endpoint filters a
+    padded window, not the whole recording, and a zero-state one-pole high-pass
+    answers a contact's DC offset with a full-amplitude step decaying over tc.
+    """
+    a = tc / (tc + 1.0 / fs)
+    b, ac = np.array([a, -a]), np.array([1.0, -a])
+    x = np.asarray(data, dtype=float)
+    x2 = np.atleast_2d(x)
+    zi = np.outer(x2[:, 0], lfilter_zi(b, ac))
+    y, _ = lfilter(b, ac, x2, axis=-1, zi=zi)
+    return y.reshape(x.shape)
+
+
+def filter_for_review(data, fs, tc=None, hicut=None, mains_freq=DEFAULT_MAINS_FREQ,
+                      reference="car"):
+    """Clinical review filtering, in the order a Nihon Kohden review screen does
+    it: reference, mains notch, causal TC high-pass, then an independent high cut.
+
+    Serves the clinical EEG view. filter_for_display() above is the analysis-path
+    filter (EI computes on it); the two share _reference_and_notch and diverge
+    only in what follows it -- a causal TC high-pass and an independent high cut
+    here, a zero-phase bandpass there.
+
+    tc:    time constant in seconds (0.1 s = 1.6 Hz). None = low cut off.
+    hicut: high cut in Hz. None = high cut off.
+    Both off is a legal state (the reviewer switched both filters off): the
+    caller still gets referenced, notched traces. mains_freq=0 disables the notch.
+    """
+    if tc is not None and tc <= 0:
+        raise ValueError(f"tc must be > 0 seconds, got {tc}")
+    if hicut is not None and hicut <= 0:
+        raise ValueError(f"hicut must be > 0 Hz, got {hicut}")
+
+    data = _reference_and_notch(data, fs, mains_freq, reference)
+    if tc is not None:
+        data = rc_highpass(data, fs, tc)
+    if hicut is not None:
+        limit = max_band_high(fs)
+        if hicut >= limit:
+            # Disabled rather than clamped, as show_edf.py does: a low-pass at
+            # 0.99*Nyquist is transparent anyway and only risks an ill-conditioned design.
+            logger.warning("high cut %.1f Hz is at/above the usable Nyquist (%.1f Hz) "
+                           "for fs=%.1f Hz; leaving it off", hicut, limit, fs)
+        else:
+            data = sosfiltfilt(butter(4, hicut / (fs / 2.0), btype="lowpass", output="sos"), data)
     return data

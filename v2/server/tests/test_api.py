@@ -1,11 +1,14 @@
 import io
 import json
+import math
 import os
 import shutil
 import struct
 import subprocess
 import tempfile
 import zipfile
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import h5py
@@ -2308,3 +2311,127 @@ def test_edf_window_serves_bipolar_derivations():
     )
     assert bad.status_code == 400
     assert "unknown derivation" in bad.json()["detail"]
+
+
+# --- clinical review filtering (the Clinical EEG view) -----------------------
+
+
+def test_edf_window_review_filter_matches_the_nk_recipe():
+    """Pins the review path to show_edf.py's exact recipe: reference, mains
+    notch, causal one-pole TC high-pass, then a butter(4) high cut."""
+    from app.sigproc.filters import filter_for_review
+
+    sid, artifact_id, _, sfreq = _create_subject_with_edf("EdfReviewRecipe")
+
+    tc, hicut = 0.1, 70.0
+    r = client.get(
+        f"/subjects/{sid}/edf/{artifact_id}/window"
+        f"?start=3.0&end=5.0&tc={tc}&band_high={hicut}"
+    )
+    assert r.status_code == 200
+    body = _parse_edf_window_binary(r.content)
+    assert body["filtered"] is True
+    # band_low carries the equivalent corner in Hz, so the wire format is unchanged.
+    assert body["band_low"] == pytest.approx(1.0 / (2 * math.pi * tc), rel=1e-5)
+    assert body["band_high"] == hicut
+
+    edf_dir = os.path.join(settings.SUBJECTS_DIR, "EdfReviewRecipe", "edf")
+    resolved_path = os.path.join(edf_dir, os.listdir(edf_dir)[0])
+    raw = mne.io.read_raw_edf(resolved_path, preload=True, stim_channel=None)
+    duration = raw.times[-1]
+    pad_start = max(0.0, 3.0 - 2.0)
+    pad_end = min(duration, 5.0 + 2.0)
+    i0, i1 = raw.time_as_index([pad_start, pad_end])
+    filtered = filter_for_review(raw.get_data()[:, i0:i1], sfreq, tc=tc, hicut=hicut)
+    trim0 = int(round((3.0 - pad_start) * sfreq))
+    expected = filtered[:, trim0:trim0 + int(round(2.0 * sfreq))]
+
+    np.testing.assert_allclose(body["data"], expected, atol=1e-8)
+
+
+def test_edf_window_tc_keeps_slow_activity_the_bandpass_eats():
+    """The reason the review filter exists: a zero-phase butter(5) high-pass at
+    the same corner flattens slow activity that NK's one-pole TC preserves."""
+    from app.sigproc.filters import filter_for_display, filter_for_review
+
+    fs = 1000.0
+    t = np.arange(0, 12.0, 1 / fs)
+    # 0.5Hz slow wave, well below a 1.6Hz corner, on two channels so CAR is a no-op
+    # only if they differ -- use 'none' to isolate the high-pass behaviour.
+    x = np.vstack([np.sin(2 * np.pi * 0.5 * t), np.zeros_like(t)]) * 100e-6
+
+    review = filter_for_review(x, fs, tc=0.1, hicut=70.0, mains_freq=0, reference="none")
+    display = filter_for_display(x, fs, 1.0 / (2 * math.pi * 0.1), 70.0,
+                                 mains_freq=0, reference="none")
+
+    mid = slice(int(4 * fs), int(8 * fs))
+    assert np.ptp(review[0, mid]) > 3 * np.ptp(display[0, mid])
+
+
+def test_edf_window_review_seam_is_continuous_for_a_long_tc():
+    """Regression test for the pad rule: the causal high-pass transient decays
+    as exp(-t/tc), so a long TC needs a left pad scaled to it. Without that,
+    panning shows a DC step at every window boundary."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfReviewSeam")
+
+    a = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=4.0&end=6.0&tc=2.0")
+    b = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=5.0&end=6.0&tc=2.0")
+    assert a.status_code == 200 and b.status_code == 200
+    overlap = _parse_edf_window_binary(a.content)["data"][:, -1000:]
+    np.testing.assert_allclose(overlap, _parse_edf_window_binary(b.content)["data"],
+                               atol=1e-9)
+
+
+def test_edf_window_review_accepts_a_high_cut_alone_and_both_filters_off():
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfReviewOff")
+
+    # tc=0 means "low cut off", not "not review mode": the traces are still
+    # referenced and notched, so switching every filter off cannot make them jump.
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=2&tc=0&band_high=30")
+    assert r.status_code == 200
+    body = _parse_edf_window_binary(r.content)
+    # 0.0 is how the binary header has always spelled "no cut" (pack_edf_window
+    # encodes None that way), so review mode needs no new wire field.
+    assert body["filtered"] is True and body["band_low"] == 0.0
+    assert body["band_high"] == 30.0
+
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=2&tc=0")
+    assert r.status_code == 200
+    body = _parse_edf_window_binary(r.content)
+    assert body["filtered"] is True
+    assert body["band_low"] == 0.0 and body["band_high"] == 0.0
+
+
+def test_edf_window_review_high_cut_above_nyquist_is_ignored():
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfReviewNyq")
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=2&tc=0.1&band_high=9000")
+    assert r.status_code == 200
+    assert _parse_edf_window_binary(r.content)["filtered"] is True
+
+
+def test_edf_window_rejects_band_low_with_tc_and_a_lone_band_low():
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfReviewReject")
+
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=2&tc=0.1&band_low=1")
+    assert r.status_code == 400
+    assert "two ways to ask for a low cut" in r.json()["detail"]
+
+    # band_low without band_high used to silently return unfiltered data.
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=2&band_low=1")
+    assert r.status_code == 400
+
+
+def test_edf_meta_reports_the_recording_start_time():
+    """The clinical view labels its axis HH:MM:SS from this."""
+    from app.services.edf import _meas_date_iso
+
+    sid, artifact_id, _, _ = _create_subject_with_edf("EdfMeasDate")
+    meta = client.get(f"/subjects/{sid}/edf/{artifact_id}/meta").json()
+    assert "meas_date" in meta
+    assert meta["meas_date"] is None or datetime.fromisoformat(meta["meas_date"])
+
+    # mne's EDF exporter substitutes a default start date, so the None branch
+    # cannot be produced by a synthetic file -- exercise it directly.
+    assert _meas_date_iso(SimpleNamespace(info={"meas_date": None})) is None
+    dt = datetime(2019, 3, 14, 7, 24, 35, tzinfo=timezone.utc)
+    assert _meas_date_iso(SimpleNamespace(info={"meas_date": dt})) == dt.isoformat()

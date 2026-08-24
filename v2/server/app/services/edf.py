@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import shutil
 import struct
@@ -12,7 +13,7 @@ from app.models import Artifact, Job, Subject
 from app.services.edf_common import resolve_edf_path
 from app.services import recording_params as recording_params_service
 from app.sigproc.channels import seeg_contacts
-from app.sigproc.filters import DEFAULT_MAINS_FREQ, filter_for_display
+from app.sigproc.filters import DEFAULT_MAINS_FREQ, filter_for_display, filter_for_review
 from app.sigproc.montage import bipolar_pairs
 
 # Synchronous (not a job) windowed EDF fetch for the web client's EEG canvas --
@@ -50,10 +51,23 @@ def _get_artifact(db: Session, subject: Subject, edf_artifact_id: int) -> Artifa
 # Bounds peak memory to this window rather than the whole recording.
 _META_SCAN_CHUNK_SECONDS = 60.0
 
+# Left pad for review mode: exp(-5) leaves ~0.7% of the high-pass transient,
+# capped so a 60s window plus padding stays a sane read.
+_TC_SETTLE_TAUS = 5.0
+_MAX_PAD_SECONDS = 30.0
+
 # Bumped whenever the cached fields are computed differently, so meta stored by
 # an older version is recomputed instead of served forever (the file itself is
 # unchanged, so the size/mtime fingerprint alone would keep the stale value).
-_META_VERSION = 2
+_META_VERSION = 3
+
+
+def _meas_date_iso(raw):
+    """The recording's wall-clock start as ISO-8601, or None when the header
+    carries none. Lets the clinical view label its time axis HH:MM:SS the way a
+    review station does; seconds-from-start stays the unit everywhere else."""
+    dt = raw.info.get("meas_date")
+    return dt.isoformat() if dt is not None else None
 
 
 def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
@@ -104,6 +118,7 @@ def get_edf_meta(db: Session, subject: Subject, edf_artifact_id: int):
         "n_samples": n_samples,
         "duration_sec": float(raw.times[-1]),
         "channels": raw.ch_names,
+        "meas_date": _meas_date_iso(raw),
         "amplitude_range": {"min": lo, "max": hi},
         **fingerprint,
     }
@@ -140,6 +155,7 @@ def get_edf_window(
     channels=None,
     band_low=None,
     band_high=None,
+    tc=None,
     pad: float = 2.0,
     mains_freq: float = DEFAULT_MAINS_FREQ,
     reference: str = "car",
@@ -148,7 +164,16 @@ def get_edf_window(
     by `pad` seconds (clamped to the recording) before running the zero-phase
     filter, then trimmed back to the exact window -- filtering only the exact
     slice would show filtfilt edge-transient artifacts at every window
-    boundary, which panning would make constantly visible."""
+    boundary, which panning would make constantly visible.
+
+    Two filter modes. `band_low`+`band_high` is the analysis-path display
+    bandpass (filter_for_display, what EI computes on). `tc` selects clinical
+    review filtering instead (filter_for_review): a causal one-pole high-pass
+    with that time constant in seconds, plus `band_high` as an independent high
+    cut. `tc=0` means the low cut is off but review filtering still applies --
+    show_edf.py's own convention -- so that switching every filter off in the
+    review UI still returns referenced, notched traces rather than raw ones.
+    """
     if end <= start:
         raise ValueError("end must be greater than start")
     if end - start > MAX_WINDOW_SECONDS:
@@ -163,8 +188,15 @@ def get_edf_window(
     start = max(0.0, start)
     end = min(duration, end)
 
-    if reference not in ("car", "bipolar"):
-        raise ValueError(f"unknown reference {reference!r}; expected 'car' or 'bipolar'")
+    if reference not in ("car", "none", "bipolar"):
+        raise ValueError(f"unknown reference {reference!r}; expected 'car', 'none', or 'bipolar'")
+
+    review = tc is not None
+    if review and band_low is not None:
+        raise ValueError("band_low and tc are two ways to ask for a low cut; send one")
+    if band_low is not None and band_high is None:
+        # Previously this silently returned unfiltered data.
+        raise ValueError("band_low needs band_high; send both or neither")
 
     # Under bipolar the addressable channels are derivations, not contacts, so
     # names are resolved against the pairs the montage would build.
@@ -197,8 +229,11 @@ def get_edf_window(
     if not picks:
         raise ValueError("no channels selected")
 
-    filtering = band_low is not None and band_high is not None
-    pad_start = max(0.0, start - pad) if filtering else start
+    filtering = review or (band_low is not None and band_high is not None)
+    # The causal high-pass transient decays as exp(-t/tc), so a long TC needs a
+    # longer left pad than the zero-phase stages; only they need a right pad.
+    pad_left = min(_MAX_PAD_SECONDS, max(pad, _TC_SETTLE_TAUS * (tc or 0.0))) if review else pad
+    pad_start = max(0.0, start - pad_left) if filtering else start
     pad_end = min(duration, end + pad) if filtering else end
 
     i0, i1 = raw.time_as_index([pad_start, pad_end])
@@ -212,13 +247,20 @@ def get_edf_window(
         out_names = [raw.ch_names[i] for i in picks]
 
     if filtering:
-        # NOTE: the common-average reference inside filter_for_display is taken
-        # over the *picked* channels, so a client requesting a subset sees
-        # slightly different traces than one requesting all of them -- and than
-        # what the EI job computes over its own channel set. Bipolar data is
-        # already referenced, so CAR must not be applied on top of it.
-        data = filter_for_display(data, fs, band_low, band_high, mains_freq=mains_freq,
-                                  reference="none" if bipolar else "car")
+        # NOTE: CAR is taken over the *picked* channels, so a client requesting
+        # a subset sees slightly different traces than one requesting all of
+        # them -- and than what the EI job computes over its own channel set.
+        # Bipolar data is already referenced, so CAR must not go on top of it.
+        applied_reference = "none" if bipolar else reference
+        if review:
+            data = filter_for_review(data, fs, tc=tc or None, hicut=band_high,
+                                     mains_freq=mains_freq, reference=applied_reference)
+            # The equivalent corner in Hz, which is what this response field
+            # already means -- so the binary header needs no new slot.
+            band_low = 1.0 / (2 * math.pi * tc) if tc else None
+        else:
+            data = filter_for_display(data, fs, band_low, band_high,
+                                      mains_freq=mains_freq, reference=applied_reference)
         trim0 = int(round((start - pad_start) * fs))
         trim1 = trim0 + int(round((end - start) * fs))
         data = data[:, trim0:trim1]

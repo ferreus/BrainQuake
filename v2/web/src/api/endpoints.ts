@@ -286,6 +286,10 @@ export interface EdfMeta {
    * MARK, ...), classified server-side by the contact-naming convention so the
    * rule has one implementation. Excluded from the working set on load. */
   aux_channels: string[];
+  /** Recording start as an ISO-8601 timestamp, or null when the EDF header
+   * carries none. The clinical view labels its time axis from this; every other
+   * time in the API is seconds from the start of the recording. */
+  meas_date: string | null;
   amplitude_range: { min: number; max: number };
 }
 
@@ -345,8 +349,12 @@ export interface EdfWindowParams {
   bandHigh?: number;
   /** Power-line frequency to notch: 50 Europe/Asia, 60 North America. */
   mainsFreq?: number;
-  /** 'bipolar' makes `channels` name derivations (A1-A2) rather than contacts. */
-  reference?: EiReference;
+  /** Clinical review time constant in seconds; 0 = low cut off. Present selects
+   * review filtering (causal one-pole high-pass + `bandHigh` as an independent
+   * high cut) over the `bandLow`/`bandHigh` analysis bandpass. */
+  tc?: number;
+  /** 'bipolar' makes `channels` name derivations (A1-A2); 'none' preserves raw contacts. */
+  reference?: EdfDisplayReference;
 }
 
 export interface EdfWindow {
@@ -377,6 +385,7 @@ export async function getEdfWindow(
   if (params.bandLow != null) qs.set("band_low", String(params.bandLow));
   if (params.bandHigh != null) qs.set("band_high", String(params.bandHigh));
   if (params.mainsFreq != null) qs.set("mains_freq", String(params.mainsFreq));
+  if (params.tc != null) qs.set("tc", String(params.tc));
   if (params.reference != null) qs.set("reference", params.reference);
   const buf = await apiGetBinary(`/subjects/${subjectId}/edf/${edfArtifactId}/window?${qs.toString()}`);
   const parsed = parseEdfWindowBinary(buf);
@@ -411,6 +420,7 @@ export interface EiComputeParams {
 }
 
 export type EiReference = "car" | "bipolar";
+export type EdfDisplayReference = EiReference | "none";
 
 export function computeEi(subjectId: number, edfArtifactId: number, params: EiComputeParams): Promise<Job> {
   return apiPost<Job>(`/subjects/${subjectId}/ictal/${edfArtifactId}/ei`, params);

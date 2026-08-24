@@ -60,14 +60,21 @@ def get_edf_window(
     end: float = Query(...),
     channels: str | None = Query(None, description="comma-separated channel names; omit for all"),
     band_low: float | None = Query(None),
-    band_high: float | None = Query(None),
+    band_high: float | None = Query(None, description="high cut in Hz; top of the bandpass, or the review high cut"),
+    tc: float | None = Query(
+        None,
+        ge=0,
+        description="clinical review time constant in seconds; 0 = low cut off. Present "
+                    "selects review filtering (causal one-pole high-pass + band_high as an "
+                    "independent high cut); absent uses the band_low/band_high display bandpass",
+    ),
     mains_freq: float = Query(
         DEFAULT_MAINS_FREQ,
         description="power-line frequency to notch: 50 Europe/Asia, 60 North America",
     ),
     reference: str = Query(
         "car",
-        description="'car' (channels are contacts) or 'bipolar' (channels are derivations, A1-A2)",
+        description="'car' or 'none' (channels are contacts), or 'bipolar' (channels are derivations, A1-A2)",
     ),
     db: Session = Depends(get_db),
 ):
@@ -83,6 +90,7 @@ def get_edf_window(
             channels=channel_list,
             band_low=band_low,
             band_high=band_high,
+            tc=tc,
             mains_freq=mains_freq,
             reference=reference,
         )

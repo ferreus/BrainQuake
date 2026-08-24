@@ -5,6 +5,7 @@ import { Alert, Loader, Stack, Text, Title } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { getSubject } from "../api/endpoints";
 import { DEFAULT_VIEW, SUBJECT_VIEWS, type SubjectView } from "../components/subjectViews";
+import { ClinicalEegPage } from "../features/clinical/ClinicalEegPage";
 import { ElectrodesPage } from "../features/electrodes/ElectrodesPage";
 import { FreeBrowsePage } from "../features/freebrowse/FreeBrowsePage";
 import { IctalPage } from "../features/ictal/IctalPage";
@@ -97,6 +98,9 @@ export function SubjectLayoutPage() {
         </div>
         <div style={viewStyle("interictal")}>
           {isVisited("interictal") && <InterictalPage key={id} subjectId={id} />}
+        </div>
+        <div style={viewStyle("clinical")}>
+          {isVisited("clinical") && <ClinicalEegPage key={id} subjectId={id} />}
         </div>
         <div style={viewStyle("soz")}>
           {isVisited("soz") && <SozPage key={id} subjectId={id} active={activeView === "soz"} />}
