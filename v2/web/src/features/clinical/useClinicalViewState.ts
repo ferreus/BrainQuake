@@ -21,6 +21,10 @@ export interface ClinicalViewState {
   sensitivity: number;
   pageSeconds: number;
   timeStart: number;
+  /** Recording length, from the EDF meta. Held here so timeStart has an upper
+   * bound to clamp against -- panning, the scrubber and the jump box all go
+   * through the same one. 0 until a recording loads. */
+  durationSec: number;
   /** Contacts on screen. Display only -- this view feeds no computation, which
    * is the whole reason it is separate from the ictal/interictal viewer. */
   selectedChannels: Set<string>;
@@ -48,7 +52,19 @@ export type ClinicalViewAction =
   | { type: "SET_HIGH_CUT"; value: number | null }
   | { type: "SET_MAINS_FREQ"; value: number }
   | { type: "TOGGLE_POLARITY" }
-  | { type: "LOAD_RECORDING"; edfArtifactId: number; channels: string[]; auxChannels: string[] };
+  | {
+      type: "LOAD_RECORDING";
+      edfArtifactId: number;
+      channels: string[];
+      auxChannels: string[];
+      durationSec: number;
+    };
+
+/** Keeps the window inside the recording. A page longer than the recording
+ * pins to 0 rather than going negative. */
+function clampStart(t: number, durationSec: number, pageSeconds: number): number {
+  return Math.min(Math.max(0, durationSec - pageSeconds), Math.max(0, t));
+}
 
 function reducer(state: ClinicalViewState, action: ClinicalViewAction): ClinicalViewState {
   switch (action.type) {
@@ -58,12 +74,19 @@ function reducer(state: ClinicalViewState, action: ClinicalViewAction): Clinical
       return { ...state, dispChansNum: Math.max(1, action.value) };
     case "SET_SENSITIVITY":
       return { ...state, sensitivity: action.value };
-    case "PAN_TIME":
-      return { ...state, timeStart: Math.max(0, state.timeStart + action.direction * state.pageSeconds * 0.2) };
+    case "PAN_TIME": {
+      const t = state.timeStart + action.direction * state.pageSeconds * 0.2;
+      return { ...state, timeStart: clampStart(t, state.durationSec, state.pageSeconds) };
+    }
     case "SET_PAGE_SECONDS":
-      return { ...state, pageSeconds: action.value };
+      // A longer page at the end of the recording would otherwise hang past it.
+      return {
+        ...state,
+        pageSeconds: action.value,
+        timeStart: clampStart(state.timeStart, state.durationSec, action.value),
+      };
     case "SET_TIME_START":
-      return { ...state, timeStart: Math.max(0, action.value) };
+      return { ...state, timeStart: clampStart(action.value, state.durationSec, state.pageSeconds) };
     case "SET_SELECTED_CHANNELS":
       // Deliberately does not reset dispChansStart: this fires on every
       // checkbox, and throwing away the scroll position on each one is hostile.
@@ -89,6 +112,7 @@ function reducer(state: ClinicalViewState, action: ClinicalViewAction): Clinical
         ...state,
         loadedEdfId: action.edfArtifactId,
         selectedChannels: new Set(action.channels.filter((c) => !aux.has(c))),
+        durationSec: action.durationSec,
         timeStart: 0,
         dispChansStart: 0,
       };
@@ -117,6 +141,7 @@ export function useClinicalViewState(): {
     sensitivity: 75,
     pageSeconds: 10,
     timeStart: 0,
+    durationSec: 0,
     selectedChannels: new Set<string>(),
     loadedEdfId: null,
     montage: "none" as ClinicalMontage,

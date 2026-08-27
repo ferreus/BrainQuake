@@ -29,6 +29,7 @@ from app.config import settings
 from app.db import Base, SessionLocal, engine, get_db
 from app.main import app
 from app.models import Artifact, Job, RecordingParams
+from app.services.edf import MAX_WINDOW_SECONDS
 from app.workers import jobs_worker
 from app.workers.jobs_worker import run_job
 
@@ -1599,7 +1600,10 @@ def test_edf_window_channel_filter_and_limits():
     assert body["channels"] == ["CH1", "CH3"]
     assert len(body["data"]) == 2
 
-    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end=100")
+    # Derived, not a literal: this used to hardcode a span that silently became
+    # legal when the cap was raised.
+    over_cap = MAX_WINDOW_SECONDS + 1
+    r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=0&end={over_cap}")
     assert r.status_code == 400
 
     r = client.get(f"/subjects/{sid}/edf/{artifact_id}/window?start=5&end=5")

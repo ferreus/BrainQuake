@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch } from "react";
 import { Group, Loader, Stack, Text } from "@mantine/core";
 import { ApiError } from "../../api/client";
-import { useEdfMeta, useEdfWindow } from "../../api/queries/useEdf";
+import type { RecordingAnnotation } from "../../api/endpoints";
+import { useEdfMeta } from "../../api/queries/useEdf";
 import { useBipolarPreview } from "../../api/queries/useIctal";
 import { EdfLoadErrorPanel } from "../../components/eeg/EdfLoadErrorPanel";
-import { formatAxisTime, midnightSeconds } from "./clinicalTime";
+import { formatAxisTime, midnightSeconds } from "../../lib/eegTime";
+import { useClinicalBuffer } from "./useClinicalBuffer";
 import type { ClinicalViewAction, ClinicalViewState } from "./useClinicalViewState";
 
 interface ClinicalCanvasProps {
@@ -13,6 +15,9 @@ interface ClinicalCanvasProps {
   edfArtifactId: number;
   state: ClinicalViewState;
   dispatch: Dispatch<ClinicalViewAction>;
+  annotations: RecordingAnnotation[];
+  /** Elapsed seconds under the pointer, or null once it leaves the traces. */
+  onCursorTimeChange: (seconds: number | null) => void;
 }
 
 const MIN_CANVAS_HEIGHT = 320;
@@ -33,11 +38,21 @@ const ROW_MM = 12;
  * Separate from components/eeg/EegCanvas by design -- that one is wired into the
  * ictal/interictal analysis state, and this view must not touch it.
  */
-export function ClinicalCanvas({ subjectId, edfArtifactId, state, dispatch }: ClinicalCanvasProps) {
+export function ClinicalCanvas({
+  subjectId,
+  edfArtifactId,
+  state,
+  dispatch,
+  annotations,
+  onCursorTimeChange,
+}: ClinicalCanvasProps) {
   const { data: meta, isError: metaIsError, error: metaError, refetch: refetchMeta } = useEdfMeta(subjectId, edfArtifactId);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState(FALLBACK_CANVAS_SIZE);
+  // Crosshair x in CSS pixels. Kept out of the draw effect: repainting every
+  // trace on mousemove is far more expensive than moving one absolute div.
+  const [cursorX, setCursorX] = useState<number | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -85,19 +100,21 @@ export function ClinicalCanvas({ subjectId, edfArtifactId, state, dispatch }: Cl
     [rowNames, state.dispChansStart, state.dispChansNum],
   );
 
-  const { data: windowData, isError: windowIsError, error: windowError } = useEdfWindow(
+  // Buffered: a few pages of *raw* data are fetched at once and filtered here,
+  // so panning inside the buffer -- and every TC / high cut / mains / CAR
+  // change -- costs no request at all.
+  const { data: windowData, isError: windowIsError, error: windowError } = useClinicalBuffer(
     subjectId,
     edfArtifactId,
     {
-      start: state.timeStart,
-      end: state.timeStart + state.pageSeconds,
+      timeStart: state.timeStart,
+      pageSeconds: state.pageSeconds,
+      durationSec: state.durationSec,
       channels: visibleChannels,
-      // tc is always sent so the traces stay referenced and notched even with
-      // both filters off; 0 is how the endpoint spells "low cut off".
-      tc: state.timeConstant ?? 0,
-      bandHigh: state.highCut ?? undefined,
+      tc: state.timeConstant,
+      highCut: state.highCut,
       mainsFreq: state.mainsFreq,
-      reference: state.montage,
+      montage: state.montage,
     },
     visibleChannels.length > 0,
   );
@@ -138,6 +155,28 @@ export function ClinicalCanvas({ subjectId, edfArtifactId, state, dispatch }: Cl
       ctx.fillText(formatAxisTime(t, clockOrigin), x + 2, 10);
     }
 
+    // Markers before the rows so traces stay on top of the shaded spans.
+    let markerSlot = 0;
+    for (const a of annotations) {
+      const end = a.onset + (a.duration || 0);
+      if (end < winStart || a.onset > winEnd) continue;
+      if (a.duration > 0) {
+        ctx.fillStyle = "rgba(201,42,42,0.10)";
+        ctx.fillRect(timeToX(a.onset), 0, timeToX(end) - timeToX(a.onset), height);
+      }
+      const x = timeToX(a.onset);
+      ctx.strokeStyle = "#c92a2a";
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+      // Staggered: clinical markings cluster within a second of each other and
+      // would otherwise overprint.
+      ctx.fillStyle = "#c92a2a";
+      ctx.fillText(a.description, x + 3, 22 + (markerSlot % 3) * 11);
+      markerSlot++;
+    }
+
     for (let i = 0; i < windowData.channels.length; i++) {
       const y = i * rowHeight + rowHeight / 2;
       ctx.strokeStyle = "rgba(128,128,128,0.18)";
@@ -167,11 +206,41 @@ export function ClinicalCanvas({ subjectId, edfArtifactId, state, dispatch }: Cl
       ctx.stroke();
     });
   }, [windowData, state.sensitivity, state.dispChansNum, state.timeStart, state.pageSeconds,
-      state.negativeUp, clockOrigin, canvasSize]);
+      state.negativeUp, clockOrigin, canvasSize, annotations]);
 
-  function handleWheel(e: React.WheelEvent<HTMLCanvasElement>) {
-    e.preventDefault();
-    dispatch({ type: "PAN_TIME", direction: e.deltaY > 0 ? 1 : -1 });
+  // Registered by hand rather than via onWheel: React attaches wheel listeners
+  // as passive, so preventDefault() there is ignored and the page scrolls away
+  // underneath the pan.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      dispatch({ type: "PAN_TIME", direction: e.deltaY > 0 ? 1 : -1 });
+    };
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", onWheel);
+  }, [dispatch]);
+
+  function handleMouseMove(e: React.MouseEvent<HTMLCanvasElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    // Same LABEL_WIDTH the traces are drawn with, scaled from CSS px to the
+    // canvas backing size -- using it in one mapping and not the other is
+    // exactly the off-by-a-gutter bug the analysis canvas has.
+    const scale = canvasSize.width / rect.width;
+    const x = (e.clientX - rect.left) * scale;
+    if (x < LABEL_WIDTH) {
+      setCursorX(null);
+      onCursorTimeChange(null);
+      return;
+    }
+    setCursorX(e.clientX - rect.left);
+    onCursorTimeChange(state.timeStart + ((x - LABEL_WIDTH) / (canvasSize.width - LABEL_WIDTH)) * state.pageSeconds);
+  }
+
+  function handleMouseLeave() {
+    setCursorX(null);
+    onCursorTimeChange(null);
   }
 
   if (metaIsError) {
@@ -188,14 +257,28 @@ export function ClinicalCanvas({ subjectId, edfArtifactId, state, dispatch }: Cl
   const rowMicrovolts = state.sensitivity * ROW_MM;
   return (
     <Stack gap={4} style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-      <div ref={containerRef} style={{ flex: 1, minHeight: MIN_CANVAS_HEIGHT }}>
+      <div ref={containerRef} style={{ flex: 1, minHeight: MIN_CANVAS_HEIGHT, position: "relative" }}>
         <canvas
           ref={canvasRef}
           width={canvasSize.width}
           height={canvasSize.height}
           style={{ display: "block", width: "100%", height: "100%", background: "#fff" }}
-          onWheel={handleWheel}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={handleMouseLeave}
         />
+        {cursorX != null && (
+          <div
+            style={{
+              position: "absolute",
+              top: 0,
+              bottom: 0,
+              left: cursorX,
+              width: 1,
+              background: "#228be6",
+              pointerEvents: "none",
+            }}
+          />
+        )}
       </div>
       {windowIsError ? (
         <Text size="xs" c="red">
@@ -203,9 +286,8 @@ export function ClinicalCanvas({ subjectId, edfArtifactId, state, dispatch }: Cl
         </Text>
       ) : (
         <Text size="xs" c="dimmed">
-          {formatAxisTime(state.timeStart, clockOrigin)} &ndash;{" "}
-          {formatAxisTime(state.timeStart + state.pageSeconds, clockOrigin)} · {state.sensitivity} µV/mm (
-          {rowMicrovolts} µV per row) · TC {state.timeConstant == null ? "off" : `${state.timeConstant} s`} · HC{" "}
+          {state.sensitivity} µV/mm ({rowMicrovolts} µV per row) · TC{" "}
+          {state.timeConstant == null ? "off" : `${state.timeConstant} s`} · HC{" "}
           {state.highCut == null ? "off" : `${state.highCut} Hz`} · {rowNames.length} rows · scroll to pan
         </Text>
       )}

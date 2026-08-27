@@ -68,6 +68,10 @@ export function useEdfWindow(
   /** 0 for one-shot fetches (the spectrogram drill-down): debouncing there
    * only means the first request goes out with the previous params. */
   debounceMs = PAN_DEBOUNCE_MS,
+  /** Off for the clinical buffer, whose spans are tens of seconds: warming two
+   * neighbours it will not land on exactly costs more bandwidth than the one
+   * request it would save. */
+  prefetchNeighbours = true,
 ) {
   // Reuse the same object reference across renders whenever the actual
   // params are unchanged -- useDebouncedValue resets its timer on every
@@ -81,7 +85,10 @@ export function useEdfWindow(
   const [settled] = useDebouncedValue(stableParams, debounceMs);
   const debounced = debounceMs === 0 ? stableParams : settled;
   const queryClient = useQueryClient();
-  const active = enabled && subjectId != null && edfArtifactId != null;
+  // debounced can still hold the previous params on the render that enables the
+  // query, so an empty span has to be rejected here rather than by the caller:
+  // the server 400s on end <= start.
+  const active = enabled && subjectId != null && edfArtifactId != null && debounced.end > debounced.start;
 
   const query = useQuery({
     queryKey: edfWindowQueryKey(subjectId, edfArtifactId, debounced),
@@ -94,7 +101,7 @@ export function useEdfWindow(
   // Once a window settles, warm the cache for the two adjacent (one-page-
   // over) windows so continued panning in the same direction is instant.
   useEffect(() => {
-    if (!active) return;
+    if (!active || !prefetchNeighbours) return;
     const span = debounced.end - debounced.start;
     if (span <= 0) return;
 
@@ -107,7 +114,7 @@ export function useEdfWindow(
         queryFn: () => getEdfWindow(subjectId!, edfArtifactId!, neighbor),
       });
     }
-  }, [active, subjectId, edfArtifactId, debounced, queryClient]);
+  }, [active, prefetchNeighbours, subjectId, edfArtifactId, debounced, queryClient]);
 
   return query;
 }

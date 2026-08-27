@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:filter": "mkdir -p node_modules/.tmp && echo '{\"type\":\"module\"}' > node_modules/.tmp/package.json && rolldown scripts/verify-review-filter.ts --format esm --platform node -d node_modules/.tmp && node node_modules/.tmp/verify-review-filter.js"
   },
   "dependencies": {
     "@mantine/core": "^9.4.2",

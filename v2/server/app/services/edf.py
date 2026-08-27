@@ -20,7 +20,7 @@ from app.sigproc.montage import bipolar_pairs
 # closes the gap where EDF files were only ever retrievable whole (raw_edf
 # artifact download) and ei-result/hfo-result only expose per-channel scalar
 # summaries, never time-resolved samples.
-MAX_WINDOW_SECONDS = 60.0
+MAX_WINDOW_SECONDS = 120.0
 
 # GET .../window is on the hot path for every pan/zoom/filter-toggle of the
 # EEG canvas, and JSON floats (both Python's json.dumps and JS's JSON.parse)

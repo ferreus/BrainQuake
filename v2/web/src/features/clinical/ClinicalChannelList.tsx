@@ -63,9 +63,6 @@ export function ClinicalChannelList({ channels, auxChannels, selectedChannels, o
 
   return (
     <Stack gap={4}>
-      <Text size="xs" fw={500}>
-        Channels ({selectedChannels.size}/{channels.length})
-      </Text>
       <TextInput
         size="xs"
         aria-label="Search channels"
@@ -100,7 +97,7 @@ export function ClinicalChannelList({ channels, auxChannels, selectedChannels, o
       </Text>
       {/* Both act on what the search box is showing -- selecting everything
           while a query is typed is never what a search-then-select means. */}
-      <Group gap={4} grow>
+      <Group gap={4}>
         <Button
           size="xs"
           variant="light"
