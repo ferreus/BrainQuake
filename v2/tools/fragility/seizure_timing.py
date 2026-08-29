@@ -32,17 +32,20 @@ def timings(path):
     def first(pattern, after=None):
         for o, d in ann:
             if re.match(pattern, d, re.I) and (after is None or o >= after):
-                return o
-        return None
+                return o, d
+        return None, None
 
-    eeg_onset = first(r"^EEG onset$")
-    clin_onset = first(r"^clinical onset$")
-    end = first(r"^end$", after=zero)
+    # Not "^EEG onset$": reviewers append initials or a localising note
+    # ("EEG onset JB", "EEG onset - IA fast"), and an anchored match drops them.
+    eeg_onset, eeg_onset_label = first(r"^EEG onset\b")
+    clin_onset, _ = first(r"^clinical onset$")
+    end, _ = first(r"^end$", after=zero)
 
     return {
         "label": label,
         "file": os.path.basename(path),
         "sz_mark_abs": zero,
+        "eeg_onset_label": eeg_onset_label,
         # everything below is relative to the export's t=0 (the SZ nP mark)
         "eeg_onset": None if eeg_onset is None else eeg_onset - zero,
         "clinical_onset": None if clin_onset is None else clin_onset - zero,

@@ -8,6 +8,7 @@ nonzero if the rankings disagree; without a reference file it only prints the ra
 """
 
 import argparse
+import csv
 import os
 import re
 import sys
@@ -27,7 +28,7 @@ from app.sigproc.fragility import compute_fragility_pipeline
 SEEG_CONTACT_RE = re.compile(r"^[A-Za-z]'?\d+$")
 SHAFT_RE = re.compile(r"^([A-Za-z]+'?)\d+$")
 
-BELLA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../datasets/Bella"))
+DEFAULT_EDF_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../datasets/BellaNew"))
 
 SEIZURE_FILES = [
     ("SZ1P", "DA6465AU_17_20240319072231.edf", r"^SZ 1P$"),
@@ -44,7 +45,12 @@ GT_ONSET_SHAFTS = {"A", "I"}
 GT_SPREAD_SHAFTS = {"N", "P", "G", "L", "K", "Q", "S"}
 
 DEFAULT_REF = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/ezfragility_result.txt"))
-EVAL_WINDOW_S = (0.0, 3.0)  # score the ictal period only; pre-onset baseline is context
+# Defaults mirror run_frag.R (PRE/POST/ICTAL_END/TOP_N). They have to: a parity
+# check run on a different window compares windows, not implementations.
+EVAL_WINDOW_S = (0.0, 5.0)  # score the ictal period only; pre-onset baseline is context
+CROP_PRE_S = 20.0
+CROP_POST_S = 10.0
+TOP_N_CONTACTS = 20
 SPEARMAN_MIN = 0.8
 
 
@@ -113,23 +119,44 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ref", default=DEFAULT_REF, help="EZFragility shaft-ranking table")
     parser.add_argument("--method", choices=["ezfragility", "extended"], default="extended")
+    parser.add_argument("--edf-dir", default=DEFAULT_EDF_DIR,
+                        help="directory holding the 8 seizure EDFs")
+    parser.add_argument("-o", "--out", help="write per-contact scores to this CSV")
+    parser.add_argument("--top-n", type=int, default=TOP_N_CONTACTS,
+                        help="top contacts per seizure that vote for their shaft")
+    parser.add_argument("--pre", type=float, default=CROP_PRE_S, help="seconds before onset")
+    parser.add_argument("--post", type=float, default=CROP_POST_S, help="seconds after onset")
+    parser.add_argument("--eval-end", type=float, default=EVAL_WINDOW_S[1],
+                        help="score windows starting in [0, eval-end] s")
+    parser.add_argument("--exclude", default="",
+                        help="comma-separated contacts to drop before the CAR, "
+                             "e.g. \"L'9,K'12,G'4\"")
     args = parser.parse_args()
 
-    print(f"Loading Bella EDFs from: {BELLA_DIR}", flush=True)
-    if not os.path.exists(BELLA_DIR):
-        print(f"Error: {BELLA_DIR} not found.", flush=True)
+    edf_dir = os.path.abspath(args.edf_dir)
+    print(f"Loading Bella EDFs from: {edf_dir}", flush=True)
+    if not os.path.exists(edf_dir):
+        print(f"Error: {edf_dir} not found.", flush=True)
         sys.exit(1)
 
-    crop_pre = 5.0   # seconds before onset
-    crop_post = 3.0  # seconds after onset
-    top_n_contacts = 10  # top contacts per seizure voting for shaft
+    crop_pre = args.pre
+    crop_post = args.post
+    eval_window = (EVAL_WINDOW_S[0], args.eval_end)
+    top_n_contacts = args.top_n
+    excluded = {c.strip() for c in args.exclude.split(",") if c.strip()}
+    print(f"window [-{crop_pre:g}, +{crop_post:g}] s, scored over "
+          f"[{eval_window[0]:g}, {eval_window[1]:g}] s, top-{top_n_contacts} vote",
+          flush=True)
+    if excluded:
+        print(f"excluding {len(excluded)} contacts: {', '.join(sorted(excluded))}",
+              flush=True)
 
     all_results = {}
     shaft_sizes = None
 
     t_total_start = time.time()
     for label, filename, pattern in SEIZURE_FILES:
-        edf_path = os.path.join(BELLA_DIR, filename)
+        edf_path = os.path.join(edf_dir, filename)
         if not os.path.exists(edf_path):
             print(f"Warning: {edf_path} not found, skipping {label}.", flush=True)
             continue
@@ -137,7 +164,8 @@ def main():
         raw = mne.io.read_raw_edf(edf_path, preload=False, stim_channel=None, verbose="error")
         fs = float(raw.info["sfreq"])
         all_ch = list(raw.ch_names)
-        contacts = [c for c in all_ch if SEEG_CONTACT_RE.match(c.strip())]
+        contacts = [c for c in all_ch
+                    if SEEG_CONTACT_RE.match(c.strip()) and c.strip() not in excluded]
 
         if shaft_sizes is None:
             shaft_sizes = Counter(get_shaft(c) for c in contacts)
@@ -171,7 +199,7 @@ def main():
             step_s=0.125,
             radius=1.0,
             method=args.method,
-            eval_window_s=EVAL_WINDOW_S,
+            eval_window_s=eval_window,
             onset_s=crop_pre,  # data starts at -crop_pre relative to onset
         )
         elapsed = time.time() - t0
@@ -191,6 +219,17 @@ def main():
     if not all_results:
         print("No seizures evaluated.", flush=True)
         return 1
+
+    if args.out:
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+        with open(args.out, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["seizure", "contact", "shaft", "fragility"])
+            for label, ch_scores in all_results.items():
+                for ch, score in ch_scores.items():
+                    w.writerow([label, ch, get_shaft(ch), f"{score:.6f}"])
+        n = sum(len(s) for s in all_results.values())
+        print(f"\nwrote {n} rows -> {args.out}", flush=True)
 
     # Aggregate votes to shafts
     shaft_votes = Counter()

@@ -1,6 +1,8 @@
 # Neural fragility vs the resection: a retrospective test on Bella
 
-**Date:** 2026-08-13. Answers the open question left in
+**Date:** 2026-08-13; numbers re-run 2026-08-28 on the corrected nk2edf export
+(`datasets/BellaNew`), which moved every `SZ nP` mark off its whole-second value
+by up to 0.94 s. Conclusions unchanged. Answers the open question left in
 [project-direction.md](project-direction.md): *where is shaft D anatomically, and
 was it inside the resection?*
 
@@ -37,26 +39,30 @@ quantile and above, so this is the load-bearing part of the feature vector.
 
 8 `SZ nP` seizures, 184 contacts, 1 kHz, common-average referenced, window
 [-20, +10] s around the `SZ nP` mark. Fragility per Li et al.: 250 ms window,
-125 ms step. **R² median 0.841–0.998 across the 8** — the linear models the
+125 ms step. **R² median 0.816–0.998 across the 8** — the linear models the
 method rests on fit well, so the ranking is describing dynamics, not noise.
 
-Only SZ 1P and 2P carry an explicit `EEG onset` annotation, and in clip 17 that
-mark sits 3 s *before* the `SZ nP` mark. The `SZ nP` mark is therefore used as a
-uniform t = 0 and the statistic is reported across five windows; the conclusion
-does not depend on the choice.
+**Four** seizures carry an explicit electrographic onset annotation: SZ 1P
+(−3.0 s), SZ 2P (+0.9 s), SZ 3P (`EEG onset JB`, −0.2 s) and SZ 7P
+(`EEG onset - IA fast`, −2.2 s), all relative to their `SZ nP` mark. An earlier
+version of this document said only 1P and 2P did; that was
+`seizure_timing.py`'s anchored `^EEG onset$` regex refusing labels that carry a
+reviewer's initials or a localising note, not a property of the recording. The
+`SZ nP` mark is still used as a uniform t = 0 and the statistic is reported
+across five windows; the conclusion does not depend on the choice.
 
 ## Result 1 — the outcome statistic
 
 ```
-SZ1P: 184 electrodes x 239 windows, R2 median 0.941, frag range [0.000, 0.994], 2.9 min
-SZ2P: 184 electrodes x 239 windows, R2 median 0.996, frag range [0.000, 0.997], 2.9 min
-SZ3P: 184 electrodes x 239 windows, R2 median 0.887, frag range [0.000, 0.995], 2.9 min
-SZ4P: 184 electrodes x 239 windows, R2 median 0.996, frag range [0.000, 0.995], 3.9 min
-SZ5P: 184 electrodes x 239 windows, R2 median 0.841, frag range [0.000, 0.995], 3.6 min
-SZ6P: 184 electrodes x 239 windows, R2 median 0.998, frag range [0.000, 0.996], 3.8 min
-SZ7P: 184 electrodes x 239 windows, R2 median 0.998, frag range [0.000, 0.995], 3.8 min
-SZ8P: 184 electrodes x 239 windows, R2 median 0.851, frag range [0.000, 0.990], 2.9 min
-done -> data\fragility\export/frag_full
+SZ1P: 184 electrodes x 239 windows, R2 median 0.941, frag range [0.000, 0.992], 3.1 min
+SZ2P: 184 electrodes x 239 windows, R2 median 0.995, frag range [0.000, 0.999], 3.2 min
+SZ3P: 184 electrodes x 239 windows, R2 median 0.884, frag range [0.000, 0.994], 2.9 min
+SZ4P: 184 electrodes x 239 windows, R2 median 0.816, frag range [0.000, 0.993], 2.8 min
+SZ5P: 184 electrodes x 239 windows, R2 median 0.842, frag range [0.000, 0.995], 2.8 min
+SZ6P: 184 electrodes x 239 windows, R2 median 0.998, frag range [0.000, 0.998], 3.5 min
+SZ7P: 184 electrodes x 239 windows, R2 median 0.998, frag range [0.000, 0.995], 3.5 min
+SZ8P: 184 electrodes x 239 windows, R2 median 0.858, frag range [0.000, 0.993], 3.0 min
+done -> data/fragility/bellanew/frag_full
 ```
 
 SOZ = the clinically annotated onset shafts **A and I** (16 contacts). Paper
@@ -66,10 +72,10 @@ window, −10 s to the first 5% of each seizure:
 |---|---|---|---|
 | Paper, successful resections | > 1 | **+1.51** | high |
 | Paper, failed resections | ~1 | n.s. (p = 0.355) | — |
-| **Bella (8 seizures)** | **0.986** | **+0.24** | **55.5** |
+| **Bella (8 seizures)** | **0.987** | **+0.37** | **59.0** |
 
-The clinical SOZ sits at the 55th percentile of her own implant — indistinguishable
-from an arbitrary electrode. Per-seizure the sign flips (d from −0.42 to +0.67,
+The clinical SOZ sits at the 59th percentile of her own implant — indistinguishable
+from an arbitrary electrode. Per-seizure the sign flips (d from −0.43 to +0.87,
 most p > 0.05), so even the weak positive mean is not consistent.
 
 **This is the paper's surgical-failure signature, and the surgery did fail.**
@@ -77,10 +83,10 @@ most p > 0.05), so even the weak positive mean is not consistent.
 Shaft ranking, mean fragility over the paper window (20 shafts):
 
 ```
-D  0.6503     S  0.5877     P  0.5739     F  0.5692     M  0.5661
-I  0.5611  <<< clinical SOZ, 6th
+D  0.6110     P  0.5432     S  0.5354     F  0.5244     M  0.5125
+I  0.5113  <<< clinical SOZ, 6th
 ...
-A  0.5295  <<< clinical SOZ, 10th
+A  0.5069  <<< clinical SOZ, 9th
 ```
 
 ## Result 2 — where those shafts are
@@ -125,15 +131,52 @@ cavity whose nearest voxels are anterior and inferior to them.
 ## Reading
 
 The resection removed the clinically annotated SOZ — I entirely, A to its margin
-— and left the most fragile shaft 2 cm outside the cavity. That is precisely the
+— and left the most fragile shaft 2 cm outside the cavity. That *looks* like the
 failure mode the fragility method was built to detect: *a resection that missed
-the fragile region*.
+the fragile region*. Read the base-rate objection below before believing it —
+90% of the shafts are outside the cavity, so D's position is nearly what chance
+predicts. The load-bearing result is the interpretability ratio, not D.
 
 Independent support: the fragile set is broadly posterior (D −21.5, F −31.5,
 S −18.3, P −53.3) while the resection was anterior temporal. If that holds up,
 the implication is not "one missed shaft" but a posterior temporal network an
 anterior resection could not reach — the well-described "temporal plus" pattern
 behind failed temporal lobectomies.
+
+## The base-rate objection to Result 2+3
+
+**"D is outside the cavity" is close to uninformative on its own.** Only I and A
+have contacts inside the 17.3 mL cavity; the other 18 shafts do not. A method
+that must rank something first therefore lands outside the resection with
+probability ≈ 18/20 = **90% under the null**. The geometry adds almost nothing,
+and D could simply be a false positive.
+
+What this does *not* touch is the interpretability ratio, which never mentions
+D: it asks only whether the clinically annotated SOZ separates from its
+complement, and the answer (0.987, d +0.37, 59th percentile) is the paper's
+failure signature either way.
+
+Points for D being a false positive:
+
+- the mean-fragility spread is narrow — D leads P by 12%, and P (precuneus) and
+  S (postcentral) are not plausibly epileptogenic here, so D sits in the same band;
+- in the Python run `X1` enters the top 10 of 6 of 8 seizures, which reads more
+  like a channel property than a generator;
+- SZ 7P's own annotation is `EEG onset - IA fast` — the reviewers named **I and
+  A**, not D.
+
+Points against, all weak and none from SEEG:
+
+- the 2022 Ichilov scalp study marks one seizure `p8 onset` (right posterior);
+- the **post**-resection May 2024 scalp study logs `IS R POST TEMP` twice and
+  `IS R P`. Different modality, years apart, no shared processing — but three
+  technologist annotations in a study with no recorded seizure, and "posterior
+  temporal" from scalp is a large region.
+
+**Open test, cheap once `contact_anatomy.csv` exists:** permute the shaft
+ranking and ask how often the top shaft sits ≥17 mm from the cavity. Until that
+number exists, "the resection missed the fragile region" is a hypothesis, not a
+result.
 
 ## What this does not establish
 
@@ -143,12 +186,18 @@ behind failed temporal lobectomies.
   success/failure distributions, not its model. Weaker than running it.
 - **Cohort mismatch.** Their patients averaged ~160 electrodes and were mostly
   older; Bella was 4. Fragility is unvalidated at that age.
-- **Half the seizures have a near-saturated map.** In SZ2P/4P/6P/7P both SOZ and
-  SOZC 90th percentiles sit at 0.85–0.89, so those maps barely discriminate
-  anything whatever set is chosen. The contrast lives in SZ1P/3P/5P/8P.
+- **Three seizures have a near-saturated map.** In SZ2P/6P/7P both SOZ and SOZC
+  90th percentiles sit at 0.82–0.88, so those maps barely discriminate anything
+  whatever set is chosen. The contrast lives in SZ1P/3P/4P/5P/8P.
+- **SZ 2P is amplifier-clipped across most of the implant.**
+  `ei.find_saturated_channels` flags **152 of 184 contacts**, i.e. the recording
+  itself is pinned at the rail, not just the fragility map. Fragility and EI over
+  clipped signal describe the amplifier. SZ 2P should probably be excluded
+  outright; it is retained here only so the 8-seizure set matches the earlier
+  analysis.
 - **D's lead is consistent but modest.** Top-N voting and mean fragility both
   rank D first, which is real convergence, but the mean-fragility spread is
-  narrow (0.65 → 0.46): D leads S by ~10%, not the ~2.5× voting suggested.
+  narrow (0.61 → 0.42): D leads P by ~12%, not the ~2.2× voting suggested.
 - **S (postcentral) and P (precuneus) ranking high is not obviously
   epileptogenic** and may reflect electrode-specific signal properties.
 - **Brain shift.** Rigid registration ignores post-resection collapse, so
@@ -158,10 +207,13 @@ behind failed temporal lobectomies.
 ## Reproducing
 
 ```bash
-python v2/tools/fragility/seizure_timing.py datasets/Bella -o data/fragility/timing.csv
-python v2/tools/fragility/export_edf.py --manifest data/fragility/seizures.csv -o data/fragility/export
-Rscript v2/tools/fragility/frag_compute.R data/fragility/export --parallel
-Rscript v2/tools/fragility/frag_outcome.R data/fragility/export --soz=A,I
+python v2/tools/fragility/seizure_timing.py datasets/BellaNew -o data/fragility/timing.csv
+python v2/tools/fragility/export_edf.py --manifest data/fragility/bellanew_seizures.csv -o data/fragility/bellanew
+Rscript v2/tools/fragility/frag_compute.R data/fragility/bellanew
+Rscript v2/tools/fragility/frag_outcome.R data/fragility/bellanew --soz=A,I
+
+# Python port vs EZFragility on the same windows; exits nonzero on disagreement.
+python v2/tools/verify_fragility_bella.py --ref data/fragility/bellanew/ezfragility_shafts.txt
 
 python v2/tools/fragility/contact_anatomy.py "datasets/Bella Seeg.mrb" -o data/fragility/contact_anatomy.csv
 python v2/tools/fragility/resection_overlap.py --postop data/fragility/postop/5_sag_t1_mprage_iso.nii.gz \

@@ -105,6 +105,8 @@ celerybeat.pid
 # Environments
 .env
 .venv
+# R library holding the local EZFragility build (see v2/tools/fragility/README.md)
+.Rlib/
 env/
 venv/
 ENV/
