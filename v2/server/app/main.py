@@ -8,8 +8,8 @@ from app.routers import (
     edf,
     electrodes,
     freebrowse,
-    ictal,
-    interictal,
+    ei,
+    hfo,
     jobs,
     subject_io,
     recon,
@@ -41,9 +41,9 @@ app.include_router(subjects.router)
 app.include_router(jobs.router)
 app.include_router(recon.router)
 app.include_router(electrodes.router)
-app.include_router(ictal.router)
+app.include_router(ei.router)
 app.include_router(analysis.router)
-app.include_router(interictal.router)
+app.include_router(hfo.router)
 app.include_router(soz.router)
 app.include_router(surface.router)
 app.include_router(edf.router)

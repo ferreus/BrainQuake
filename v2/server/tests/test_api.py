@@ -1936,7 +1936,7 @@ def test_ei_request_rejects_invalid_windows():
         "baseline_start": 0.0, "baseline_end": 1.0,
         "target_start": 2.0, "target_end": 3.0,
     }
-    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json=base)
+    r = client.post(f"/subjects/{sid}/analysis/ei/{artifact_id}/run", json=base)
     assert r.status_code == 200
 
     for bad in (
@@ -1947,7 +1947,7 @@ def test_ei_request_rejects_invalid_windows():
         {"band_low": 400.0, "band_high": 100.0},  # inverted band
         {"mains_freq": -1.0},
     ):
-        r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json={**base, **bad})
+        r = client.post(f"/subjects/{sid}/analysis/ei/{artifact_id}/run", json={**base, **bad})
         assert r.status_code == 422, f"expected 422 for {bad}, got {r.status_code}"
 
 
@@ -1957,7 +1957,7 @@ def _run_ei_and_load(sid, artifact_id, **overrides):
         "target_start": 4.0, "target_end": 9.0,
         **overrides,
     }
-    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json=body)
+    r = client.post(f"/subjects/{sid}/analysis/ei/{artifact_id}/run", json=body)
     assert r.status_code == 200, r.text
     job_id = r.json()["id"]
     run_job(job_id)
@@ -1977,13 +1977,13 @@ def test_ei_honours_remain_chns():
 
     _, state = _run_ei_and_load(sid, artifact_id, reference="car")
     assert state == "finished"
-    full = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
+    full = client.get(f"/subjects/{sid}/analysis/ei/{artifact_id}/result").json()
     assert full["chn_names"] == ch_names
 
     keep = ch_names[:2]
     _, state = _run_ei_and_load(sid, artifact_id, reference="car", remain_chns=keep)
     assert state == "finished"
-    subset = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
+    subset = client.get(f"/subjects/{sid}/analysis/ei/{artifact_id}/result").json()
     assert subset["chn_names"] == keep, "the result must only contain the kept channels"
 
 
@@ -1995,7 +1995,7 @@ def test_ei_result_reports_the_windows_it_was_computed_over():
     _, state = _run_ei_and_load(sid, artifact_id, band_low=2.0, band_high=200.0)
     assert state == "finished"
 
-    params = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()["params"]
+    params = client.get(f"/subjects/{sid}/analysis/ei/{artifact_id}/result").json()["params"]
     assert (params["target_start"], params["target_end"]) == (4.0, 9.0)
     assert (params["baseline_start"], params["baseline_end"]) == (0.0, 3.0)
     assert (params["band_low"], params["band_high"]) == (2.0, 200.0)
@@ -2047,7 +2047,7 @@ def test_delete_edf_recording_removes_derived_results():
 
 def test_delete_edf_refused_while_a_job_is_active():
     sid, artifact_id, _, _ = _create_subject_with_edf("EdfDeleteBusy")
-    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json={
+    r = client.post(f"/subjects/{sid}/analysis/ei/{artifact_id}/run", json={
         "baseline_start": 0.0, "baseline_end": 3.0, "target_start": 4.0, "target_end": 9.0,
     })
     assert r.status_code == 200  # queued, deliberately never run
@@ -2083,7 +2083,7 @@ def test_hfo_request_rejects_invalid_window_and_accepts_none():
     sid, artifact_id, _, _ = _create_subject_with_edf("HfoValidateTest")
 
     # blank window == whole recording, the legacy behavior
-    r = client.post(f"/subjects/{sid}/interictal/{artifact_id}/hfo", json={})
+    r = client.post(f"/subjects/{sid}/analysis/hfo/{artifact_id}/run", json={})
     assert r.status_code == 200
     job_id = r.json()["id"]
     db = SessionLocal()
@@ -2102,7 +2102,7 @@ def test_hfo_request_rejects_invalid_window_and_accepts_none():
         {"mains_freq": -1.0},
         {"band_low": 250.0, "band_high": 80.0},
     ):
-        r = client.post(f"/subjects/{sid}/interictal/{artifact_id}/hfo", json=bad)
+        r = client.post(f"/subjects/{sid}/analysis/hfo/{artifact_id}/run", json=bad)
         assert r.status_code == 422, f"expected 422 for {bad}, got {r.status_code}"
 
 
@@ -2164,7 +2164,7 @@ def test_ei_compute_saves_recording_params():
         "target_start": 4.0, "target_end": 9.0,
         "band_low": 2.0, "band_high": 200.0, "mains_freq": 60.0,
     }
-    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json=body)
+    r = client.post(f"/subjects/{sid}/analysis/ei/{artifact_id}/run", json=body)
     assert r.status_code == 200
 
     params = client.get(f"/subjects/{sid}/edf/{artifact_id}/params").json()
@@ -2177,7 +2177,7 @@ def test_ei_compute_saves_recording_params():
 def test_hfo_compute_saves_recording_params():
     sid, artifact_id, _, _ = _create_subject_with_edf("HfoSavesParams")
     body = {"band_low": 80.0, "band_high": 250.0, "mains_freq": 60.0, "rel_thresh": 3.0}
-    r = client.post(f"/subjects/{sid}/interictal/{artifact_id}/hfo", json=body)
+    r = client.post(f"/subjects/{sid}/analysis/hfo/{artifact_id}/run", json=body)
     assert r.status_code == 200
 
     params = client.get(f"/subjects/{sid}/edf/{artifact_id}/params").json()
@@ -2189,7 +2189,7 @@ def test_hfo_compute_saves_recording_params():
 
 def test_delete_edf_recording_removes_recording_params():
     sid, artifact_id, _, _ = _create_subject_with_edf("RecParamsDeleteTest")
-    r = client.post(f"/subjects/{sid}/ictal/{artifact_id}/ei", json={
+    r = client.post(f"/subjects/{sid}/analysis/ei/{artifact_id}/run", json={
         "baseline_start": 0.0, "baseline_end": 3.0, "target_start": 4.0, "target_end": 9.0,
     })
     assert r.status_code == 200
@@ -2226,7 +2226,7 @@ def test_ei_defaults_to_bipolar_and_reports_pair_names():
     params = client.get(f"/jobs/{job_id}").json()["params_json"]
     assert params["reference"] == "bipolar"
 
-    result = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
+    result = client.get(f"/subjects/{sid}/analysis/ei/{artifact_id}/result").json()
     assert result["diagnostics"]["reference"] == "bipolar"
     # CH1..CH4 -> three derivations, and the analysed names are pairs.
     assert result["chn_names"] == ["CH1-CH2", "CH2-CH3", "CH3-CH4"]
@@ -2261,7 +2261,7 @@ def test_ei_job_saved_before_reference_existed_replays_as_car():
 
     run_job(job_id)
     assert client.get(f"/jobs/{job_id}").json()["state"] == "finished"
-    result = client.get(f"/subjects/{sid}/ictal/{artifact_id}/ei-result").json()
+    result = client.get(f"/subjects/{sid}/analysis/ei/{artifact_id}/result").json()
     assert result["diagnostics"]["reference"] == "car"
     assert result["chn_names"] == ch_names
 
@@ -2269,7 +2269,7 @@ def test_ei_job_saved_before_reference_existed_replays_as_car():
 def test_bipolar_preview_lists_the_derivations_that_would_be_built():
     sid, artifact_id, ch_names, _ = _create_subject_with_edf("EiBipolarPreview")
 
-    r = client.get(f"/subjects/{sid}/ictal/{artifact_id}/bipolar-preview")
+    r = client.get(f"/subjects/{sid}/analysis/ei/{artifact_id}/bipolar-preview")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["n_contacts"] == len(ch_names)
@@ -2286,7 +2286,7 @@ def test_bipolar_preview_reflects_excluded_channels():
 
     keep = [ch_names[0], ch_names[1], ch_names[3]]  # CH1, CH2, CH4 -- CH3 dropped
     r = client.get(
-        f"/subjects/{sid}/ictal/{artifact_id}/bipolar-preview",
+        f"/subjects/{sid}/analysis/ei/{artifact_id}/bipolar-preview",
         params=[("remain_chns", c) for c in keep],
     )
     assert r.status_code == 200, r.text
@@ -2738,3 +2738,97 @@ def test_deleting_a_recording_removes_every_seizures_result():
 
     assert client.delete(f"/subjects/{sid}/edf/{artifact_id}").status_code == 200
     assert not any(os.path.exists(p) for p in paths), "every seizure's result must go"
+
+
+def test_every_process_result_is_served_by_the_generic_endpoint():
+    """ei.py and hfo.py used to declare literal /analysis/{ei,hfo}/{id}/result
+    routes that collide with analysis.py's generic one. Starlette matches in
+    registration order, so which handler answered depended on the order of the
+    include_router calls in main.py -- EI got ei.py's, HFO got the generic one,
+    and hfo.py's was dead code. Both literals are gone; this pins that."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("ResultRouting")
+    for process in ("ei", "hfo", "fragility"):
+        r = client.get(f"/subjects/{sid}/analysis/{process}/{artifact_id}/result")
+        assert r.status_code == 404, process
+        # the generic handler's wording; the deleted per-process ones said
+        # "No finished EI computation found for this edf"
+        assert r.json()["detail"] == f"no finished {process} result for this recording"
+
+
+def test_hfo_result_round_trips_through_the_generic_endpoint():
+    """The HFO result endpoint had no GET test at all, which is why the route
+    collision above went unnoticed."""
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("HfoResultShape")
+    r = client.post(f"/subjects/{sid}/analysis/hfo/{artifact_id}/run",
+                    json={"band_low": 80.0, "band_high": 250.0})
+    assert r.status_code == 200, r.text
+    run_job(r.json()["id"])
+
+    r = client.get(f"/subjects/{sid}/analysis/hfo/{artifact_id}/result")
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert set(ch_names) >= set(result["chn_names"])
+    assert len(result["event_counts"]) == len(result["chn_names"])
+    assert len(result["event_times"]) == len(result["chn_names"])
+    # the generic endpoint attaches the job's params; the deleted one did not
+    assert result["params"]["band_high"] == 250.0
+
+
+def test_aggregate_ignores_channels_with_an_undefined_score():
+    """A channel with no usable baseline scores NaN. NaN is not None, so it
+    survived the old `is not None` filter and then sorted unpredictably --
+    stealing a top-N vote *and* displacing a real contact out of one."""
+    contacts = [f"A{i}" for i in range(1, 5)] + [f"B{i}" for i in range(1, 5)]
+    r = client.post("/subjects", json={"name": "AggregateNaN"})
+    sid = r.json()["id"]
+    edf_path = "/tmp/AggregateNaN.edf"
+    _make_synthetic_edf(edf_path, ch_names=contacts)
+    with open(edf_path, "rb") as f:
+        r = client.post(f"/subjects/{sid}/upload?file_type=edf",
+                        files={"file": ("nan.edf", f.read(), "application/octet-stream")})
+    os.remove(edf_path)
+    artifact_id = r.json()["id"]
+
+    nan = float("nan")
+    # Without the fix the two NaN contacts take 2 of the 3 votes and shaft B --
+    # whose only real score is 0.5 -- loses its vote to a dead A contact.
+    _register_fragility_result(sid, artifact_id, {
+        "A1": 0.9, "A2": nan, "A3": nan, "A4": 0.1,
+        "B1": 0.8, "B2": 0.5, "B3": 0.2, "B4": 0.05,
+    })
+
+    agg = client.get(f"/subjects/{sid}/analysis/fragility/aggregate?top_n=3").json()
+    by_shaft = {s["shaft"]: s for s in agg["shafts"]}
+    # top-3 of the finite scores are A1 (0.9), B1 (0.8), B2 (0.5)
+    assert by_shaft["A"]["votes"] == 1, "a NaN contact must not cast a vote"
+    assert by_shaft["B"]["votes"] == 2, "a real contact must not be displaced by NaN"
+    assert agg["runs"][0]["n_channels"] == 6, "NaN channels are excluded entirely"
+
+
+def test_batch_rejects_two_runs_that_resolve_to_the_same_result():
+    """Marks that differ but produce the same run_key would write the same npz,
+    so the second silently overwrote the first. Clip 21 really does carry
+    'EEG onset JB' and 'SZ 3P' at the same timestamp. The old check compared
+    whole `marks` dicts, so the differing label let both through."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("SameRunKey")
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json={
+        "params": {"pre": 1.0, "post": 1.0},
+        "runs": [
+            {"edf_artifact_id": artifact_id, "marks": {"onset_s": 5.0, "onset_label": "EEG onset JB"}},
+            {"edf_artifact_id": artifact_id, "marks": {"onset_s": 5.0, "onset_label": "SZ 3P"}},
+        ],
+    })
+    assert r.status_code == 422, r.text
+    assert "twice" in str(r.json()["detail"])
+
+    # different onsets on the same recording remain legal -- that is the whole
+    # point of keying runs on (recording, onset)
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json={
+        "params": {"pre": 1.0, "post": 1.0},
+        "runs": [
+            {"edf_artifact_id": artifact_id, "marks": {"onset_s": 3.0, "onset_label": "SZ 1P"}},
+            {"edf_artifact_id": artifact_id, "marks": {"onset_s": 7.0, "onset_label": "SZ 2P"}},
+        ],
+    })
+    assert r.status_code == 200, r.text
+    assert len(r.json()) == 2

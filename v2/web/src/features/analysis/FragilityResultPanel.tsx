@@ -17,7 +17,11 @@ export function FragilityResultPanel({ subjectId, edfArtifactId }: ProcessPanePr
   // aggregate rather than adding a per-recording runs endpoint.
   const { data: aggregate } = useAnalysisAggregate(subjectId, "fragility", 20);
   const runsHere = (aggregate?.runs ?? []).filter((r) => r.edf_artifact_id === edfArtifactId);
-  const activeKey = runKey && runsHere.some((r) => r.run_key === runKey) ? runKey : undefined;
+  // Falls back to the first listed run, not to undefined: undefined makes the
+  // server pick the *newest* run while the Select still displays runsHere[0],
+  // so the heatmap and the label would describe different seizures.
+  const activeKey =
+    runKey && runsHere.some((r) => r.run_key === runKey) ? runKey : runsHere[0]?.run_key;
 
   const { data, isLoading, isError } = useFragilityResult(subjectId, edfArtifactId, activeKey, true);
   const scheme = useComputedColorScheme("light");
@@ -48,7 +52,7 @@ export function FragilityResultPanel({ subjectId, edfArtifactId }: ProcessPanePr
             mb="xs"
             label="Seizure"
             allowDeselect={false}
-            value={activeKey ?? runsHere[0].run_key}
+            value={activeKey}
             onChange={(v) => setRunKey(v ?? undefined)}
             data={runsHere.map((r) => ({
               value: r.run_key,

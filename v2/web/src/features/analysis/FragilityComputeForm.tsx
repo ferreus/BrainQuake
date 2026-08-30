@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Checkbox, Group, NumberInput, Select, Stack, Text, TextInput, UnstyledButton } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
@@ -6,7 +6,9 @@ import { ApiError } from "../../api/client";
 import { getRecordingParams } from "../../api/endpoints";
 import { useRunAnalysis } from "../../api/queries/useAnalysis";
 import { useArtifacts } from "../../api/queries/useElectrodes";
+import { useJobs } from "../../api/queries/useJobs";
 import { recordingParamsQueryKey } from "../../api/queries/useRecordingParams";
+import { TERMINAL_JOB_STATES } from "../../api/types";
 import { edfDisplayName } from "../../lib/edfName";
 import type { ProcessPaneProps } from "./processes";
 
@@ -115,6 +117,37 @@ export function FragilityComputeForm({ subjectId, edfArtifactId, remainChannels 
 
   const runAnalysis = useRunAnalysis(subjectId, "fragility");
   const queryClient = useQueryClient();
+
+  // A batch is N jobs, so there is no single id to hand useJobPolling. useJobs
+  // already polls every 3s for the Jobs drawer; ride that instead of adding a
+  // variable number of hooks. Without this nothing refreshed the aggregate once
+  // a run finished, and a failed run produced no notification at all.
+  const [batchJobIds, setBatchJobIds] = useState<number[]>([]);
+  const { data: allJobs } = useJobs({ subjectId });
+  const settledCount = useRef(0);
+  useEffect(() => {
+    if (batchJobIds.length === 0 || !allJobs) return;
+    const mine = allJobs.filter((j) => batchJobIds.includes(j.id));
+    const settled = mine.filter((j) => TERMINAL_JOB_STATES.has(j.state));
+    if (settled.length === settledCount.current) return;
+    settledCount.current = settled.length;
+
+    // Refresh after every run, so the ranking really does fill in as they land.
+    queryClient.invalidateQueries({ queryKey: ["analysis-aggregate", subjectId] });
+    queryClient.invalidateQueries({ queryKey: ["fragility-result", subjectId] });
+
+    if (settled.length < batchJobIds.length) return;
+    const failed = settled.filter((j) => j.state === "failed");
+    setBatchJobIds([]);
+    settledCount.current = 0;
+    if (failed.length > 0) {
+      notifications.show({
+        color: "red",
+        title: `${failed.length} of ${settled.length} fragility run${settled.length === 1 ? "" : "s"} failed`,
+        message: failed[0].progress_message ?? "See the Jobs drawer for the log.",
+      });
+    }
+  }, [allJobs, batchJobIds, queryClient, subjectId]);
   const ready = runs.length > 0 && pre >= 0 && post > 0 && evalEnd > 0;
 
   function toggle(key: string, on: boolean) {
@@ -140,6 +173,12 @@ export function FragilityComputeForm({ subjectId, edfArtifactId, remainChannels 
         params: {
           pre, post, eval_end: evalEnd, method,
           win_s: DEFAULTS.winS, step_s: DEFAULTS.stepS,
+          // Deliberately one channel set for the whole batch, taken from the
+          // viewed recording: pooling votes across seizures is only meaningful
+          // if every run analysed the same montage (the CAR is over exactly
+          // these channels, and shaft sizes must match). A recording that lacks
+          // one of these names fails its job rather than being analysed on a
+          // different montage -- surfaced by the batch watcher above.
           remain_chns: remainChannels,
         },
         runs: runs.map((r) => ({
@@ -147,12 +186,13 @@ export function FragilityComputeForm({ subjectId, edfArtifactId, remainChannels 
           marks: { onset_s: r.onset, onset_label: r.label },
         })),
       });
+      setBatchJobIds(jobs.map((j) => j.id));
+      settledCount.current = 0;
       notifications.show({
         color: "blue",
         title: `Queued ${jobs.length} fragility run${jobs.length === 1 ? "" : "s"}`,
         message: "They run one at a time; the shaft ranking updates as each finishes.",
       });
-      queryClient.invalidateQueries({ queryKey: ["analysis-aggregate", subjectId] });
     } catch (err) {
       notifications.show({
         color: "red",

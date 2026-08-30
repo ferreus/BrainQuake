@@ -4,10 +4,10 @@ One process applied to a set of recordings. EI, HFO and fragility differ only in
 their request model, their result artifact and how per-channel scores are read out
 of it -- that is the whole of PROCESSES below. Adding a method is one entry.
 
-The per-process POST/result endpoints in ictal.py and interictal.py stay as they
-are; this router adds the batch run and the cross-recording aggregate.
+ei.py and hfo.py keep their own POST /run and EI's bipolar-preview; every
+process's result and the cross-recording aggregate are served here.
 """
-import json
+import math
 import os
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -20,8 +20,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Artifact, Job, Subject
-from app.routers.ictal import EiRequest
-from app.routers.interictal import HfoRequest
+from app.routers.ei import EiRequest
+from app.routers.hfo import HfoRequest
 from app.routers.json_safe import json_safe
 from app.schemas import JobResponse
 from app.services import fragility as fragility_service
@@ -119,11 +119,9 @@ class RunRequest(BaseModel):
     def _check(self):
         if not self.runs:
             raise ValueError("runs must not be empty")
-        # Identical (recording, marks) twice is a double-submit; the same
-        # recording with different marks is several seizures in one clip.
-        seen = {(r.edf_artifact_id, json.dumps(r.marks, sort_keys=True)) for r in self.runs}
-        if len(seen) != len(self.runs):
-            raise ValueError("runs repeats the same recording and marks")
+        # Duplicates are checked in the endpoint, on the process's run_key rather
+        # than on `marks`: two marks can differ (a different onset_label) and
+        # still name the same run, which would collide on one result file.
         return self
 
 
@@ -161,6 +159,7 @@ def run_analysis(subject_id: int, process: str, request: RunRequest, db: Session
     spec = _get_process_or_404(process)
 
     jobs = []
+    seen_runs: set[tuple[int, str]] = set()
     for item in request.runs:
         artifact = db.query(Artifact).filter(
             Artifact.id == item.edf_artifact_id, Artifact.subject_id == subject_id
@@ -188,6 +187,18 @@ def run_analysis(subject_id: int, process: str, request: RunRequest, db: Session
             ) from exc
 
         key = _run_key(spec, validated.model_dump())
+        # Within this batch: db.add'ed rows are invisible to the query below
+        # (SessionLocal is autoflush=False), so track the keys ourselves.
+        if (item.edf_artifact_id, key) in seen_runs:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"runs names edf artifact {item.edf_artifact_id} twice"
+                    + (f" at {key}" if key else "")
+                ),
+            )
+        seen_runs.add((item.edf_artifact_id, key))
+
         if any(
             (j.params_json or {}).get("edf_artifact_id") == item.edf_artifact_id
             and _run_key(spec, j.params_json or {}) == key
@@ -266,7 +277,7 @@ def get_analysis_result(subject_id: int, process: str, edf_artifact_id: int,
     if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail="result file is missing from disk")
     result = json_safe(spec.load(abs_path))
-    result["params"] = job.params_json
+    result["params"] = job.params_json or {}
     return result
 
 
@@ -293,7 +304,13 @@ def get_analysis_aggregate(subject_id: int, process: str,
         if not os.path.exists(abs_path):
             continue
         loaded = spec.load(abs_path)
-        scores = {k: v for k, v in spec.scores(loaded).items() if v is not None}
+        # isfinite, not "is not None": a channel with no usable baseline scores
+        # NaN, which survives a None check and then sorts unpredictably -- it both
+        # steals a top-N vote and displaces a real contact from one.
+        scores = {
+            k: float(v) for k, v in spec.scores(loaded).items()
+            if v is not None and math.isfinite(v)
+        }
 
         for name in scores:
             parsed = parse_contact(name)

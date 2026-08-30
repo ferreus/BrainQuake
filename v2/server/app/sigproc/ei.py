@@ -39,7 +39,7 @@ DEGENERATE_FRACTION = 0.2
 # Ported near-verbatim from client_ictal.py's module-scope compute_* functions
 # (git tag legacy-final; already pure numpy/scipy, no Qt/GUI dependency). The interactive
 # baseline/target range-select and band-filter text fields become explicit
-# request parameters (see routers/ictal.py) instead of mouse clicks.
+# request parameters (see routers/ei.py) instead of mouse clicks.
 
 
 def _moving_sum(data, window):

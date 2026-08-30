@@ -280,5 +280,11 @@ def load_hfo_result(path):
     return {
         "chn_names": [str(n) for n in data['file_chnsNames']],
         "event_counts": data['file_highEventsCount'].tolist(),
-        "event_times": [list(x) for x in data['file_highEvents_times']],
+        # Plain floats, not the object-dtype arrays np.savez round-trips: FastAPI's
+        # encoder cannot serialise those and the result endpoint 500s on every
+        # real result (the web panel then just says "not computed yet").
+        "event_times": [
+            [[float(a), float(b)] for a, b in np.asarray(x, dtype=float).reshape(-1, 2)]
+            for x in data['file_highEvents_times']
+        ],
     }

@@ -143,7 +143,7 @@ for (const serverTc of [0, 0.003, 0.1, 2]) {
 const previewQs = new URLSearchParams();
 for (const c of contacts) previewQs.append("remain_chns", c);
 const preview = await (
-  await fetch(`${baseUrl}/subjects/${subjectId}/ictal/${edfId}/bipolar-preview?${previewQs}`)
+  await fetch(`${baseUrl}/subjects/${subjectId}/analysis/ei/${edfId}/bipolar-preview?${previewQs}`)
 ).json();
 if (preview.pairs?.length) {
   cases.push({

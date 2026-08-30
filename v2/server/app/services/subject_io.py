@@ -3,7 +3,7 @@
 Export bundles everything a subject owns on disk into a single portable zip:
 the FreeSurfer subject directory (``SUBJECTS_DIR/<name>``) and the raw-upload +
 derived-results tree (``DATA_ROOT/recv/<name>`` -- T1/CT/EDF uploads plus the
-EIdets/HFOdets/fslresults output the ictal/interictal/ct_register services
+EIdets/HFOdets/fslresults output the ei/hfo/ct_register services
 write there). A ``manifest.json`` at the archive root records the subject's
 metadata and its Artifact rows so import can re-create them.
 

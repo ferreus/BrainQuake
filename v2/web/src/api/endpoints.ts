@@ -423,7 +423,7 @@ export type EiReference = "car" | "bipolar";
 export type EdfDisplayReference = EiReference | "none";
 
 export function computeEi(subjectId: number, edfArtifactId: number, params: EiComputeParams): Promise<Job> {
-  return apiPost<Job>(`/subjects/${subjectId}/ictal/${edfArtifactId}/ei`, params);
+  return apiPost<Job>(`/subjects/${subjectId}/analysis/ei/${edfArtifactId}/run`, params);
 }
 
 export interface BipolarPreview {
@@ -447,7 +447,7 @@ export function getBipolarPreview(
   for (const c of remainChns ?? []) qs.append("remain_chns", c);
   const suffix = qs.toString() ? `?${qs}` : "";
   return apiGet<BipolarPreview>(
-    `/subjects/${subjectId}/ictal/${edfArtifactId}/bipolar-preview${suffix}`,
+    `/subjects/${subjectId}/analysis/ei/${edfArtifactId}/bipolar-preview${suffix}`,
   );
 }
 
@@ -475,7 +475,7 @@ const RETRY_DISPATCH: Record<string, RetryFn> = {
   },
   hfo_compute: (subjectId, p) => {
     const { edf_artifact_id, ...params } = p;
-    return apiPost<Job>(`/subjects/${subjectId}/interictal/${edf_artifact_id}/hfo`, params);
+    return apiPost<Job>(`/subjects/${subjectId}/analysis/hfo/${edf_artifact_id}/run`, params);
   },
   soz_fuse: (subjectId, p) => fuseSoz(subjectId, p as SozFuseParams),
   fragility_compute: (subjectId, p) => {
@@ -539,7 +539,7 @@ export interface EiResult {
 }
 
 export function getEiResult(subjectId: number, edfArtifactId: number): Promise<EiResult> {
-  return apiGet<EiResult>(`/subjects/${subjectId}/ictal/${edfArtifactId}/ei-result`);
+  return apiGet<EiResult>(`/subjects/${subjectId}/analysis/ei/${edfArtifactId}/result`);
 }
 
 export interface HfoComputeParams {
@@ -561,7 +561,7 @@ export interface HfoComputeParams {
 }
 
 export function computeHfo(subjectId: number, edfArtifactId: number, params: HfoComputeParams): Promise<Job> {
-  return apiPost<Job>(`/subjects/${subjectId}/interictal/${edfArtifactId}/hfo`, params);
+  return apiPost<Job>(`/subjects/${subjectId}/analysis/hfo/${edfArtifactId}/run`, params);
 }
 
 export interface HfoResult {
@@ -572,7 +572,7 @@ export interface HfoResult {
 }
 
 export function getHfoResult(subjectId: number, edfArtifactId: number): Promise<HfoResult> {
-  return apiGet<HfoResult>(`/subjects/${subjectId}/interictal/${edfArtifactId}/hfo-result`);
+  return apiGet<HfoResult>(`/subjects/${subjectId}/analysis/hfo/${edfArtifactId}/result`);
 }
 
 export interface SozFuseParams {
