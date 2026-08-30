@@ -10,7 +10,9 @@ Backends:
 Zero dependencies on FastAPI, SQLAlchemy, or Pydantic.
 """
 
+import json
 import math
+import os
 import warnings
 from typing import Any
 import numpy as np
@@ -552,4 +554,60 @@ def compute_fragility_pipeline(
         "fs": fs,
         "win_s": win_s,
         "step_s": step_s,
+    }
+
+
+def save_fragility_result(edf_filename, result, suffix=""):
+    """Persist a fragility result next to the edf in a FRAGdets/ folder, mirroring
+    where ei.py saves EIdets/ and hfo.py HFOdets/.
+
+    `result` is a `compute_fragility_pipeline` return value. Scalars go in as one
+    JSON blob rather than separate arrays so adding a field needs no reader change.
+
+    `suffix` distinguishes runs on the same recording: one clip can hold several
+    seizures, and each gets its own 30s window, so a single `<stem>_frag.npz`
+    would let the second overwrite the first.
+    """
+    ch_names = list(result["channel_scores"])
+    duplicates = {n for n in ch_names if ch_names.count(n) > 1}
+    if duplicates:
+        raise ValueError(f"fragility result: duplicate channel names {sorted(duplicates)}")
+    results_dir = os.path.join(os.path.dirname(os.path.abspath(edf_filename)), "FRAGdets")
+    os.makedirs(results_dir, exist_ok=True)
+    file_pre_ext = os.path.basename(edf_filename).split(".")[0]
+    out_path = os.path.join(results_dir, file_pre_ext + "_frag" + suffix + ".npz")
+    meta = {
+        "median_r2": float(result["median_r2"]),
+        "method": result["method"],
+        "highpass_hz": result["highpass_hz"],
+        "fs": float(result["fs"]),
+        "win_s": float(result["win_s"]),
+        "step_s": float(result["step_s"]),
+    }
+    np.savez(
+        out_path,
+        fragility_matrix=np.asarray(result["fragility_matrix"], dtype=float),
+        r2_per_window=np.asarray(result["r2_per_window"], dtype=float),
+        start_times=np.asarray(result["start_times"], dtype=float),
+        chn_names=np.array(ch_names),
+        channel_scores=np.array([result["channel_scores"][n] for n in ch_names], dtype=float),
+        meta=np.array(json.dumps(meta)),
+    )
+    return out_path
+
+
+def load_fragility_result(path):
+    data = np.load(path, allow_pickle=True)
+    meta = json.loads(str(data["meta"])) if "meta" in data.files else {}
+    chn_names = [str(n) for n in data["chn_names"]]
+    scores = data["channel_scores"].tolist()
+    channel_scores = dict(zip(chn_names, scores))
+    return {
+        "chn_names": chn_names,
+        "channel_scores": channel_scores,
+        "ranked_channels": sorted(channel_scores.items(), key=lambda kv: kv[1], reverse=True),
+        "fragility_matrix": data["fragility_matrix"].tolist(),
+        "r2_per_window": data["r2_per_window"].tolist(),
+        "start_times": data["start_times"].tolist(),
+        **meta,
     }

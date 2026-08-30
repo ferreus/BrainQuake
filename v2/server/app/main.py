@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import Base, engine
 from app.routers import (
+    analysis,
     artifacts,
     edf,
     electrodes,
@@ -41,6 +42,7 @@ app.include_router(jobs.router)
 app.include_router(recon.router)
 app.include_router(electrodes.router)
 app.include_router(ictal.router)
+app.include_router(analysis.router)
 app.include_router(interictal.router)
 app.include_router(soz.router)
 app.include_router(surface.router)

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Group, NumberInput, Paper, Text, Title } from "@mantine/core";
+import { Button, Group, NumberInput, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
@@ -140,10 +140,7 @@ export function HfoComputeForm({
   const running = job ? !TERMINAL_JOB_STATES.has(job.state) : false;
 
   return (
-    <Paper withBorder p="sm" w={300}>
-      <Title order={6} mb="xs">
-        Compute HFO (High-frequency events)
-      </Title>
+    <>
       <Text size="xs" c="dimmed" mb="xs">
         {remainChannels.length} channels. Band seeded from the display filter; editable here.
       </Text>
@@ -232,6 +229,6 @@ export function HfoComputeForm({
           {job.progress_message}
         </Text>
       )}
-    </Paper>
+    </>
   );
 }

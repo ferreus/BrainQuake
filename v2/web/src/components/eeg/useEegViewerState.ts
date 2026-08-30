@@ -1,8 +1,6 @@
 import { useReducer } from "react";
 import type { Dispatch } from "react";
 
-export type EegMode = "ictal" | "interictal";
-
 export interface EegViewerState {
   dispChansNum: number;
   dispChansStart: number;
@@ -93,15 +91,21 @@ function reducer(state: EegViewerState, action: EegViewerAction): EegViewerState
   }
 }
 
+export interface EegViewerDefaults {
+  filterBandLow: number;
+  filterBandHigh: number;
+}
+
 /**
  * Shared pan/zoom/gain/channel-window/filter state for the EEG canvas --
  * directly reproduces the legacy client_ictal.py/client_inter.py interaction
  * model (disp_chans_num, disp_wave_mul, disp_time_win, etc.), which was
  * near-identical duplicated code in both files; this is the single copy.
- * Mode only changes the initial filter band default (60-140Hz ictal vs
- * 80-250Hz interictal, matching the legacy tabs' own defaults).
+ * The caller supplies the initial filter band (the analysis process declares
+ * it), which is all the old mode: "ictal" | "interictal" argument selected --
+ * 60-140Hz vs 80-250Hz, matching the legacy tabs' own defaults.
  */
-export function useEegViewerState(mode: EegMode): {
+export function useEegViewerState(defaults: EegViewerDefaults): {
   state: EegViewerState;
   dispatch: Dispatch<EegViewerAction>;
 } {
@@ -113,8 +117,8 @@ export function useEegViewerState(mode: EegMode): {
     dispTimeStart: 0,
     excludedChannels: new Set<string>(),
     loadedEdfId: null,
-    filterBandLow: mode === "ictal" ? 60 : 80,
-    filterBandHigh: mode === "ictal" ? 140 : 250,
+    filterBandLow: defaults.filterBandLow,
+    filterBandHigh: defaults.filterBandHigh,
     filterEnabled: true,
     mainsFreq: 50,
   }));

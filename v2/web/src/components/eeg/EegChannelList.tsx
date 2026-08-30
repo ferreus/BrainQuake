@@ -39,9 +39,6 @@ export function EegChannelList({ channels, excludedChannels, onDelete, onRestore
 
   return (
     <Stack gap={4}>
-      <Text size="xs" fw={500}>
-        Channels ({remaining.length}/{channels.length})
-      </Text>
       <ScrollArea h={140}>
         <Stack gap={2}>
           {remaining.map((name) => (

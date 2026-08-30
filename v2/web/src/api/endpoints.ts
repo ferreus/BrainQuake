@@ -478,6 +478,14 @@ const RETRY_DISPATCH: Record<string, RetryFn> = {
     return apiPost<Job>(`/subjects/${subjectId}/interictal/${edf_artifact_id}/hfo`, params);
   },
   soz_fuse: (subjectId, p) => fuseSoz(subjectId, p as SozFuseParams),
+  fragility_compute: (subjectId, p) => {
+    const { edf_artifact_id, ...params } = p;
+    // Re-submitted through the batch endpoint as a one-run batch, so retry and a
+    // fresh run take the identical path.
+    return runAnalysis(subjectId, "fragility", {}, [
+      { edf_artifact_id: edf_artifact_id as number, marks: params },
+    ]).then((jobs) => jobs[0]);
+  },
 };
 
 export function retryJob(job: Job): Promise<Job> {
@@ -594,4 +602,100 @@ export interface SozResultRow {
 
 export function getSozResult(subjectId: number): Promise<SozResultRow[]> {
   return apiGet<SozResultRow[]>(`/subjects/${subjectId}/soz/result`);
+}
+
+// --- Analysis: process-driven runs -----------------------------------------
+
+export interface FragilityParams {
+  onset_s: number;
+  /** Crop and scoring windows default to run_frag.R's PRE/POST/ICTAL_END. */
+  pre?: number;
+  post?: number;
+  eval_end?: number;
+  win_s?: number;
+  step_s?: number;
+  method?: "extended" | "ezfragility";
+  highpass_hz?: number | "auto" | null;
+  remain_chns?: string[];
+  /** The mark's own text, carried through for display only. */
+  onset_label?: string | null;
+}
+
+export interface AnalysisRunItem {
+  edf_artifact_id: number;
+  /** Per-recording values for the process's input slots. */
+  marks: Record<string, unknown>;
+}
+
+export function runAnalysis(
+  subjectId: number,
+  process: string,
+  params: Record<string, unknown>,
+  runs: AnalysisRunItem[],
+): Promise<Job[]> {
+  return apiPost<Job[]>(`/subjects/${subjectId}/analysis/${process}/run`, { params, runs });
+}
+
+export interface FragilityResult {
+  chn_names: string[];
+  channel_scores: Record<string, number>;
+  ranked_channels: [string, number][];
+  /** (channels x windows), values in [0,1]. */
+  fragility_matrix: number[][];
+  r2_per_window: number[];
+  /** Seconds relative to the onset, so t=0 is the marked seizure onset. */
+  start_times: number[];
+  median_r2: number;
+  method: string;
+  highpass_hz: number | null;
+  fs: number;
+  win_s: number;
+  step_s: number;
+  params: Record<string, unknown>;
+}
+
+/** `runKey` selects one seizure's run; omitted, the newest on that recording. */
+export function getFragilityResult(
+  subjectId: number,
+  edfArtifactId: number,
+  runKey?: string,
+): Promise<FragilityResult> {
+  const q = runKey ? `?run_key=${encodeURIComponent(runKey)}` : "";
+  return apiGet<FragilityResult>(
+    `/subjects/${subjectId}/analysis/fragility/${edfArtifactId}/result${q}`,
+  );
+}
+
+export interface AnalysisAggregate {
+  process: string;
+  n_runs: number;
+  top_n: number;
+  runs: {
+    edf_artifact_id: number;
+    /** Identifies one run within a recording; "" when the process allows one. */
+    run_key: string;
+    job_id: number;
+    recording: string;
+    /** The mark chosen as t=0, e.g. "SZ 2P". Null for a manual onset. */
+    label: string | null;
+    onset_s: number | null;
+    n_channels: number;
+    /** Only fragility reports a fit quality; null for other processes. */
+    median_r2: number | null;
+  }[];
+  shafts: {
+    shaft: string;
+    n_contacts: number;
+    votes: number;
+    votes_per_channel: number;
+  }[];
+}
+
+export function getAnalysisAggregate(
+  subjectId: number,
+  process: string,
+  topN?: number,
+): Promise<AnalysisAggregate> {
+  const q = topN != null ? `?top_n=${topN}` : "";
+  return apiGet<AnalysisAggregate>(`/subjects/${subjectId}/analysis/${process}/aggregate${q}`);
 }

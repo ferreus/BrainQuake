@@ -20,6 +20,7 @@ from app.services.electrodes import (
     run_elec_segment_job,
     run_slicer_mrb_parse_job,
 )
+from app.services.fragility import run_fragility_compute_job
 from app.services.ictal import run_ei_compute_job
 from app.services.interictal import run_hfo_compute_job
 from app.services.job_control import JobCancelledError
@@ -45,6 +46,7 @@ JOB_HANDLERS = {
     "slicer_mrb_parse": run_slicer_mrb_parse_job,
     "ei_compute": run_ei_compute_job,
     "hfo_compute": run_hfo_compute_job,
+    "fragility_compute": run_fragility_compute_job,
     "soz_fuse": run_soz_fuse_job,
     "surface_export": run_surface_export_job,
     "export_subject": run_export_subject_job,

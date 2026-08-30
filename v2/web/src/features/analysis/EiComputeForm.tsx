@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Group, NumberInput, Paper, SegmentedControl, Text, Title } from "@mantine/core";
+import { Button, Group, NumberInput, SegmentedControl, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
@@ -145,10 +145,7 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, rema
     !bandInverted;
 
   return (
-    <Paper withBorder p="sm" w={300}>
-      <Title order={6} mb="xs">
-        Compute EI
-      </Title>
+    <>
       <Group gap={4} mb={4}>
         <Button
           size="xs"
@@ -272,7 +269,7 @@ export function EiComputeForm({ subjectId, edfArtifactId, selection, sfreq, rema
           {job.progress_message}
         </Text>
       )}
-    </Paper>
+    </>
   );
 }
 

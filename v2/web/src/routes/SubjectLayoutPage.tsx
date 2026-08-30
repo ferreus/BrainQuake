@@ -8,8 +8,7 @@ import { DEFAULT_VIEW, SUBJECT_VIEWS, type SubjectView } from "../components/sub
 import { ClinicalEegPage } from "../features/clinical/ClinicalEegPage";
 import { ElectrodesPage } from "../features/electrodes/ElectrodesPage";
 import { FreeBrowsePage } from "../features/freebrowse/FreeBrowsePage";
-import { IctalPage } from "../features/ictal/IctalPage";
-import { InterictalPage } from "../features/interictal/InterictalPage";
+import { AnalysisPage } from "../features/analysis/AnalysisPage";
 import { SozPage } from "../features/soz/SozPage";
 
 export function SubjectLayoutPage() {
@@ -93,11 +92,8 @@ export function SubjectLayoutPage() {
               </Alert>
             ))}
         </div>
-        <div style={viewStyle("ictal")}>
-          {isVisited("ictal") && <IctalPage key={id} subjectId={id} />}
-        </div>
-        <div style={viewStyle("interictal")}>
-          {isVisited("interictal") && <InterictalPage key={id} subjectId={id} />}
+        <div style={viewStyle("analysis")}>
+          {isVisited("analysis") && <AnalysisPage key={id} subjectId={id} />}
         </div>
         <div style={viewStyle("clinical")}>
           {isVisited("clinical") && <ClinicalEegPage key={id} subjectId={id} />}

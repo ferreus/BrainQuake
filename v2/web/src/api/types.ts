@@ -20,6 +20,7 @@ export type JobType =
   | "slicer_mrb_parse"
   | "ei_compute"
   | "hfo_compute"
+  | "fragility_compute"
   | "soz_fuse"
   | "export_subject"
   | "import_subject";

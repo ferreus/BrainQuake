@@ -1,4 +1,3 @@
-import math
 import os
 from typing import Literal
 
@@ -9,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Artifact, Job, Subject
+from app.routers.json_safe import json_safe as _json_safe
 from app.schemas import JobResponse
 from app.services import ictal as ictal_service
 from app.services import recording_params as recording_params_service
@@ -18,19 +18,6 @@ from app.sigproc.filters import DEFAULT_MAINS_FREQ
 from app.sigproc.montage import bipolar_plan
 
 router = APIRouter(prefix="/subjects", tags=["ictal"])
-
-
-def _json_safe(value):
-    """NaN/inf -> null. A channel with no usable baseline has an undefined EI,
-    and JSON has no way to spell NaN -- json.dumps emits a bare NaN token that
-    JSON.parse rejects, blanking the whole panel."""
-    if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    return value
 
 
 def _get_subject_or_404(subject_id: int, db: Session) -> Subject:
@@ -106,13 +93,19 @@ def compute_ei(subject_id: int, edf_artifact_id: int, request: EiRequest, db: Se
     if not artifact:
         raise HTTPException(status_code=404, detail="edf artifact not found for this subject")
 
-    active_job = db.query(Job).filter(
+    # Per (job type, recording) rather than per subject: a batch over several
+    # seizures must be able to queue, while an accidental double-submit of one
+    # recording is still rejected. The worker serialises execution per subject.
+    active_jobs = db.query(Job).filter(
         Job.subject_id == subject_id,
         Job.job_type == "ei_compute",
         Job.state.in_(["queued", "running"])
-    ).first()
-    if active_job:
-        raise HTTPException(status_code=400, detail="An EI computation job is already in progress for this subject")
+    ).all()
+    if any((j.params_json or {}).get("edf_artifact_id") == edf_artifact_id for j in active_jobs):
+        raise HTTPException(
+            status_code=400,
+            detail=f"An EI computation job is already in progress for edf artifact {edf_artifact_id}",
+        )
 
     job = Job(
         subject_id=subject.id,

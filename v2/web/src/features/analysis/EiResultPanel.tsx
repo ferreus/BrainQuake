@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { Badge, Group, Paper, ScrollArea, Text, Title, useComputedColorScheme } from "@mantine/core";
+import { Badge, Group, Paper, Text, Title, useComputedColorScheme } from "@mantine/core";
 import { useEiResult } from "../../api/queries/useIctal";
+import { RankedChannelChart } from "./RankedChannelChart";
 import { SpectrogramModal } from "./SpectrogramModal";
 
 interface EiResultPanelProps {
@@ -12,8 +13,8 @@ interface EiResultPanelProps {
 // bars, "critical" status red for above-threshold bars -- distinct from each
 // other and from the categorical series slots, in both color schemes.
 const COLORS = {
-  light: { bar: "#2a78d6", flagged: "#d03b3b", threshold: "#52514e", text: "#0b0b0b" },
-  dark: { bar: "#3987e5", flagged: "#e66767", threshold: "#c3c2b7", text: "#ffffff" },
+  light: { bar: "#2a78d6", flagged: "#d03b3b", axis: "#52514e", text: "#0b0b0b" },
+  dark: { bar: "#3987e5", flagged: "#e66767", axis: "#c3c2b7", text: "#ffffff" },
 };
 
 /** Per-channel EI bar chart with a mean+std threshold line, mirroring
@@ -24,7 +25,6 @@ const COLORS = {
 export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) {
   const { data, isLoading, isError } = useEiResult(subjectId, edfArtifactId, true);
   const scheme = useComputedColorScheme("light");
-  const colors = COLORS[scheme];
   const [drillDownChannel, setDrillDownChannel] = useState<string | null>(null);
 
   // The window this result was computed over, from the job itself -- taking it
@@ -60,19 +60,6 @@ export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) 
     );
   }
 
-  const width = Math.max(600, data.chn_names.length * 22);
-  const height = 220;
-  const padding = { top: 24, bottom: 30, left: 4, right: 10 };
-  const maxEi =
-    Math.max(...data.ei.filter((v): v is number => v != null && Number.isFinite(v)),
-             stats.threshold) * 1.1 || 1;
-  const barWidth = (width - padding.left - padding.right) / data.chn_names.length;
-  const plotBottom = height - padding.bottom;
-
-  function yFor(v: number) {
-    return padding.top + (plotBottom - padding.top) * (1 - v / maxEi);
-  }
-
   // Absent on results computed before the montage was selectable -- those were CAR.
   const reference = data.diagnostics?.reference;
   const referenceLabel =
@@ -86,51 +73,15 @@ export function EiResultPanel({ subjectId, edfArtifactId }: EiResultPanelProps) 
           {referenceLabel}
         </Badge>
       </Group>
-      <ScrollArea>
-        <svg width={width} height={height} role="img" aria-label="EI per channel bar chart">
-          <line
-            x1={padding.left}
-            x2={width - padding.right}
-            y1={yFor(stats.threshold)}
-            y2={yFor(stats.threshold)}
-            stroke={colors.threshold}
-            strokeDasharray="4 3"
-            strokeWidth={1.5}
-          />
-          <text x={width - padding.right} y={yFor(stats.threshold) - 4} textAnchor="end" fontSize={10} fill={colors.threshold}>
-            mean + std
-          </text>
-          {data.chn_names.map((name, i) => {
-            const raw = data.ei[i];
-            // a dead channel has no bar to draw, not a zero-height one
-            const v = raw != null && Number.isFinite(raw) ? raw : 0;
-            const flagged = v > stats.threshold;
-            const x = padding.left + i * barWidth;
-            const y = yFor(v);
-            return (
-              <g
-                key={name}
-                onClick={() => targetRange && setDrillDownChannel(name)}
-                style={{ cursor: targetRange ? "pointer" : "default" }}
-              >
-                <rect
-                  x={x + 1}
-                  y={y}
-                  width={Math.max(1, barWidth - 2)}
-                  height={Math.max(0, plotBottom - y)}
-                  fill={flagged ? colors.flagged : colors.bar}
-                />
-                {flagged && (
-                  <text x={x + barWidth / 2} y={y - 4} textAnchor="middle" fontSize={9} fill={colors.text}>
-                    {name}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-          <line x1={padding.left} x2={width - padding.right} y1={plotBottom} y2={plotBottom} stroke={colors.threshold} strokeWidth={1} />
-        </svg>
-      </ScrollArea>
+      <RankedChannelChart
+        names={data.chn_names}
+        values={data.ei}
+        colors={COLORS[scheme]}
+        ariaLabel="EI per channel bar chart"
+        threshold={stats.threshold}
+        thresholdLabel="mean + std"
+        onBarClick={targetRange ? setDrillDownChannel : undefined}
+      />
       <Text size="xs" c="dimmed" mt={4}>
         Click a {reference === "bipolar" ? "derivation" : "channel"} to view its raw signal
         + spectrogram.

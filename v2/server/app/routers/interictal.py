@@ -66,13 +66,19 @@ def compute_hfo(subject_id: int, edf_artifact_id: int, request: HfoRequest = Hfo
     if not artifact:
         raise HTTPException(status_code=404, detail="edf artifact not found for this subject")
 
-    active_job = db.query(Job).filter(
+    # Per (job type, recording) rather than per subject: a batch over several
+    # seizures must be able to queue, while an accidental double-submit of one
+    # recording is still rejected. The worker serialises execution per subject.
+    active_jobs = db.query(Job).filter(
         Job.subject_id == subject_id,
         Job.job_type == "hfo_compute",
         Job.state.in_(["queued", "running"])
-    ).first()
-    if active_job:
-        raise HTTPException(status_code=400, detail="An HFO computation job is already in progress for this subject")
+    ).all()
+    if any((j.params_json or {}).get("edf_artifact_id") == edf_artifact_id for j in active_jobs):
+        raise HTTPException(
+            status_code=400,
+            detail=f"An HFO computation job is already in progress for edf artifact {edf_artifact_id}",
+        )
 
     job = Job(
         subject_id=subject.id,

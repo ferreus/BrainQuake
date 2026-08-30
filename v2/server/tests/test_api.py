@@ -2439,3 +2439,302 @@ def test_edf_meta_reports_the_recording_start_time():
     assert _meas_date_iso(SimpleNamespace(info={"meas_date": None})) is None
     dt = datetime(2019, 3, 14, 7, 24, 35, tzinfo=timezone.utc)
     assert _meas_date_iso(SimpleNamespace(info={"meas_date": dt})) == dt.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Neural fragility + the process-driven analysis runs.
+# ---------------------------------------------------------------------------
+
+def _fragility_run(sid, artifact_id, **overrides):
+    """Queue one fragility run through the batch endpoint and execute it."""
+    body = {
+        "params": {"pre": 2.0, "post": 2.0, "eval_end": 1.0, **overrides},
+        "runs": [{"edf_artifact_id": artifact_id, "marks": {"onset_s": 5.0}}],
+    }
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json=body)
+    assert r.status_code == 200, r.text
+    job_id = r.json()[0]["id"]
+    run_job(job_id)
+    return job_id, client.get(f"/jobs/{job_id}").json()["state"]
+
+
+def test_fragility_compute_registers_an_artifact():
+    """End-to-end on the real numerics: job -> fragility_npz -> result endpoint."""
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("FragilityCompute")
+
+    job_id, state = _fragility_run(sid, artifact_id)
+    assert state == "finished", client.get(f"/jobs/{job_id}/log").text
+
+    db = SessionLocal()
+    kinds = [a.kind for a in db.query(Artifact).filter(Artifact.job_id == job_id).all()]
+    db.close()
+    assert kinds == ["fragility_npz"]
+
+    r = client.get(f"/subjects/{sid}/analysis/fragility/{artifact_id}/result")
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert result["chn_names"] == ch_names
+    assert set(result["channel_scores"]) == set(ch_names)
+    # (channels x windows), and the crop is pre+post = 4s at 0.125s steps
+    assert len(result["fragility_matrix"]) == len(ch_names)
+    assert len(result["start_times"]) == len(result["fragility_matrix"][0])
+    # onset_s is carried into the crop, so the time axis is centred on it
+    assert min(result["start_times"]) < 0 < max(result["start_times"])
+    assert 0.0 <= result["median_r2"] <= 1.0
+    assert result["params"]["onset_s"] == 5.0
+
+
+def test_fragility_honours_remain_chns():
+    """An excluded contact must leave before the common average, not just the
+    plot -- otherwise it leaks into every remaining channel via the reference."""
+    sid, artifact_id, ch_names, _ = _create_subject_with_edf("FragilityRemainChns")
+    keep = ch_names[:3]
+    _, state = _fragility_run(sid, artifact_id, remain_chns=keep)
+    assert state == "finished"
+    result = client.get(f"/subjects/{sid}/analysis/fragility/{artifact_id}/result").json()
+    assert result["chn_names"] == keep
+
+
+def test_fragility_rejects_an_onset_outside_the_recording():
+    sid, artifact_id, _, _ = _create_subject_with_edf("FragilityBadOnset")
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json={
+        "params": {}, "runs": [{"edf_artifact_id": artifact_id, "marks": {"onset_s": 999.0}}],
+    })
+    assert r.status_code == 200, "range against the recording is only knowable in the worker"
+    job_id = r.json()[0]["id"]
+    run_job(job_id)
+    job = client.get(f"/jobs/{job_id}").json()
+    assert job["state"] == "failed"
+
+    # ... but a structurally invalid param is rejected at submit time
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json={
+        "params": {"post": 0.0}, "runs": [{"edf_artifact_id": artifact_id, "marks": {"onset_s": 5.0}}],
+    })
+    assert r.status_code == 422
+
+
+def test_analysis_run_creates_one_job_per_recording():
+    """A multi-seizure batch must queue, not 400 on the second run. The old
+    guard rejected any submit while a job of that type was in flight for the
+    subject, which made an 8-seizure fragility study impossible to launch."""
+    r = client.post("/subjects", json={"name": "FragilityBatch"})
+    sid = r.json()["id"]
+
+    artifact_ids = []
+    for i in range(3):
+        edf_path = f"/tmp/FragilityBatch_{i}.edf"
+        _make_synthetic_edf(edf_path)
+        with open(edf_path, "rb") as f:
+            r = client.post(
+                f"/subjects/{sid}/upload?file_type=edf",
+                files={"file": (f"batch_{i}.edf", f.read(), "application/octet-stream")},
+            )
+        os.remove(edf_path)
+        artifact_ids.append(r.json()["id"])
+
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json={
+        "params": {"pre": 2.0, "post": 2.0},
+        "runs": [{"edf_artifact_id": a, "marks": {"onset_s": 5.0}} for a in artifact_ids],
+    })
+    assert r.status_code == 200, r.text
+    jobs = r.json()
+    assert len(jobs) == 3
+    assert all(j["state"] == "queued" for j in jobs)
+    assert [j["params_json"]["edf_artifact_id"] for j in jobs] == artifact_ids
+
+
+def test_analysis_run_rejects_a_duplicate_run_for_one_recording():
+    """The relaxed guard still guards: same recording twice is a double-submit."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("FragilityDupe")
+    body = {"params": {}, "runs": [{"edf_artifact_id": artifact_id, "marks": {"onset_s": 5.0}}]}
+    assert client.post(f"/subjects/{sid}/analysis/fragility/run", json=body).status_code == 200
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json=body)
+    assert r.status_code == 400
+    assert str(artifact_id) in r.json()["detail"]
+
+    # the same recording with the SAME mark inside one batch is a double-submit
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json={
+        "params": {},
+        "runs": [{"edf_artifact_id": artifact_id, "marks": {"onset_s": 7.0}},
+                 {"edf_artifact_id": artifact_id, "marks": {"onset_s": 7.0}}],
+    })
+    assert r.status_code == 422
+
+
+def test_analysis_run_404s_on_an_unknown_process():
+    sid, artifact_id, _, _ = _create_subject_with_edf("FragilityUnknownProc")
+    r = client.post(f"/subjects/{sid}/analysis/nosuch/run", json={
+        "params": {}, "runs": [{"edf_artifact_id": artifact_id, "marks": {}}],
+    })
+    assert r.status_code == 404
+    assert "fragility" in r.json()["detail"]
+
+
+def _register_fragility_result(sid, edf_artifact_id, scores, median_r2=0.95):
+    """Write a fragility npz plus the finished job/artifact rows pointing at it,
+    so aggregation can be tested on exact scores rather than on real numerics."""
+    from app.services.recon import register_artifact
+    from app.sigproc.fragility import save_fragility_result
+
+    rel_path = next(
+        a["rel_path"] for a in client.get(f"/subjects/{sid}/artifacts").json()
+        if a["id"] == edf_artifact_id
+    )
+    edf_abs = os.path.join(settings.DATA_ROOT, rel_path)
+
+    db = SessionLocal()
+    job = Job(subject_id=sid, job_type="fragility_compute", state="finished",
+              params_json={"edf_artifact_id": edf_artifact_id}, progress_pct=100.0)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    out = save_fragility_result(edf_abs, {
+        "fragility_matrix": np.zeros((len(scores), 2)),
+        "r2_per_window": np.array([median_r2, median_r2]),
+        "start_times": np.array([0.0, 0.125]),
+        "channel_scores": scores,
+        "median_r2": median_r2, "method": "extended", "highpass_hz": 0.5,
+        "fs": 1000.0, "win_s": 0.25, "step_s": 0.125,
+    })
+    register_artifact(db, sid, job.id, "fragility_npz", out)
+    db.close()
+    return out
+
+
+def test_aggregate_votes_shafts_by_size():
+    """Size normalisation is the point: a 12-contact shaft must not outrank a
+    6-contact one on raw vote count alone (verify_fragility_bella.py:196-209).
+    Shaft B collects more votes here, and A still ranks first."""
+    contacts = [f"A{i}" for i in range(1, 7)] + [f"B{i}" for i in range(1, 13)]
+    r = client.post("/subjects", json={"name": "FragilityAggregate"})
+    sid = r.json()["id"]
+
+    artifact_ids = []
+    for i in range(2):
+        edf_path = f"/tmp/FragilityAgg_{i}.edf"
+        _make_synthetic_edf(edf_path, ch_names=contacts)
+        with open(edf_path, "rb") as f:
+            r = client.post(
+                f"/subjects/{sid}/upload?file_type=edf",
+                files={"file": (f"agg_{i}.edf", f.read(), "application/octet-stream")},
+            )
+        os.remove(edf_path)
+        artifact_ids.append(r.json()["id"])
+
+    low = {c: 0.1 for c in contacts}
+    # top-5 of run 1: A1 A2 A3 B1 B2   -> A+3, B+2
+    _register_fragility_result(sid, artifact_ids[0], {
+        **low, "A1": 0.99, "A2": 0.98, "A3": 0.97, "B1": 0.96, "B2": 0.95}, median_r2=0.94)
+    # top-5 of run 2: A4 B3 B4 B5 B6   -> A+1, B+4
+    _register_fragility_result(sid, artifact_ids[1], {
+        **low, "A4": 0.99, "B3": 0.98, "B4": 0.97, "B5": 0.96, "B6": 0.95}, median_r2=0.82)
+
+    agg = client.get(f"/subjects/{sid}/analysis/fragility/aggregate?top_n=5").json()
+    assert agg["n_runs"] == 2 and agg["top_n"] == 5
+    by_shaft = {s["shaft"]: s for s in agg["shafts"]}
+    assert by_shaft["A"]["votes"] == 4 and by_shaft["A"]["n_contacts"] == 6
+    assert by_shaft["B"]["votes"] == 6 and by_shaft["B"]["n_contacts"] == 12
+    assert by_shaft["A"]["votes_per_channel"] == pytest.approx(4 / 6)
+    assert by_shaft["B"]["votes_per_channel"] == pytest.approx(6 / 12)
+    # B wins on raw votes; normalising by shaft size puts A first
+    assert [s["shaft"] for s in agg["shafts"]] == ["A", "B"]
+    assert sorted(r["median_r2"] for r in agg["runs"]) == [0.82, 0.94]
+
+
+def test_aggregate_is_empty_without_runs():
+    """No runs yet is an empty aggregate, not a 500 -- the panel renders before
+    anything has been computed."""
+    sid, _, _, _ = _create_subject_with_edf("FragilityNoRuns")
+    r = client.get(f"/subjects/{sid}/analysis/fragility/aggregate")
+    assert r.status_code == 200
+    assert r.json() == {"process": "fragility", "n_runs": 0, "top_n": 20,
+                        "runs": [], "shafts": []}
+
+
+def test_delete_edf_recording_removes_fragility_npz():
+    sid, artifact_id, _, _ = _create_subject_with_edf("FragilityDelete")
+    _, state = _fragility_run(sid, artifact_id)
+    assert state == "finished"
+
+    db = SessionLocal()
+    artifact = db.query(Artifact).filter(Artifact.kind == "fragility_npz").first()
+    frag_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
+    db.close()
+    assert os.path.exists(frag_path)
+
+    assert client.delete(f"/subjects/{sid}/edf/{artifact_id}").status_code == 200
+    assert not os.path.exists(frag_path)
+
+
+def test_several_seizures_in_one_recording_each_get_a_result():
+    """A clip can hold several marked seizures, and each is its own 30s window.
+
+    Keyed on the recording alone, the second run silently overwrote the first --
+    same npz path, and the aggregate deduped it away with no error. Runs are
+    keyed on (recording, onset) so a cluster clip contributes one vote-set per
+    seizure, the way separate clips already did.
+    """
+    sid, artifact_id, _, _ = _create_subject_with_edf("FragilityMultiSz")
+
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json={
+        "params": {"pre": 1.0, "post": 1.0, "eval_end": 0.5},
+        "runs": [
+            {"edf_artifact_id": artifact_id, "marks": {"onset_s": 3.0, "onset_label": "SZ 1P"}},
+            {"edf_artifact_id": artifact_id, "marks": {"onset_s": 7.0, "onset_label": "SZ 2P"}},
+        ],
+    })
+    assert r.status_code == 200, r.text
+    jobs = r.json()
+    assert len(jobs) == 2, "two seizures in one clip must queue two runs"
+    for j in jobs:
+        run_job(j["id"])
+    assert all(client.get(f"/jobs/{j['id']}").json()["state"] == "finished" for j in jobs)
+
+    # Two distinct artifacts, not one overwritten twice.
+    db = SessionLocal()
+    paths = sorted(
+        a.rel_path for a in db.query(Artifact)
+        .filter(Artifact.subject_id == sid, Artifact.kind == "fragility_npz").all()
+    )
+    db.close()
+    assert len(paths) == 2 and paths[0] != paths[1], paths
+    assert all(os.path.exists(os.path.join(settings.DATA_ROOT, p)) for p in paths)
+
+    # Both count in the aggregate.
+    agg = client.get(f"/subjects/{sid}/analysis/fragility/aggregate").json()
+    assert agg["n_runs"] == 2
+    assert sorted(r["onset_s"] for r in agg["runs"]) == [3.0, 7.0]
+    assert sorted(r["label"] for r in agg["runs"]) == ["SZ 1P", "SZ 2P"]
+
+    # And each is individually addressable.
+    keys = sorted(r["run_key"] for r in agg["runs"])
+    assert keys == ["t3.000", "t7.000"]
+    one = client.get(
+        f"/subjects/{sid}/analysis/fragility/{artifact_id}/result?run_key=t3.000"
+    ).json()
+    assert one["params"]["onset_s"] == 3.0
+
+
+def test_deleting_a_recording_removes_every_seizures_result():
+    """The cleanup matched one <stem>_frag.npz; per-seizure files need a glob."""
+    sid, artifact_id, _, _ = _create_subject_with_edf("FragilityMultiDelete")
+    r = client.post(f"/subjects/{sid}/analysis/fragility/run", json={
+        "params": {"pre": 1.0, "post": 1.0, "eval_end": 0.5},
+        "runs": [
+            {"edf_artifact_id": artifact_id, "marks": {"onset_s": 3.0}},
+            {"edf_artifact_id": artifact_id, "marks": {"onset_s": 7.0}},
+        ],
+    })
+    for j in r.json():
+        run_job(j["id"])
+
+    db = SessionLocal()
+    paths = [
+        os.path.join(settings.DATA_ROOT, a.rel_path) for a in db.query(Artifact)
+        .filter(Artifact.subject_id == sid, Artifact.kind == "fragility_npz").all()
+    ]
+    db.close()
+    assert len(paths) == 2 and all(os.path.exists(p) for p in paths)
+
+    assert client.delete(f"/subjects/{sid}/edf/{artifact_id}").status_code == 200
+    assert not any(os.path.exists(p) for p in paths), "every seizure's result must go"

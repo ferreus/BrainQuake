@@ -1,3 +1,4 @@
+import glob
 import json
 import math
 import os
@@ -286,9 +287,9 @@ def _remove_file(path: str):
 
 def delete_edf_recording(db: Session, subject: Subject, edf_artifact_id: int) -> dict:
     """Delete a recording and everything derived from it: the upload under
-    recv/, the working copy under <subject>/edf/ (resolve_edf_path), the EI/HFO
+    recv/, the working copy under <subject>/edf/ (resolve_edf_path), the analysis
     jobs that ran on it with their result artifacts and logs, and the
-    EIdets/HFOdets output keyed off the file's stem."""
+    EIdets/HFOdets/FRAGdets output keyed off the file's stem."""
     artifact = _get_artifact(db, subject, edf_artifact_id)
     if artifact.kind != "raw_edf":
         raise ValueError(f"artifact {edf_artifact_id} is not an EDF recording (kind={artifact.kind!r})")
@@ -325,6 +326,9 @@ def delete_edf_recording(db: Session, subject: Subject, edf_artifact_id: int) ->
     _remove_file(os.path.join(edf_dir, basename))
     _remove_file(os.path.join(edf_dir, "EIdets", f"{stem}_ei.npz"))
     _remove_file(os.path.join(edf_dir, "HFOdets", f"{stem}_events.npz"))
+    # One file per seizure -- a clip can hold several, so this is a glob.
+    for frag in glob.glob(os.path.join(edf_dir, "FRAGdets", f"{stem}_frag*.npz")):
+        _remove_file(frag)
     # Per-segment envelope dir, left behind only by an HFO job that died between
     # HI_preprocess_file and HI_count_highEvents_chns.
     shutil.rmtree(os.path.join(edf_dir, "HFOdets", stem), ignore_errors=True)
