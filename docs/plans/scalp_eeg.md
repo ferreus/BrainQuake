@@ -1,17 +1,47 @@
 # Plan: scalp-EEG source imaging (ESI) mapped onto Bella's SEEG shafts
 
-**Status:** planned, not started. **Date:** 2026-08-17, amended 2026-08-23
+**Status:** partly executed. **Date:** 2026-08-17, amended 2026-08-23
 (per-file channel normalizer, consistency matrix, distance-to-focus; the
-superseded root-level `scalp_eeg.md` draft was folded in here and deleted).
+superseded root-level `scalp_eeg.md` draft was folded in here and deleted),
+corrected 2026-09-01.
+
+> **Read [scalp_eeg_impl.md](scalp_eeg_impl.md) first.** It is the working
+> order, written after the scalp EEGs and the SEEG re-export actually arrived,
+> and it overrides several load-bearing assumptions below — most importantly
+> which study carries the inferior temporal chain (Ichilov 2022, not Cleveland).
+>
+> Corrections to this document, 2026-09-01:
+> - **Step 0 and the montage normalizer are done**, not planned —
+>   `v2/server/app/sigproc/scalp_montage.py` and `v2/tools/esi/scalp_onset.py`
+>   (commit `1dfd7b1`). The montage is no longer unknown; it is discovered per
+>   file from the `eeg2edf-sidecar/1` JSON, and pinned per study in
+>   `scalp_eeg_impl.md`.
+> - **cEI is out of scope.** Every `cei` reference below (Steps 4–6, the
+>   agreement spec, `bella_cei_paper.csv`) is stale: the code it names is not in
+>   the tree. Step 6 joins ESI against **EI and fragility only**, per
+>   `scalp_eeg_impl.md:243-245`.
+> - **The contact file is `datasets/Bella Seeg.mrb`.** `data/bella_3dslicer.mrb`
+>   does not exist anywhere in the tree.
+> - **The clinical reports are now on disk** and bear directly on question 1
+>   below — see the Context section.
 
 ## Context
 
 Bella's case currently has three SEEG-derived localizations that disagree
 interestingly: ezfragility ranks shaft **D** (right posterior superior temporal
-gyrus, ~19 mm outside the resection cavity) first, while the clinical EEG onset
-was marked on **I** and **A**, both inside or at the margin of the failed
-anterior temporal resection. All three methods read the *same* 8 SEEG
-recordings, so their convergence is only partly independent.
+gyrus, ~19 mm outside the resection cavity) first *at a top-20 vote cutoff*,
+while the clinical EEG onset was marked on **I** and **A**, both inside or at
+the margin of the failed anterior temporal resection. All three methods read the
+*same* 8 SEEG recordings, so their convergence is only partly independent.
+
+Two 2026-09-01 corrections to that framing. D's anatomical label is now
+**validated** — the SEEG report's own contact labels agree with the pipeline for
+66% of named contacts within 2 mm against a 7% base rate
+([bella_anatomy_validation.md](../bella_anatomy_validation.md)). But D's *rank*
+is weaker than stated: at top-5 and top-10 cutoffs the clinical shaft **A** wins
+and D is fourth, and the SEEG report never mentions D at all (A 16 times, I 14).
+The disagreement this plan is built around is real but smaller than "fragility
+says D, clinicians say A/I".
 
 The maintainer also holds **scalp EEGs from several years, at least three with
 recorded seizures**, from before the lobectomy. That is a genuinely independent
@@ -25,9 +55,22 @@ Two questions, in the maintainer's stated priority order:
 1. **Retrospective/clinical** — did the pre-surgical scalp EEG already contain
    evidence pointing away from a purely anterior right-temporal target?
 2. **Methodological** — how well does a scalp-ESI contact ranking correlate with
-   the EI / cEI / fragility contact rankings?
+   the EI / fragility contact rankings?
 
-The scalp EDFs are not exported yet, so the plan is ordered so that the cheap
+> **Question 1 is largely answered already, without ESI** (2026-09-01). Both
+> pre-surgical scalp studies say so in writing: Ichilov 2022 concludes
+> *"epilepsy from a right parietal source"* across all four seizures, and
+> Cleveland's February 2024 phase-I reads `EEG Seizure, Regional, Right
+> parietal`. Two centres, 18 months apart, physician-signed, neither using ESI.
+> Re-deriving that conclusion is not worth the recon time and the 2yo DICOM
+> request. **Question 2 is what ESI still uniquely offers** — a quantitative
+> per-seizure ranking that can be correlated against the SEEG contact rankings.
+> That is a methods result, not a clinical one, and Step 1's checkpoint should
+> be judged on it. See the Step 1 decision gate.
+
+The scalp EDFs are **now on disk** (`datasets/ScalpEEG/`, 5 studies -- see
+`scalp_eeg_impl.md`); when this was written they were not. The plan is still
+ordered so that the cheap
 analysis that may answer question 1 outright runs first, and the head model —
 the thing most likely to fail on paediatric anatomy — is validated behind a hard
 checkpoint before any modelling investment.
@@ -68,16 +111,16 @@ checkpoint before any modelling investment.
   which the watershed step produces.
 - **`chnXyzDict.npy` does not exist** here — there is no `fslresults/` dir, so
   `electrodes.load_chn_xyz` will fail. Contacts must come from
-  `electrodes.parse_mrb("data/bella_3dslicer.mrb", subject)`, re-derived live, as
+  `electrodes.parse_mrb("datasets/Bella Seeg.mrb", subject)`, re-derived live, as
   `v2/tools/fragility/contact_anatomy.py` already does. (This also side-steps the
   stale-`c_ras` hazard recorded in `docs/seeg_slicer_contact_import_plan.md:181`.)
 - **The SEEG side of the correlation is mostly on disk**:
   `data/ei_reference/bella_ei_reference.csv` (per-contact `mean_ei`,
   `mean_rank_pct`, 2 reference arms × 184) and
   `data/ei_reference/bella_cei_paper.csv` (per-seizure `ei`/`out_degree`/`cei`,
-  8 × 184). **Fragility is only a top-10 text dump** (`data/ezfragility_result.txt`);
-  `run_frag.R:70` writes `frag_scores.rds` and no CSV — a per-contact export is a
-  prerequisite (~3 lines of R).
+  8 × 184). ~~**Fragility is only a top-10 text dump**~~ — **done**: per-contact,
+  per-seizure fragility is in `data/fragility_bellanew.csv` and EI in
+  `data/ei_bella_bellanew.csv` (184 contacts x 8 seizures each).
 - **The scalp montage varies per recording and is not a fixed contract.**
   `docs/seeg_slicer_contact_import_plan.md:190-197` records one 31-channel
   export as `Fp2 F4 C4 P4 O2 F8 FT10 T8 P8 Fz Cz Pz Fp1 F3 C3 P3 O1 F7 FT9 T7
@@ -129,8 +172,10 @@ Blocking for steps 3+; steps 0–2 need only items 1–3.
    the `v2/tools/fragility/seizures.example.csv` format
    (`label,edf_path,onset`, onset in seconds or `@<regex>`). Flag any file where
    the mark is a *clinical* rather than *electrographic* onset.
-3. **Confirm the recording reference** (linked ears A1+A2? Cz? average?) and
-   whether A1/A2 carry real signal or are flat.
+3. ~~**Confirm the recording reference** (linked ears A1+A2? Cz? average?) and
+   whether A1/A2 carry real signal or are flat.~~ **Answered by the
+   `eeg2edf-sidecar/1` JSON**, which records `reference` per channel -- no
+   need to ask (see "What was verified while planning" below).
 4. **≥180 s of clean pre-ictal signal** before each marked onset *in the same
    file* — needed for the noise covariance. If clips are shorter, that is a
    re-export request, not something to work around.
@@ -139,7 +184,11 @@ Blocking for steps 3+; steps 0–2 need only items 1–3.
 6. **Per-contact fragility CSV** (add a `write.csv` to `run_frag.R`, or export
    once by hand). Blocking for the agreement step only.
 7. **FreeSurfer license path**, for the single Docker invocation.
-8. Confirm `data/bella_3dslicer.mrb` `Contacts_8` is still the current localization.
+8. ~~Confirm `data/bella_3dslicer.mrb` `Contacts_8` is still the current
+   localization.~~ **Answered**: the file is `datasets/Bella Seeg.mrb`, node
+   `Contacts_8`, 184 contacts across 20 shafts, and its labelling is validated
+   against the SEEG report in
+   [bella_anatomy_validation.md](../bella_anatomy_validation.md).
 
 ---
 

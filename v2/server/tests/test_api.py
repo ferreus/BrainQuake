@@ -1077,7 +1077,7 @@ def test_parse_mrb_picks_correct_transform_direction():
     _make_synthetic_recon_subject("SlicerDirection")
     # Identity rotation, translation chosen so the INVERSE direction lands
     # near the brain center and the forward direction lands far outside it --
-    # mirrors what was found by hand against data/bella_3dslicer.mrb (see
+    # mirrors what was found by hand against the Bella scene (see
     # docs/seeg_slicer_contact_import_plan.md), generalized into a check
     # instead of a hardcoded assumption about which node/direction is right.
     A = np.eye(3)

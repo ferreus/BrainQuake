@@ -37,10 +37,8 @@ def main():
     os.environ["SUBJECTS_DIR"] = os.path.abspath(a.subjects_dir)
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "server")))
 
-    import nibabel as nib
-    from app.services.anatomy import (
-        _neighbor_offsets, find_segmentation, is_structure, label_name, load_label_lut)
-    from app.services.electrodes import parse_mrb, vox2ras_tkr
+    from app.services.anatomy import find_segmentation, label_points
+    from app.services.electrodes import parse_mrb
 
     subject = SimpleNamespace(name=a.subject)
     contacts, diag = parse_mrb(a.mrb, subject)
@@ -53,40 +51,21 @@ def main():
 
     seg_path, seg_rel = find_segmentation(subject)
     print(f"  segmentation: {seg_rel}\n")
-    img = nib.load(seg_path)
-    data = np.asanyarray(img.dataobj)
-    if data.ndim > 3:
-        data = data[..., 0]
-    zooms = np.array(img.header.get_zooms()[:3], dtype=float)
-    inv_tkr = np.linalg.inv(vox2ras_tkr(img))
-    lut = load_label_lut()
-    offsets = _neighbor_offsets(zooms, a.radius_mm)
-    shape = np.array(data.shape[:3])
+
+    labelled = label_points(
+        [(c["electrode"], c["contact_index"], (c["x"], c["y"], c["z"])) for c in contacts],
+        seg_path, radius_mm=a.radius_mm)
 
     rows = []
-    for c in contacts:
-        xyz = np.array([c["x"], c["y"], c["z"]], dtype=float)
-        vox_f = (inv_tkr @ np.append(xyz, 1.0))[:3]
-        base = np.rint(vox_f).astype(int)
-        row = {"contact": f"{c['electrode']}{c['contact_index']}", "shaft": c["electrode"],
-               "index": c["contact_index"], "x": xyz[0], "y": xyz[1], "z": xyz[2],
-               "label": None, "nearest_grey": None, "dist_mm": None}
-        if np.all((base >= 0) & (base < shape)):
-            row["label"] = label_name(lut, int(data[tuple(base)]))
-            nb = base + offsets
-            dist = np.linalg.norm((nb - vox_f) * zooms, axis=1)
-            keep = (dist <= a.radius_mm) & np.all((nb >= 0) & (nb < shape), axis=1)
-            nb, dist = nb[keep], dist[keep]
-            if len(nb):
-                ids = data[nb[:, 0], nb[:, 1], nb[:, 2]].astype(int)
-                grey = np.array([is_structure(i, label_name(lut, i)) for i in ids], dtype=bool)
-                if grey.any():
-                    j = int(np.argmin(np.where(grey, dist, np.inf)))
-                    row["nearest_grey"] = label_name(lut, int(ids[j]))
-                    row["dist_mm"] = round(float(dist[j]), 2)
-        else:
-            row["label"] = "OUT-OF-VOLUME"
-        rows.append(row)
+    for e in labelled:
+        near = e["nearest_structure"]
+        rows.append({
+            "contact": e["name"], "shaft": e["electrode"], "index": e["contact_index"],
+            "x": e["x"], "y": e["y"], "z": e["z"],
+            "label": "OUT-OF-VOLUME" if e.get("out_of_volume") else e["label_name"],
+            "nearest_grey": near["label_name"] if near else None,
+            "dist_mm": near["distance_mm"] if near else None,
+        })
 
     # Per-shaft summary. y is anterior(+)/posterior(-) in tkreg RAS.
     by_shaft = defaultdict(list)

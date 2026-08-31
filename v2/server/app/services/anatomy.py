@@ -191,22 +191,16 @@ def _neighbor_offsets(zooms, radius_mm):
     return np.stack([g.ravel() for g in grid], axis=1)
 
 
-def label_contacts(subject: Subject, radius_mm: float = 3.0, max_neighborhood: int = 5):
-    """Anatomical label for every contact of every electrode.
+def label_points(points, seg_path, radius_mm: float = 3.0, max_neighborhood: int = 5):
+    """Anatomical label for each `(electrode, contact_index, xyz)` in tkreg RAS.
 
-    Contacts come from chnXyzDict.npy in FreeSurfer surface (tkreg) RAS -- the
-    space both segment() and the Slicer import write (see
-    electrodes.import_contacts) -- and are converted to voxel indices with the
-    segmentation's *own* vox2ras_tkr, so this stays correct for a non-256^3
-    volume instead of assuming the conformed geometry.
-
-    Raises FileNotFoundError if the subject has no contacts or no segmentation.
+    Coordinates are converted with the segmentation's *own* vox2ras_tkr, so this
+    stays correct for a non-256^3 volume instead of assuming the conformed
+    geometry. Takes points rather than a Subject so the offline tools can label
+    coordinates straight out of parse_mrb, without a chnXyzDict.npy on disk.
     """
     if radius_mm <= 0:
         raise ValueError(f"radius_mm must be positive, got {radius_mm}")
-
-    chn_xyz = load_chn_xyz(subject)  # {electrode: [[x, y, z], ...]}, row order == contact number
-    seg_path, seg_rel = find_segmentation(subject)
 
     img = nib.load(seg_path)
     # asanyarray, not get_fdata(): keeps the segmentation in its native integer
@@ -223,78 +217,97 @@ def label_contacts(subject: Subject, radius_mm: float = 3.0, max_neighborhood: i
     shape = np.array(data.shape[:3])
 
     results = []
-    for electrode, coords in sorted(chn_xyz.items()):
-        for row, xyz in enumerate(coords):
-            xyz = np.asarray(xyz, dtype=float)[:3]
-            vox_f = (inv_tkr @ np.append(xyz, 1.0))[:3]
-            base = np.rint(vox_f).astype(int)
+    for electrode, contact_index, xyz in points:
+        xyz = np.asarray(xyz, dtype=float)[:3]
+        vox_f = (inv_tkr @ np.append(xyz, 1.0))[:3]
+        base = np.rint(vox_f).astype(int)
 
-            entry = {
-                "electrode": electrode,
-                "contact_index": row + 1,  # 1-based; matches the <label>.txt row order invariant
-                "name": f"{electrode}{row + 1}",
-                "x": float(xyz[0]), "y": float(xyz[1]), "z": float(xyz[2]),
-                "voxel": base.tolist(),
-                "label_id": None,
-                "label_name": None,
-                "nearest_structure": None,
-                "neighborhood": [],
+        entry = {
+            "electrode": electrode,
+            "contact_index": contact_index,
+            "name": f"{electrode}{contact_index}",
+            "x": float(xyz[0]), "y": float(xyz[1]), "z": float(xyz[2]),
+            "voxel": base.tolist(),
+            "label_id": None,
+            "label_name": None,
+            "nearest_structure": None,
+            "neighborhood": [],
+        }
+
+        if np.all((base >= 0) & (base < shape)):
+            exact_id = int(data[base[0], base[1], base[2]])
+            entry["label_id"] = exact_id
+            entry["label_name"] = label_name(lut, exact_id)
+        else:
+            # Outside the segmentation FOV entirely -- a contact this far
+            # out is a coordinate-space error, not an anatomical finding,
+            # so say so rather than reporting the nearest edge voxel.
+            entry["out_of_volume"] = True
+            results.append(entry)
+            continue
+
+        neighbors = base + offsets
+        dist = np.linalg.norm((neighbors - vox_f) * zooms, axis=1)
+        keep = dist <= radius_mm
+        neighbors, dist = neighbors[keep], dist[keep]
+        in_bounds = np.all((neighbors >= 0) & (neighbors < shape), axis=1)
+        neighbors, dist = neighbors[in_bounds], dist[in_bounds]
+        if len(neighbors) == 0:
+            results.append(entry)
+            continue
+
+        near_ids = data[neighbors[:, 0], neighbors[:, 1], neighbors[:, 2]].astype(int)
+
+        unique_ids, counts = np.unique(near_ids, return_counts=True)
+        order = np.argsort(-counts)
+        total = float(counts.sum())
+        entry["neighborhood"] = [
+            {
+                "label_id": int(unique_ids[i]),
+                "label_name": label_name(lut, unique_ids[i]),
+                "fraction": round(float(counts[i]) / total, 4),
+            }
+            for i in order[:max_neighborhood]
+        ]
+
+        structure_mask = np.array(
+            [is_structure(lid, label_name(lut, lid)) for lid in unique_ids], dtype=bool
+        )
+        structure_ids = set(unique_ids[structure_mask].tolist())
+        if structure_ids:
+            candidates = np.array([lid in structure_ids for lid in near_ids], dtype=bool)
+            nearest = int(np.argmin(np.where(candidates, dist, np.inf)))
+            nearest_id = int(near_ids[nearest])
+            entry["nearest_structure"] = {
+                "label_id": nearest_id,
+                "label_name": label_name(lut, nearest_id),
+                "distance_mm": round(float(dist[nearest]), 2),
             }
 
-            if np.all((base >= 0) & (base < shape)):
-                exact_id = int(data[base[0], base[1], base[2]])
-                entry["label_id"] = exact_id
-                entry["label_name"] = label_name(lut, exact_id)
-            else:
-                # Outside the segmentation FOV entirely -- a contact this far
-                # out is a coordinate-space error, not an anatomical finding,
-                # so say so rather than reporting the nearest edge voxel.
-                entry["out_of_volume"] = True
-                results.append(entry)
-                continue
+        results.append(entry)
 
-            neighbors = base + offsets
-            dist = np.linalg.norm((neighbors - vox_f) * zooms, axis=1)
-            keep = dist <= radius_mm
-            neighbors, dist = neighbors[keep], dist[keep]
-            in_bounds = np.all((neighbors >= 0) & (neighbors < shape), axis=1)
-            neighbors, dist = neighbors[in_bounds], dist[in_bounds]
-            if len(neighbors) == 0:
-                results.append(entry)
-                continue
+    return results
 
-            near_ids = data[neighbors[:, 0], neighbors[:, 1], neighbors[:, 2]].astype(int)
 
-            unique_ids, counts = np.unique(near_ids, return_counts=True)
-            order = np.argsort(-counts)
-            total = float(counts.sum())
-            entry["neighborhood"] = [
-                {
-                    "label_id": int(unique_ids[i]),
-                    "label_name": label_name(lut, unique_ids[i]),
-                    "fraction": round(float(counts[i]) / total, 4),
-                }
-                for i in order[:max_neighborhood]
-            ]
+def label_contacts(subject: Subject, radius_mm: float = 3.0, max_neighborhood: int = 5):
+    """Anatomical label for every contact of every electrode.
 
-            structure_mask = np.array(
-                [is_structure(lid, label_name(lut, lid)) for lid in unique_ids], dtype=bool
-            )
-            structure_ids = set(unique_ids[structure_mask].tolist())
-            if structure_ids:
-                candidates = np.array([lid in structure_ids for lid in near_ids], dtype=bool)
-                nearest = int(np.argmin(np.where(candidates, dist, np.inf)))
-                nearest_id = int(near_ids[nearest])
-                entry["nearest_structure"] = {
-                    "label_id": nearest_id,
-                    "label_name": label_name(lut, nearest_id),
-                    "distance_mm": round(float(dist[nearest]), 2),
-                }
+    Contacts come from chnXyzDict.npy in FreeSurfer surface (tkreg) RAS -- the
+    space both segment() and the Slicer import write (see
+    electrodes.import_contacts).
 
-            results.append(entry)
+    Raises FileNotFoundError if the subject has no contacts or no segmentation.
+    """
+    chn_xyz = load_chn_xyz(subject)  # {electrode: [[x, y, z], ...]}, row order == contact number
+    seg_path, seg_rel = find_segmentation(subject)
 
+    points = [
+        (electrode, row + 1, xyz)  # 1-based; matches the <label>.txt row order invariant
+        for electrode, coords in sorted(chn_xyz.items())
+        for row, xyz in enumerate(coords)
+    ]
     return {
         "segmentation": seg_rel,
         "radius_mm": radius_mm,
-        "contacts": results,
+        "contacts": label_points(points, seg_path, radius_mm, max_neighborhood),
     }

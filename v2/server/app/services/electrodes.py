@@ -673,7 +673,8 @@ def import_contacts(subject: Subject, contacts):
 
 # --- Raw .mrb parsing -------------------------------------------------------
 # Automates docs/seeg_slicer_contact_import_plan.md's Steps 1-4, which were
-# originally done by hand against data/bella_3dslicer.mrb. Two things in that
+# originally done by hand against the Bella scene (now datasets/Bella Seeg.mrb).
+# Two things in that
 # manual pass can't be assumed to generalize and are re-derived per .mrb here
 # rather than hardcoded:
 #   1. WHICH MarkupsFiducial node holds the per-contact list -- a scene can

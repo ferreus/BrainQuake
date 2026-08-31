@@ -1,5 +1,12 @@
 # SEEG Contact Import from 3D Slicer (.mrb) — Plan
 
+> **Path note (2026-09-01):** this document was written against a scene at
+> `data/bella_3dslicer.mrb`. That path no longer exists; the same scene (node
+> `Contacts_8`, 184 contacts, 20 shafts) is now `datasets/Bella Seeg.mrb`.
+> References below are left as written, since they record what was done at the
+> time. Its labelling is validated in
+> [bella_anatomy_validation.md](bella_anatomy_validation.md).
+
 ## Relationship to `seeg_electrode_detection_upgrade_plan.md`
 
 That doc proposes replacing `hough3dlines` + GMM with a better *fully-automatic*

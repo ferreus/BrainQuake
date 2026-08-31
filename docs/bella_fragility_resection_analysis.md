@@ -6,6 +6,10 @@ by up to 0.94 s. Conclusions unchanged. Answers the open question left in
 [project-direction.md](project-direction.md): *where is shaft D anatomically, and
 was it inside the resection?*
 
+**Amended 2026-09-01**, after the clinical reports arrived on disk. Two things
+weakened the case for D and one strengthened the anatomy it rests on; all three
+are below. The load-bearing result — the interpretability ratio — is untouched.
+
 ## The question
 
 Li et al. 2021 ([PMC8547387](https://pmc.ncbi.nlm.nih.gov/articles/PMC8547387/),
@@ -95,6 +99,14 @@ Contacts from `datasets/Bella Seeg.mrb` via the server's own `parse_mrb` (LPS,
 inverse transform, 93% in brain), labelled against `aparc+aseg.mgz`. `y` is
 anterior(+)/posterior(−) in tkreg RAS.
 
+**That labelling is now validated against the SEEG report** — 66% of the
+contacts the clinicians name are inside or within 2 mm of the structure they
+name, against a 7% base rate, with `I1-3 = temporal pole` exact. See
+[bella_anatomy_validation.md](bella_anatomy_validation.md), which also records
+the two shafts (G and K) where the pipeline and the clinicians disagree by a
+whole gyrus. D is not one of them, and is the easy case: five of six contacts in
+one large parcel.
+
 | shaft | y | x | dominant labels |
 |---|---|---|---|
 | **I** (clinical SOZ) | +18.6 | 29.5 | rh-temporalpole, rh-middletemporal |
@@ -131,11 +143,13 @@ cavity whose nearest voxels are anterior and inferior to them.
 ## Reading
 
 The resection removed the clinically annotated SOZ — I entirely, A to its margin
-— and left the most fragile shaft 2 cm outside the cavity. That *looks* like the
-failure mode the fragility method was built to detect: *a resection that missed
-the fragile region*. Read the base-rate objection below before believing it —
-90% of the shafts are outside the cavity, so D's position is nearly what chance
-predicts. The load-bearing result is the interpretability ratio, not D.
+— and left the highest-mean-fragility shaft 2 cm outside the cavity. That
+*looks* like the failure mode the fragility method was built to detect: *a
+resection that missed the fragile region*. Read the base-rate objection below
+before believing it — 90% of the shafts are outside the cavity, so D's position
+is nearly what chance predicts; D's rank flips to A below a top-20 vote cutoff;
+and the SEEG report never mentions D. The load-bearing result is the
+interpretability ratio, not D.
 
 Independent support: the fragile set is broadly posterior (D −21.5, F −31.5,
 S −18.3, P −53.3) while the resection was anterior temporal. If that holds up,
@@ -163,15 +177,74 @@ Points for D being a false positive:
 - in the Python run `X1` enters the top 10 of 6 of 8 seizures, which reads more
   like a channel property than a generator;
 - SZ 7P's own annotation is `EEG onset - IA fast` — the reviewers named **I and
-  A**, not D.
+  A**, not D;
+- **D's first place is an artifact of the vote cutoff** (below);
+- **D appears nowhere in the SEEG report** (below).
 
-Points against, all weak and none from SEEG:
+### D's rank depends entirely on the vote cutoff
 
-- the 2022 Ichilov scalp study marks one seizure `p8 onset` (right posterior);
+Size-normalised top-N votes per channel, summed over the 8 seizures, from
+`data/fragility_bellanew.csv`:
+
+| cutoff | 1st | 2nd | 3rd | 4th |
+|---|---|---|---|---|
+| top 5 | **A 1.10** | B 0.62 | X 0.58 | D 0.50 |
+| top 10 | **A 1.80** | I / B / D 1.00 | | |
+| top 20 | **D 2.67** | A 2.10 | F 1.80 | I 1.67 |
+| top 30 | **D 4.33** | B 3.12 | A 2.80 | F 2.40 |
+
+**At the two most selective cutoffs the clinical SOZ shaft A wins outright, and
+D is fourth.** D only takes first place at top-20 and above — and
+`v2/tools/compare_fragility_r.py:32` hardcodes `TOP_N = 20`, the tightest cutoff
+at which D leads. The `next_steps.md` claim that "shaft D holds rank 1 in every
+configuration" is false for this family of configurations.
+
+EI does the same thing on the same contacts (`data/ei_bella_bellanew.csv`): I
+first at top-5, A first at top-10, D first at top-20, B first at top-30. Two
+methods agreeing that D wins at top-20 is not two independent votes for D; it is
+two methods sharing a cutoff sensitivity.
+
+This does not make D noise — it is above chance (0.87 votes/ch at top-20) at
+every cutoff. It makes "**the** most fragile shaft" an overstatement of what a
+narrow, cutoff-dependent lead supports.
+
+### D appears nowhere in the SEEG report
+
+The Cleveland SEEG evaluation report (`datasets/BellaNew/Readme.md`) names
+electrodes by contact range ~30 times. Mention counts:
+
+```
+A 16    I 14    G 5    P 5    L 4    N 4    Q 4    B 3
+K 2     M 2     S 2    X 2    D 0    F 0    T 0
+```
+
+**A and I are named 30 times between them; D, F and T zero.** This is not a
+labelling disagreement — the report describes activity, so silence means those
+shafts did nothing the clinicians thought worth writing down, across 11 days of
+monitoring and 13 seizures. Before this report the "points against" list below
+had nothing from SEEG; it now has a clear negative from SEEG.
+
+Points against, all from outside SEEG:
+
+- the 2022 Ichilov scalp study (age 2) concludes **"4 seizures from a right
+  parietal source"** and *"epilepsy from a right parietal source"* — all four
+  seizures, onsets marked `P4P8O2`, `P4T8`, `P4P8O2`. An earlier version of this
+  document cited it as "marks one seizure `p8 onset`", which undersold it;
+- the **Cleveland February 2024 pre-surgical phase-I** study — physician-signed,
+  ictal, one month before implantation — reads `EEG Seizure, Regional, **Right
+  parietal**`, with interictal `Intermittent Rhythmic Slow, Regional, Right
+  posterior`. Two centres, 18 months apart, independently localising right
+  posterior/parietal from scalp;
 - the **post**-resection May 2024 scalp study logs `IS R POST TEMP` twice and
   `IS R P`. Different modality, years apart, no shared processing — but three
   technologist annotations in a study with no recorded seizure, and "posterior
   temporal" from scalp is a large region.
+
+The first two are stronger than this document previously credited: they are
+pre-surgical, independent of each other, and neither had ESI. But note what they
+do *not* say — neither names the temporal pole/amygdala focus the SEEG later
+confirmed, so they are evidence that scalp localisation was pointing somewhere
+posterior, not evidence that D specifically is a generator.
 
 **Open test, cheap once `contact_anatomy.csv` exists:** permute the shaft
 ranking and ask how often the top shaft sits ≥17 mm from the cavity. Until that
@@ -195,9 +268,12 @@ result.
   clipped signal describe the amplifier. SZ 2P should probably be excluded
   outright; it is retained here only so the 8-seizure set matches the earlier
   analysis.
-- **D's lead is consistent but modest.** Top-N voting and mean fragility both
-  rank D first, which is real convergence, but the mean-fragility spread is
-  narrow (0.61 → 0.42): D leads P by ~12%, not the ~2.2× voting suggested.
+- **D's lead is neither consistent nor large.** An earlier version of this
+  bullet said top-N voting and mean fragility both rank D first, "which is real
+  convergence". That is wrong: top-N voting ranks **A** first at cutoffs of 5
+  and 10, and only puts D first at 20 and above (see the cutoff table above).
+  Mean fragility does rank D first, but the spread is narrow (0.61 → 0.42) — D
+  leads P by ~12%, not the ~2.2× voting at top-20 suggests.
 - **S (postcentral) and P (precuneus) ranking high is not obviously
   epileptogenic** and may reflect electrode-specific signal properties.
 - **Brain shift.** Rigid registration ignores post-resection collapse, so
@@ -216,6 +292,12 @@ Rscript v2/tools/fragility/frag_outcome.R data/fragility/bellanew --soz=A,I
 python v2/tools/verify_fragility_bella.py --ref data/fragility/bellanew/ezfragility_shafts.txt
 
 python v2/tools/fragility/contact_anatomy.py "datasets/Bella Seeg.mrb" -o data/fragility/contact_anatomy.csv
+
+# Does the anatomy agree with the clinicians? (bella_anatomy_validation.md)
+python v2/tools/fragility/anatomy_vs_report.py "datasets/Bella Seeg.mrb" \
+    --truth datasets/BellaNew/report_anatomy.csv --sweep \
+    -o data/fragility/anatomy_vs_report.csv
+
 python v2/tools/fragility/resection_overlap.py --postop data/fragility/postop/5_sag_t1_mprage_iso.nii.gz \
     --contacts data/fragility/contact_anatomy.csv -o data/fragility/resection
 python v2/tools/fragility/cavity_analysis.py --reg data/fragility/resection/postop_in_preop.nii.gz \

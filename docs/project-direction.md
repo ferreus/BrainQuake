@@ -38,22 +38,24 @@ lobectomy that did not help** (seizures unchanged post-surgery).
 ## Current evidence state
 
 - **Neural fragility (ezfragility, R; Li et al. 2021 method) on 8 of Bella's
-  seizures**: shaft **D dominates** the size-normalised ranking (4.83
-  votes/channel, ~2.5× the next shaft), while clinical EEG onset was marked on
-  shafts **I and A**. Fragility ranked the clinical onset shafts above the
-  spread shafts (sanity check passed), but its top pick is a shaft clinicians
-  did not mark. The fragility method's published validation is precisely the
-  failed-surgery scenario: resections that missed the fragile region.
-  **Resolved 2026-08-13** — see
+  seizures**: shaft **D** leads the size-normalised ranking at a top-20 vote
+  cutoff, while clinical EEG onset was marked on shafts **I and A**. The
+  fragility method's published validation is precisely the failed-surgery
+  scenario: resections that missed the fragile region. **Resolved 2026-08-13,
+  substantially qualified 2026-09-01** — see
   [bella_fragility_resection_analysis.md](bella_fragility_resection_analysis.md).
   Shaft D is right **posterior superior temporal gyrus** (y = −21.5, the most
   lateral shaft), and post-op MRI puts it **16.9–19.5 mm outside the 17.3 mL
   resection cavity**, while clinical-SOZ shaft I was resected outright and A to
   its margin. Li et al.'s own outcome statistic on the same 8 seizures gives an
-  interpretability ratio of **0.986** and Cohen's d **+0.24** (their successful
+  interpretability ratio of **0.987** and Cohen's d **+0.37** (their successful
   resections: 1.51; their failures: n.s.) — the method retrodicts this failure
-  correctly. Caveats, including the unreleased classifier and the age-4 cohort
-  mismatch, are in that document.
+  correctly. **That outcome statistic is the load-bearing result; D is not.**
+  D's first place holds only at vote cutoffs ≥ 20 — at top-5 and top-10 the
+  clinical shaft **A wins and D is fourth** — and the Cleveland SEEG report
+  names A 16 times and I 14 times while never mentioning D, F or T at all.
+  Caveats, including the unreleased classifier and the age-4 cohort mismatch,
+  are in that document.
 - **BrainQuake's own EI on Bella clip 17 disagrees with the clinical
   annotation** — see
   [bella_ictal_ei_vs_annotation_discrepancy.md](bella_ictal_ei_vs_annotation_discrepancy.md).
@@ -92,11 +94,16 @@ At each stage, define what "verified" means before moving on. Prefer
 1. **Recon QC** *(in progress)* — visual pass: white/pial surfaces overlaid on
    `norm.mgz`, coronal scroll; skull-strip check on `brainmask.mgz`; aseg
    sanity. Automated indicators already pass.
-2. **Contact localization** — overlay 3D-Slicer-imported contacts on the
-   registered CT and the recon (FreeBrowse): every contact inside its electrode
-   artifact on CT, in anatomically sensible tissue on MRI. Cross-check shafts
-   against the clinical implantation schema. Watch coordinate-space conventions
-   (RAS vs voxel vs scanner) at every handoff.
+2. **Contact localization** *(cross-check done 2026-09-01; CT overlay still
+   pending)* — the shaft cross-check against the clinical schema is complete:
+   the SEEG report's own contact-range labels agree with `parse_mrb` →
+   `aparc+aseg` for **66% of named contacts within 2 mm against a 7% base
+   rate**, hemisphere-consistent 184/184, with no index offset or reversal. See
+   [bella_anatomy_validation.md](bella_anatomy_validation.md) — including the
+   two shafts (G, K) that disagree by a whole gyrus, and the 105 contacts the
+   report never names. Still open: overlay the contacts on the registered CT and
+   the recon (FreeBrowse) to confirm every contact sits inside its own electrode
+   artifact — the cross-check validates the *labelling*, not the detection.
 3. **EEG integrity** — channel names match contact names exactly (primed vs
    unprimed shafts, apostrophe encoding); onset annotations traceable to the
    clinical log (see the timing map in the EI discrepancy doc); mains filtering
