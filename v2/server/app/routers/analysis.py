@@ -2,7 +2,8 @@
 
 One process applied to a set of recordings. EI, HFO and fragility differ only in
 their request model, their result artifact and how per-channel scores are read out
-of it -- that is the whole of PROCESSES below. Adding a method is one entry.
+of it -- REQUEST_MODELS here plus PROCESSES in services/processes.py, which the
+SOZ fusion reads through too. Adding a method is one entry in each.
 
 ei.py and hfo.py keep their own POST /run and EI's bipolar-preview; every
 process's result and the cross-recording aggregate are served here.
@@ -10,8 +11,7 @@ process's result and the cross-recording aggregate are served here.
 import math
 import os
 from collections import Counter, defaultdict
-from collections.abc import Callable
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, model_validator
@@ -24,9 +24,12 @@ from app.routers.ei import EiRequest
 from app.routers.hfo import HfoRequest
 from app.routers.json_safe import json_safe
 from app.schemas import JobResponse
-from app.services import fragility as fragility_service
-from app.services import ictal as ictal_service
-from app.services import interictal as interictal_service
+from app.services.processes import (
+    PROCESSES,
+    ProcessSpec,
+    latest_finished_runs,
+    run_key as process_run_key,
+)
 from app.sigproc.montage import parse_contact
 
 router = APIRouter(prefix="/subjects", tags=["analysis"])
@@ -69,37 +72,12 @@ class FragilityRequest(BaseModel):
         return self
 
 
-class ProcessSpec(NamedTuple):
-    job_type: str
-    artifact_kind: str
-    request_model: type[BaseModel]
-    load: Callable[[str], dict]
-    scores: Callable[[dict], dict]
-    # What distinguishes two runs on the *same* recording. None means one result
-    # per recording (EI and HFO overwrite by design). Fragility runs one 30s
-    # window per seizure, and a clip can hold several, so its runs are keyed by
-    # onset -- without this the second seizure silently replaces the first.
-    run_key: Callable[[dict], str] | None = None
-
-
-PROCESSES: dict[str, ProcessSpec] = {
-    "ei": ProcessSpec(
-        job_type="ei_compute", artifact_kind="ei_npz", request_model=EiRequest,
-        load=ictal_service.load_ei_result,
-        scores=lambda r: dict(zip(r["contact_names"], r["ei_by_contact"])),
-    ),
-    "hfo": ProcessSpec(
-        job_type="hfo_compute", artifact_kind="hfo_npz", request_model=HfoRequest,
-        load=interictal_service.load_hfo_result,
-        scores=lambda r: dict(zip(r["chn_names"], r["event_counts"])),
-    ),
-    "fragility": ProcessSpec(
-        job_type="fragility_compute", artifact_kind="fragility_npz",
-        request_model=FragilityRequest,
-        load=fragility_service.load_fragility_result,
-        scores=lambda r: r["channel_scores"],
-        run_key=lambda p: "t%.3f" % float(p["onset_s"]),
-    ),
+# The request models stay here, in the router layer; services/processes.py owns
+# how a run's results are found and read.
+REQUEST_MODELS: dict[str, type[BaseModel]] = {
+    "ei": EiRequest,
+    "hfo": HfoRequest,
+    "fragility": FragilityRequest,
 }
 
 
@@ -130,16 +108,6 @@ def _get_subject_or_404(subject_id: int, db: Session) -> Subject:
     if not subject:
         raise HTTPException(status_code=404, detail="Subject not found")
     return subject
-
-
-def _run_key(spec: ProcessSpec, params: dict) -> str:
-    """Identity of a run within a recording; "" when the process allows only one."""
-    if not spec.run_key:
-        return ""
-    try:
-        return spec.run_key(params)
-    except (KeyError, TypeError, ValueError):
-        return ""
 
 
 def _get_process_or_404(process: str) -> ProcessSpec:
@@ -179,14 +147,14 @@ def run_analysis(subject_id: int, process: str, request: RunRequest, db: Session
         ).all()
         merged = {**request.params, **item.marks}
         try:
-            validated = spec.request_model(**merged)
+            validated = REQUEST_MODELS[process](**merged)
         except Exception as exc:
             raise HTTPException(
                 status_code=422,
                 detail=f"invalid params for run on edf artifact {item.edf_artifact_id}: {exc}",
             ) from exc
 
-        key = _run_key(spec, validated.model_dump())
+        key = process_run_key(spec, validated.model_dump())
         # Within this batch: db.add'ed rows are invisible to the query below
         # (SessionLocal is autoflush=False), so track the keys ourselves.
         if (item.edf_artifact_id, key) in seen_runs:
@@ -201,7 +169,7 @@ def run_analysis(subject_id: int, process: str, request: RunRequest, db: Session
 
         if any(
             (j.params_json or {}).get("edf_artifact_id") == item.edf_artifact_id
-            and _run_key(spec, j.params_json or {}) == key
+            and process_run_key(spec, j.params_json or {}) == key
             for j in active
         ):
             raise HTTPException(
@@ -229,35 +197,6 @@ def run_analysis(subject_id: int, process: str, request: RunRequest, db: Session
     return jobs
 
 
-def _latest_finished_runs(db: Session, subject_id: int, spec: ProcessSpec):
-    """Newest finished job per (recording, run key), with its result artifact.
-
-    Keying on the recording alone made a second seizure in the same clip replace
-    the first in the aggregate, with no error.
-    """
-    jobs = db.query(Job).filter(
-        Job.subject_id == subject_id,
-        Job.job_type == spec.job_type,
-        Job.state == "finished",
-    ).order_by(Job.created_at.desc(), Job.id.desc()).all()
-
-    out = {}
-    for job in jobs:
-        params = job.params_json or {}
-        edf_id = params.get("edf_artifact_id")
-        if edf_id is None:
-            continue
-        key = (edf_id, _run_key(spec, params))
-        if key in out:
-            continue
-        artifact = db.query(Artifact).filter(
-            Artifact.job_id == job.id, Artifact.kind == spec.artifact_kind
-        ).first()
-        if artifact:
-            out[key] = (job, artifact)
-    return out
-
-
 @router.get("/{subject_id}/analysis/{process}/{edf_artifact_id}/result")
 def get_analysis_result(subject_id: int, process: str, edf_artifact_id: int,
                         run_key: str | None = Query(None),
@@ -266,12 +205,12 @@ def get_analysis_result(subject_id: int, process: str, edf_artifact_id: int,
     a clip with several seizures has one result per seizure."""
     _get_subject_or_404(subject_id, db)
     spec = _get_process_or_404(process)
-    runs = _latest_finished_runs(db, subject_id, spec)
+    runs = latest_finished_runs(db, subject_id, spec)
     matches = [(k, v) for k, v in runs.items() if k[0] == edf_artifact_id
                and (run_key is None or k[1] == run_key)]
     if not matches:
         raise HTTPException(status_code=404, detail=f"no finished {process} result for this recording")
-    # Newest first: _latest_finished_runs walked the jobs in descending id order.
+    # Newest first: latest_finished_runs walked the jobs in descending id order.
     _, (job, artifact) = max(matches, key=lambda kv: kv[1][0].id)
     abs_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
     if not os.path.exists(abs_path):
@@ -293,7 +232,7 @@ def get_analysis_aggregate(subject_id: int, process: str,
     """
     _get_subject_or_404(subject_id, db)
     spec = _get_process_or_404(process)
-    found = _latest_finished_runs(db, subject_id, spec)
+    found = latest_finished_runs(db, subject_id, spec)
 
     runs = []
     votes = Counter()
@@ -328,6 +267,8 @@ def get_analysis_aggregate(subject_id: int, process: str,
             "edf_artifact_id": edf_id,
             "run_key": key,
             "job_id": job.id,
+            # The result file itself -- what the SOZ run picker selects and deletes.
+            "artifact_id": artifact.id,
             "recording": os.path.basename(artifact.rel_path),
             # What the operator picked as t=0, so a clip with several seizures is
             # readable as "SZ 2P" rather than "t340.000".

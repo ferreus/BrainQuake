@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, Button, Group, NumberInput, Paper, Stack, Text, Title } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { interpolatePlasma } from "d3-scale-chromatic";
 import { ApiError } from "../../api/client";
-import { useArtifacts } from "../../api/queries/useElectrodes";
+import { useAnalysisRuns, type AnalysisRun } from "../../api/queries/useAnalysis";
+import { useArtifacts, useDeleteArtifact } from "../../api/queries/useElectrodes";
 import { useJobPolling } from "../../api/queries/useJobPolling";
 import { useFuseSoz, useSozResult } from "../../api/queries/useSoz";
 import { useSurfaceMesh } from "../../api/queries/useSurfaceMesh";
@@ -12,15 +13,19 @@ import { TERMINAL_JOB_STATES } from "../../api/types";
 import { BrainMesh } from "../../components/three/BrainMesh";
 import { SceneView } from "../../components/three/SceneView";
 import { SozContacts } from "../../components/three/SozContacts";
+import { ANALYSIS_PROCESSES } from "../analysis/processes";
+import { RunPickerPanel } from "./RunPickerPanel";
 import { SozResultTable } from "./SozResultTable";
 
-interface SozPageProps {
+interface ResultsPageProps {
   subjectId: number;
   /** Mount the WebGL canvas only while this view is visible -- see ElectrodesPage. */
   active: boolean;
 }
 
-/** Horizontal plasma gradient legend for the combined SOZ-suspicion score
+const PROCESS_IDS = ANALYSIS_PROCESSES.map((p) => p.id);
+
+/** Horizontal plasma gradient legend for the combined suspicion score
  * (0 = low, 1 = high), matching the mayavi colorbar in client_soz.py. */
 function ScoreLegend() {
   const stops = Array.from({ length: 11 }, (_, i) => interpolatePlasma(i / 10)).join(", ");
@@ -37,20 +42,30 @@ function ScoreLegend() {
   );
 }
 
-export function SozPage({ subjectId, active }: SozPageProps) {
+export function ResultsPage({ subjectId, active }: ResultsPageProps) {
   const { data: artifacts } = useArtifacts(subjectId);
-  const kinds = new Set((artifacts ?? []).map((a) => a.kind));
-  const hasElectrodes = kinds.has("chnXyzDict");
-  const hasEi = kinds.has("ei_npz");
-  const hasHi = kinds.has("hfo_npz");
-  const ready = hasElectrodes && hasEi && hasHi;
+  const hasElectrodes = (artifacts ?? []).some((a) => a.kind === "chnXyzDict");
+  const { runs } = useAnalysisRuns(subjectId, PROCESS_IDS);
 
   const [topN, setTopN] = useState(10);
   const [jobId, setJobId] = useState<number | undefined>();
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  // Everything is selected by default; unticking is how a bad run is excluded.
+  const runsKey = runs.map((r) => r.artifactId).join(",");
+  useEffect(() => {
+    setSelected((prev) => {
+      const live = new Set(runs.map((r) => r.artifactId));
+      const kept = new Set([...prev].filter((id) => live.has(id)));
+      return kept.size === prev.size && prev.size > 0 ? prev : live;
+    });
+  }, [runsKey]);
 
   const fuseSoz = useFuseSoz(subjectId);
+  const deleteArtifact = useDeleteArtifact(subjectId);
   const queryClient = useQueryClient();
-  const { data: rows } = useSozResult(subjectId, true);
+  const { data: result } = useSozResult(subjectId, true);
+  const rows = result?.rows;
 
   const lhSurface = useSurfaceMesh(subjectId, "lh");
   const rhSurface = useSurfaceMesh(subjectId, "rh");
@@ -59,30 +74,38 @@ export function SozPage({ subjectId, active }: SozPageProps) {
   const { data: job } = useJobPolling(jobId, (finishedJob) => {
     queryClient.invalidateQueries({ queryKey: ["soz-result", subjectId] });
     if (finishedJob.state === "failed") {
-      notifications.show({ color: "red", title: "SOZ fusion failed", message: finishedJob.progress_message ?? "" });
+      notifications.show({ color: "red", title: "Fusion failed", message: finishedJob.progress_message ?? "" });
     }
   });
 
   async function handleFuse() {
     try {
-      const j = await fuseSoz.mutateAsync({});
+      const j = await fuseSoz.mutateAsync({ artifact_ids: [...selected] });
       setJobId(j.id);
     } catch (err) {
       notifications.show({
         color: "red",
-        title: "Failed to start SOZ fusion",
+        title: "Failed to start fusion",
+        message: err instanceof ApiError ? err.message : String(err),
+      });
+    }
+  }
+
+  async function handleDelete(run: AnalysisRun) {
+    try {
+      await deleteArtifact.mutateAsync(run.artifactId);
+      queryClient.invalidateQueries({ queryKey: ["analysis-aggregate"] });
+    } catch (err) {
+      notifications.show({
+        color: "red",
+        title: "Failed to delete result",
         message: err instanceof ApiError ? err.message : String(err),
       });
     }
   }
 
   const running = job ? !TERMINAL_JOB_STATES.has(job.state) : false;
-
-  const missing = [
-    !hasElectrodes && "segmented electrodes",
-    !hasEi && "an EI (ictal) result",
-    !hasHi && "an HI (interictal HFO) result",
-  ].filter(Boolean);
+  const ready = hasElectrodes && selected.size > 0;
 
   return (
     <Group align="stretch" wrap="nowrap" gap="md" mt="md" style={{ flex: 1, minHeight: 0 }}>
@@ -102,20 +125,22 @@ export function SozPage({ subjectId, active }: SozPageProps) {
         )}
       </div>
 
-      <Stack w={420} h="100%" gap="md" style={{ overflowY: "auto" }}>
+      <Stack w={460} h="100%" gap="md" style={{ overflowY: "auto" }}>
         <Paper withBorder p="sm">
           <Title order={6} mb="xs">
-            Fuse EI + HI
+            Analysis runs
           </Title>
           <Text size="xs" c="dimmed" mb="xs">
-            Ranks every contact by combining its EI (ictal) and HI (interictal) percentiles into a single suspicion score.
+            Each ticked run is rank-percentiled on its own, averaged with the other runs of its
+            process, then averaged across processes — so five fragility runs do not outvote one EI.
           </Text>
-          {!ready && (
+          {!hasElectrodes && (
             <Alert color="gray" variant="light" mb="xs" p="xs">
-              <Text size="xs">Needs {missing.join(", ")} first. Run those tabs, then fuse.</Text>
+              <Text size="xs">Needs segmented electrodes first — contacts have no coordinates yet.</Text>
             </Alert>
           )}
-          <Group align="flex-end" gap="sm">
+          <RunPickerPanel runs={runs} selected={selected} onChange={setSelected} onDelete={handleDelete} />
+          <Group align="flex-end" gap="sm" mt="sm">
             <NumberInput
               label="Contacts to label in 3D"
               value={topN}
@@ -125,7 +150,7 @@ export function SozPage({ subjectId, active }: SozPageProps) {
               w={140}
             />
             <Button size="xs" loading={running} disabled={!ready} onClick={handleFuse}>
-              {rows && rows.length > 0 ? "Re-fuse" : "Fuse EI + HI"}
+              Fuse {selected.size} run{selected.size === 1 ? "" : "s"}
             </Button>
           </Group>
           {job?.state === "running" && (
@@ -147,7 +172,7 @@ export function SozPage({ subjectId, active }: SozPageProps) {
           </Title>
           {rows && rows.length > 0 ? (
             <div style={{ flex: 1, minHeight: 0 }}>
-              <SozResultTable rows={rows} />
+              <SozResultTable rows={rows} processes={result?.processes ?? []} />
             </div>
           ) : (
             <Text size="xs" c="dimmed">

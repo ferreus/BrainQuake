@@ -1,9 +1,10 @@
 """Multi-Modal SOZ (Seizure Onset Zone) Rank Percentile Fusion.
 
-Pure numpy algorithms -- combines Epileptogenicity Index (EI) and High-Frequency Oscillation (HFO)
-percentile ranks into a unified target ranking.
+Pure numpy -- combines any number of processes (EI, HFO, fragility), each with
+any number of runs, into one per-contact suspicion score.
 """
 import logging
+
 import numpy as np
 
 logger = logging.getLogger(__name__)
@@ -36,65 +37,104 @@ def describe_name_overlap(contact_names, by_chan, kind):
     }
 
 
-def fuse_ei_hfo_scores(contact_xyz, ei_by_chan=None, hi_by_chan=None):
-    """Fuse EI and HFO channel scores into percentile rankings and combined score.
+def _mean_ignoring_nan(stacked, counts):
+    out = np.full(stacked.shape[1], np.nan)
+    np.divide(np.nansum(stacked, axis=0), counts, out=out, where=counts > 0)
+    return out
+
+
+def _run_percentiles(names, scores):
+    """One run's scores as a per-contact percentile, NaN where the contact is absent."""
+    vals = np.array([scores.get(n, np.nan) for n in names], dtype=float)
+    pct = np.full(len(names), np.nan)
+    mask = np.isfinite(vals)
+    if mask.any():
+        pct[mask] = rank_pct(vals[mask])
+    return vals, pct
+
+
+def fuse_contact_scores(contact_xyz, runs_by_process):
+    """Fuse per-process, per-run channel scores into one ranked contact table.
 
     Args:
-        contact_xyz: Dict mapping contact name -> (x, y, z) 3D coordinate array,
-                     or list of contact names.
-        ei_by_chan: Dict mapping channel name -> EI score float (or None).
-        hi_by_chan: Dict mapping channel name -> HFO event count float (or None).
+        contact_xyz: {contact name -> (x, y, z)} or a bare list of contact names.
+        runs_by_process: {process name -> [ {channel name -> score}, ... ]}, one
+            dict per finished run of that process.
 
-    Returns:
-        List of dict rows sorted by combined_score descending.
+    Each run is percentiled on its own before averaging: raw EI, HFO counts and
+    fragility live on different scales, and even within one process two
+    recordings' raw values are not comparable. Averaging per process first keeps
+    five fragility runs from outvoting one EI run.
+
+    Returns rows sorted by combined_score descending, with per-process columns
+    `{p}` (mean raw), `{p}_percentile`, `{p}_n_runs` and `suspect_{p}`.
     """
-    if isinstance(contact_xyz, (list, tuple, set)):
+    if isinstance(contact_xyz, dict):
+        names = sorted(contact_xyz)
+        xyz_dict = contact_xyz
+    elif isinstance(contact_xyz, (list, tuple, set)):
         names = sorted(contact_xyz)
         xyz_dict = {n: (0.0, 0.0, 0.0) for n in names}
-    elif isinstance(contact_xyz, dict):
-        names = sorted(contact_xyz.keys())
-        xyz_dict = contact_xyz
     else:
-        raise TypeError("contact_xyz must be a dict or list of channel names")
+        raise TypeError("contact_xyz must be a dict or list of contact names")
 
-    ei_by_chan = ei_by_chan or {}
-    hi_by_chan = hi_by_chan or {}
+    columns = {}
+    process_pcts = []
+    for process, runs in runs_by_process.items():
+        runs = [r for r in (runs or []) if r]
+        if not runs:
+            continue
+        per_run = [_run_percentiles(names, r) for r in runs]
+        raw = np.array([v for v, _ in per_run], dtype=float)
+        pct = np.array([p for _, p in per_run], dtype=float)
+        # A contact missing from some runs averages over the ones that have it;
+        # one absent from all of them stays NaN (np.nanmean would warn instead).
+        n_runs = np.sum(np.isfinite(pct), axis=0)
+        mean_raw = _mean_ignoring_nan(raw, n_runs)
+        mean_pct = _mean_ignoring_nan(pct, n_runs)
 
-    ei_vals = np.array([ei_by_chan.get(n, np.nan) for n in names], dtype=float)
-    hi_vals = np.array([hi_by_chan.get(n, np.nan) for n in names], dtype=float)
+        thresh = (
+            np.nanmean(mean_pct) + np.nanstd(mean_pct)
+            if np.isfinite(mean_pct).any() else np.inf
+        )
+        columns[process] = {
+            "raw": mean_raw,
+            "pct": mean_pct,
+            "n_runs": n_runs,
+            "suspect": mean_pct > thresh,
+        }
+        process_pcts.append(mean_pct)
 
-    ei_mask = ~np.isnan(ei_vals)
-    hi_mask = ~np.isnan(hi_vals)
-    ei_pct = np.full(len(names), np.nan)
-    hi_pct = np.full(len(names), np.nan)
-
-    if ei_mask.any():
-        ei_pct[ei_mask] = rank_pct(ei_vals[ei_mask])
-    if hi_mask.any():
-        hi_pct[hi_mask] = rank_pct(hi_vals[hi_mask])
-
-    stacked = np.vstack([ei_pct, hi_pct])
-    valid_counts = np.sum(~np.isnan(stacked), axis=0)
-    sums = np.nansum(stacked, axis=0)
-    combined = np.divide(sums, valid_counts, out=np.zeros_like(sums), where=valid_counts > 0)
-
-    ei_thresh = np.nanmean(ei_vals) + np.nanstd(ei_vals) if ei_mask.any() else np.inf
-    hi_thresh = np.nanmean(hi_vals) + np.nanstd(hi_vals) if hi_mask.any() else np.inf
-    suspect_ei = ei_vals > ei_thresh
-    suspect_hi = hi_vals > hi_thresh
+    if process_pcts:
+        stacked = np.vstack(process_pcts)
+        valid = np.sum(np.isfinite(stacked), axis=0)
+        combined = np.zeros(len(names))
+        np.divide(np.nansum(stacked, axis=0), valid, out=combined, where=valid > 0)
+    else:
+        combined = np.zeros(len(names))
 
     rows = []
     for i, name in enumerate(names):
-        rows.append({
+        row = {
             'contact': name,
-            'x': float(xyz_dict[name][0]), 'y': float(xyz_dict[name][1]), 'z': float(xyz_dict[name][2]),
-            'ei': float(ei_vals[i]) if np.isfinite(ei_vals[i]) else np.nan,
-            'hi': float(hi_vals[i]) if np.isfinite(hi_vals[i]) else np.nan,
-            'ei_percentile': float(ei_pct[i]) if np.isfinite(ei_pct[i]) else np.nan,
-            'hi_percentile': float(hi_pct[i]) if np.isfinite(hi_pct[i]) else np.nan,
-            'combined_score': float(combined[i]),
-            'suspect_ei': bool(suspect_ei[i]),
-            'suspect_hi': bool(suspect_hi[i]),
-        })
+            'x': float(xyz_dict[name][0]),
+            'y': float(xyz_dict[name][1]),
+            'z': float(xyz_dict[name][2]),
+        }
+        for process, col in columns.items():
+            row[process] = float(col["raw"][i])
+            row[f'{process}_percentile'] = float(col["pct"][i])
+            row[f'{process}_n_runs'] = int(col["n_runs"][i])
+            row[f'suspect_{process}'] = bool(col["suspect"][i])
+        row['combined_score'] = float(combined[i])
+        rows.append(row)
+
     rows.sort(key=lambda r: r['combined_score'], reverse=True)
     return rows
+
+
+def fused_processes(rows):
+    """Which processes a fused table carries, in column order."""
+    if not rows:
+        return []
+    return [k[len('suspect_'):] for k in rows[0] if k.startswith('suspect_')]

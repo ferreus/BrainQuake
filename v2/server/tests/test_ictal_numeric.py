@@ -102,7 +102,7 @@ def test_dead_channel_gets_nan_ei_not_zero():
 
     It used to be forced to 0.0, which is a real score meaning "quiet" -- a dead
     electrode then sorted alongside genuinely silent brain instead of being
-    excluded. NaN is the honest answer and soz.build_result_table masks it.
+    excluded. NaN is the honest answer and soz fusion masks it.
     """
     target, base = _make_seizure()
     base[0] = 0.0

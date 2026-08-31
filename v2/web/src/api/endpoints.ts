@@ -576,32 +576,33 @@ export function getHfoResult(subjectId: number, edfArtifactId: number): Promise<
 }
 
 export interface SozFuseParams {
-  ei_artifact_id?: number;
-  hi_artifact_id?: number;
+  /** Result artifacts (ei/hfo/fragility) to fuse; omitted means every finished run. */
+  artifact_ids?: number[];
 }
 
 export function fuseSoz(subjectId: number, params: SozFuseParams = {}): Promise<Job> {
   return apiPost<Job>(`/subjects/${subjectId}/soz/fuse`, params);
 }
 
-export interface SozResultRow {
+/** Columns are per fused process: `{p}`, `{p}_percentile`, `{p}_n_runs`,
+ * `suspect_{p}`. A value is null when the contact is absent from that process's
+ * results (server's load_result_rows NaN->null sanitization). */
+export type SozResultRow = {
   contact: string;
   x: number;
   y: number;
   z: number;
-  /** null when this contact is absent from the EI/HI results (see server's
-   * load_result_rows NaN->null sanitization). */
-  ei: number | null;
-  hi: number | null;
-  ei_percentile: number | null;
-  hi_percentile: number | null;
   combined_score: number;
-  suspect_ei: boolean;
-  suspect_hi: boolean;
+} & Record<string, string | number | boolean | null>;
+
+export interface SozResult {
+  /** Which processes the fused table carries, in column order. */
+  processes: string[];
+  rows: SozResultRow[];
 }
 
-export function getSozResult(subjectId: number): Promise<SozResultRow[]> {
-  return apiGet<SozResultRow[]>(`/subjects/${subjectId}/soz/result`);
+export function getSozResult(subjectId: number): Promise<SozResult> {
+  return apiGet<SozResult>(`/subjects/${subjectId}/soz/result`);
 }
 
 // --- Analysis: process-driven runs -----------------------------------------
@@ -675,6 +676,8 @@ export interface AnalysisAggregate {
     /** Identifies one run within a recording; "" when the process allows one. */
     run_key: string;
     job_id: number;
+    /** The result file itself -- what the run picker selects and deletes. */
+    artifact_id: number;
     recording: string;
     /** The mark chosen as t=0, e.g. "SZ 2P". Null for a manual onset. */
     label: string | null;

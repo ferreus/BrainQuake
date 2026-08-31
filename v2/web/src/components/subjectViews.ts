@@ -10,7 +10,7 @@ export const SUBJECT_VIEWS = [
   { value: "electrodes", label: "Electrodes", icon: IconChartDots3 },
   { value: "analysis", label: "Analysis", icon: IconActivity },
   { value: "clinical", label: "Clinical EEG", icon: IconHeartRateMonitor },
-  { value: "soz", label: "SOZ Result", icon: IconTargetArrow },
+  { value: "results", label: "Results", icon: IconTargetArrow },
   { value: "freebrowse", label: "FreeBrowse", icon: IconBrain },
 ] as const;
 

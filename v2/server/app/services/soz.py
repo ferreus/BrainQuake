@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Artifact, Job, Subject
 from app.services.job_control import check_cancelled
+from app.services.processes import (
+    PROCESS_BY_ARTIFACT_KIND,
+    PROCESSES,
+    latest_finished_runs,
+)
 from app.services.recon import register_artifact
+from app.sigproc.fusion import describe_name_overlap, fuse_contact_scores, fused_processes
 
 logger = logging.getLogger(__name__)
 
@@ -27,45 +33,6 @@ def load_contact_xyz(elec_xyz_path):
     return contact_xyz
 
 
-def _by_channel(chn_names, values, source):
-    """Channel name -> value, refusing the two ways this can quietly go wrong."""
-    if len(chn_names) != len(values):
-        raise ValueError(
-            f"{source}: {len(chn_names)} channel names but {len(values)} values"
-        )
-    duplicates = {n for n in chn_names if chn_names.count(n) > 1}
-    if duplicates:
-        # dict() would keep only the last of each, silently discarding results.
-        raise ValueError(f"{source}: duplicate channel names {sorted(duplicates)}")
-    return dict(zip(chn_names, values, strict=True))
-
-
-def load_ei_result(ei_result_path):
-    """EI keyed by *contact*, which is what the electrode map and the 3D view use.
-
-    Under a bipolar reference `chn_names` holds pair names (A1-A2) that match no
-    contact, so prefer the contact projection when the archive carries one.
-    Archives written before it existed were all CAR, where channels are contacts.
-    """
-    data = np.load(ei_result_path, allow_pickle=True)
-    if 'contact_names' in data.files and 'ei_by_contact' in data.files:
-        names = [str(n) for n in data['contact_names']]
-        return _by_channel(names, data['ei_by_contact'], "EI result")
-    chn_names = [str(n) for n in data['chn_names']]
-    return _by_channel(chn_names, data['ei'], "EI result")
-
-
-def load_hi_result(hi_result_path):
-    data = np.load(hi_result_path, allow_pickle=True)
-    chn_names = [str(n) for n in data['file_chnsNames']]
-    return _by_channel(chn_names, data['file_highEventsCount'], "HFO result")
-
-
-from app.sigproc.fusion import describe_name_overlap, fuse_ei_hfo_scores, rank_pct
-
-build_result_table = fuse_ei_hfo_scores
-
-
 def save_csv(rows, out_csv):
     with open(out_csv, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
@@ -73,13 +40,46 @@ def save_csv(rows, out_csv):
         writer.writerows(rows)
 
 
-def _latest_artifact(db: Session, subject_id: int, kind: str):
-    return (
-        db.query(Artifact)
-        .filter(Artifact.subject_id == subject_id, Artifact.kind == kind)
-        .order_by(Artifact.created_at.desc())
-        .first()
-    )
+def _artifact_paths(db: Session, subject_id: int, artifact_ids):
+    """{process: [result path, ...]} for the selected runs, or for every finished
+    run when nothing was selected."""
+    selected = {}
+    if artifact_ids:
+        found = db.query(Artifact).filter(
+            Artifact.id.in_(artifact_ids), Artifact.subject_id == subject_id
+        ).all()
+        missing = set(artifact_ids) - {a.id for a in found}
+        if missing:
+            raise FileNotFoundError(f"artifact(s) {sorted(missing)} not found for this subject")
+        for artifact in found:
+            process = PROCESS_BY_ARTIFACT_KIND.get(artifact.kind)
+            if not process:
+                raise ValueError(
+                    f"artifact {artifact.id} is a {artifact.kind}, not an analysis result"
+                )
+            selected.setdefault(process, []).append(artifact.rel_path)
+    else:
+        for process, spec in PROCESSES.items():
+            for _job, artifact in latest_finished_runs(db, subject_id, spec).values():
+                selected.setdefault(process, []).append(artifact.rel_path)
+    return selected
+
+
+def _load_scores(process, rel_paths):
+    """Each run's {channel -> score}, skipping results whose file is gone."""
+    spec = PROCESSES[process]
+    runs = []
+    for rel_path in rel_paths:
+        abs_path = os.path.join(settings.DATA_ROOT, rel_path)
+        if not os.path.exists(abs_path):
+            logger.warning("%s result %s is missing from disk; skipping", process, rel_path)
+            continue
+        scores = spec.scores(spec.load(abs_path))
+        runs.append({
+            k: float(v) for k, v in scores.items()
+            if v is not None and math.isfinite(float(v))
+        })
+    return runs
 
 
 def run_soz_fuse_job(db: Session, job: Job, log_file):
@@ -93,40 +93,31 @@ def run_soz_fuse_job(db: Session, job: Job, log_file):
     if not os.path.exists(elec_xyz_path):
         raise FileNotFoundError(f"{elec_xyz_path} not found. Run electrode segment() first.")
 
-    ei_artifact_id = params.get("ei_artifact_id")
-    ei_artifact = (
-        db.query(Artifact).filter(Artifact.id == ei_artifact_id, Artifact.subject_id == subject.id).first()
-        if ei_artifact_id else _latest_artifact(db, subject.id, "ei_npz")
-    )
-    if not ei_artifact:
-        raise FileNotFoundError("No ei_npz artifact found for this subject. Run ictal EI computation first.")
-
-    hi_artifact_id = params.get("hi_artifact_id")
-    hi_artifact = (
-        db.query(Artifact).filter(Artifact.id == hi_artifact_id, Artifact.subject_id == subject.id).first()
-        if hi_artifact_id else _latest_artifact(db, subject.id, "hfo_npz")
-    )
-    if not hi_artifact:
-        raise FileNotFoundError("No hfo_npz artifact found for this subject. Run interictal HFO computation first.")
-
     job.progress_pct = 30.0
-    job.progress_message = "Loading electrode/EI/HI results"
+    job.progress_message = "Loading electrode map and analysis results"
     db.commit()
 
     contact_xyz = load_contact_xyz(elec_xyz_path)
-    ei_by_chan = load_ei_result(os.path.join(settings.DATA_ROOT, ei_artifact.rel_path))
-    hi_by_chan = load_hi_result(os.path.join(settings.DATA_ROOT, hi_artifact.rel_path))
+    runs_by_process = {
+        process: runs
+        for process, rel_paths in _artifact_paths(db, subject.id, params.get("artifact_ids")).items()
+        if (runs := _load_scores(process, rel_paths))
+    }
+    if not runs_by_process:
+        raise FileNotFoundError(
+            "No finished analysis results to fuse. Run EI, HFO or fragility first."
+        )
 
     check_cancelled(db, job)
     job.progress_pct = 70.0
     job.progress_message = "Ranking contacts"
     db.commit()
 
-    overlaps = [
-        describe_name_overlap(contact_xyz, ei_by_chan, "EI"),
-        describe_name_overlap(contact_xyz, hi_by_chan, "HFO"),
-    ]
-    for o in overlaps:
+    overlaps = []
+    for process, runs in runs_by_process.items():
+        merged = {k: v for run in runs for k, v in run.items()}
+        o = describe_name_overlap(contact_xyz, merged, process)
+        overlaps.append(o)
         if o["matched"] == 0:
             logger.warning(
                 "%s: none of the %d contacts matched any of the %d channel names. "
@@ -144,16 +135,15 @@ def run_soz_fuse_job(db: Session, job: Job, log_file):
     if all(o["matched"] == 0 for o in overlaps):
         # Every value would be NaN, every combined score 0, and the CSV would
         # look perfectly well-formed while ranking nothing. Fail instead.
-        ei_o, hi_o = overlaps
+        first = overlaps[0]
         raise ValueError(
             "No contact name matched any EEG channel name, so there is nothing to rank. "
-            f"Contacts look like {ei_o['unmatched_contacts'][:5]}; "
-            f"EI channels look like {ei_o['unused_channels'][:5]}; "
-            f"HFO channels look like {hi_o['unused_channels'][:5]}. "
-            "The electrode labels and the EDF channel labels need to use the same convention."
+            f"Contacts look like {first['unmatched_contacts'][:5]}; "
+            + "; ".join(f"{o['kind']} channels look like {o['unused_channels'][:5]}" for o in overlaps)
+            + ". The electrode labels and the EDF channel labels need to use the same convention."
         )
 
-    rows = build_result_table(contact_xyz, ei_by_chan, hi_by_chan)
+    rows = fuse_contact_scores(contact_xyz, runs_by_process)
 
     out_csv = os.path.join(settings.SUBJECTS_DIR, subject.name, "soz_result.csv")
     save_csv(rows, out_csv)
@@ -161,23 +151,33 @@ def run_soz_fuse_job(db: Session, job: Job, log_file):
 
     job.progress_pct = 95.0
     ranked = sum(1 for r in rows if r["combined_score"] > 0)
-    job.progress_message = f"Ranked {ranked}/{len(rows)} contacts (rest had no EI or HFO value)"
+    n_runs = sum(len(r) for r in runs_by_process.values())
+    job.progress_message = (
+        f"Ranked {ranked}/{len(rows)} contacts from {n_runs} run(s) of "
+        f"{', '.join(sorted(runs_by_process))}"
+    )
     db.commit()
 
 
 def load_result_rows(csv_path):
+    """Rows plus the processes they carry. Columns are per-process, so they are
+    read by shape rather than by a fixed list of names."""
     with open(csv_path, newline='') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+        rows = list(csv.DictReader(f))
     for row in rows:
-        for k in ('x', 'y', 'z', 'ei', 'hi', 'ei_percentile', 'hi_percentile', 'combined_score'):
-            if row.get(k) not in (None, ''):
-                val = float(row[k])
-                # A contact present in the electrode map but missing from the EI
-                # or HI results ranks as NaN (build_result_table). NaN is not
-                # JSON-compliant (Starlette renders with allow_nan=False), so
-                # emit null instead and let the client show it as "missing".
-                row[k] = None if math.isnan(val) else val
-        for k in ('suspect_ei', 'suspect_hi'):
-            row[k] = row.get(k) == 'True'
-    return rows
+        for k, v in row.items():
+            if k == 'contact' or v in (None, ''):
+                continue
+            if k.startswith('suspect_'):
+                row[k] = v == 'True'
+                continue
+            if k.endswith('_n_runs'):
+                row[k] = int(v)
+                continue
+            val = float(v)
+            # A contact present in the electrode map but missing from a process's
+            # results ranks as NaN. NaN is not JSON-compliant (Starlette renders
+            # with allow_nan=False), so emit null and let the client show it as
+            # "missing".
+            row[k] = None if math.isnan(val) else val
+    return {"processes": fused_processes(rows), "rows": rows}

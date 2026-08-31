@@ -9,7 +9,7 @@ import { ClinicalEegPage } from "../features/clinical/ClinicalEegPage";
 import { ElectrodesPage } from "../features/electrodes/ElectrodesPage";
 import { FreeBrowsePage } from "../features/freebrowse/FreeBrowsePage";
 import { AnalysisPage } from "../features/analysis/AnalysisPage";
-import { SozPage } from "../features/soz/SozPage";
+import { ResultsPage } from "../features/results/ResultsPage";
 
 export function SubjectLayoutPage() {
   const { subjectId, view } = useParams();
@@ -59,7 +59,7 @@ export function SubjectLayoutPage() {
   // All views stay mounted (display-toggled) so their local state -- EEG pan
   // position, form inputs -- survives view switches, matching the old
   // keepMounted Tabs behavior. WebGL canvases are the exception: see the
-  // `active` prop on ElectrodesPage/SozPage.
+  // `active` prop on ElectrodesPage/ResultsPage.
   const viewStyle = (v: SubjectView): CSSProperties => ({
     display: activeView === v ? "flex" : "none",
     flexDirection: "column",
@@ -98,8 +98,10 @@ export function SubjectLayoutPage() {
         <div style={viewStyle("clinical")}>
           {isVisited("clinical") && <ClinicalEegPage key={id} subjectId={id} />}
         </div>
-        <div style={viewStyle("soz")}>
-          {isVisited("soz") && <SozPage key={id} subjectId={id} active={activeView === "soz"} />}
+        <div style={viewStyle("results")}>
+          {isVisited("results") && (
+            <ResultsPage key={id} subjectId={id} active={activeView === "results"} />
+          )}
         </div>
         <div style={viewStyle("freebrowse")}>
           {isVisited("freebrowse") && <FreeBrowsePage key={id} subjectId={id} />}

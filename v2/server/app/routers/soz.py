@@ -21,8 +21,9 @@ def _get_subject_or_404(subject_id: int, db: Session) -> Subject:
 
 
 class SozFuseRequest(BaseModel):
-    ei_artifact_id: int | None = None  # defaults to the subject's most recent ei_npz artifact
-    hi_artifact_id: int | None = None  # defaults to the subject's most recent hfo_npz artifact
+    # Result artifacts (ei_npz / hfo_npz / fragility_npz) to fuse. None or empty
+    # means every finished run of every process.
+    artifact_ids: list[int] | None = None
 
 
 @router.post("/{subject_id}/soz/fuse", response_model=JobResponse)
@@ -72,4 +73,6 @@ def get_soz_result(subject_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="SOZ result artifact not found")
 
     abs_path = os.path.join(settings.DATA_ROOT, artifact.rel_path)
+    if not os.path.exists(abs_path):
+        raise HTTPException(status_code=404, detail="SOZ result file is missing from disk")
     return soz_service.load_result_rows(abs_path)
